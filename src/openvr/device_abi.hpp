@@ -53,9 +53,14 @@ class DeviceForHost final : public MsvcDeviceDriver {
   vr::ITrackedDeviceServerDriver* device_;
 };
 
+// Through the device's vtable slot 5 directly, not a virtual call on MsvcDeviceDriver: the device
+// isn't one of ours, and a compiler that can see every implementation of that class (were it ever
+// in an anonymous namespace, or with LTO) may devirtualize the call to DeviceForHost::GetPose with
+// no check, which would treat the other driver's object as ours.
 inline vr::DriverPose_t GetPoseFromOtherDriver(vr::ITrackedDeviceServerDriver* device) {
-  vr::DriverPose_t pose{};
-  reinterpret_cast<MsvcDeviceDriver*>(device)->GetPose(&pose);
+  using MsvcGetPose = vr::DriverPose_t* (*)(void* self, vr::DriverPose_t* out);
+  vr::DriverPose_t pose;
+  (*reinterpret_cast<MsvcGetPose**>(device))[5](device, &pose);
   return pose;
 }
 #else

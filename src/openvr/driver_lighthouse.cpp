@@ -37,6 +37,7 @@
 #include <thread>
 #include <vector>
 
+#include "device_abi.hpp"
 #include "pairing_mailbox.hpp"
 #include "stock_hmd.hpp"
 #include "watchdog.hpp"
@@ -268,6 +269,9 @@ class Device : public ITrackedDeviceServerDriver {
     pose_.deviceIsConnected = true;
   }
 
+  // What the host is given for this device: GetPose in the host's order (device_abi.hpp).
+  ITrackedDeviceServerDriver* ForHost() { return forHost_.Host(); }
+
   EVRInitError Activate(uint32_t objectId) override {
     active_ = false;
     lastInputTime_ = lastPoseTime_ = -1;
@@ -481,6 +485,8 @@ class Device : public ITrackedDeviceServerDriver {
   }
 
  private:
+  lh::openvr::DeviceForHost forHost_{this};
+
   // At most 100 Hz per device, but every change of state.
   void Record(const DriverPose_t& p, double now, bool held) {
     if (!g_recorder.On()) return;
@@ -1451,7 +1457,7 @@ class Provider : public IServerTrackedDeviceProvider {
     Device* raw = device.get();
     devices_[info.serial] = std::move(device);
     // The host may call Activate() from inside this call (Monado does).
-    if (!VRServerDriverHost()->TrackedDeviceAdded(info.serial.c_str(), cls, raw))
+    if (!VRServerDriverHost()->TrackedDeviceAdded(info.serial.c_str(), cls, raw->ForHost()))
       Log("host declined " + info.serial + (cls == TrackedDeviceClass_TrackingReference ? " (base station)" : ""));
     else
       Log("registered " + info.serial);

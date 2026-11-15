@@ -1,5 +1,7 @@
 #include "stock_hmd.hpp"
 
+#include "device_abi.hpp"
+
 #include "pairing_mailbox.hpp"
 
 #include <algorithm>
@@ -396,6 +398,8 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
  public:
   DeviceProxy(StockHmd* owner, std::string serial, ITrackedDeviceServerDriver* inner)
       : owner_(owner), serial_(std::move(serial)), inner_(inner) {}
+  // What the host is given for it: GetPose in the host's order (device_abi.hpp).
+  ITrackedDeviceServerDriver* ForHost() { return forHost_.Host(); }
   EVRInitError Activate(uint32_t id) override {
     const EVRInitError r = inner_->Activate(id);
     if (r == VRInitError_None) {
@@ -426,13 +430,15 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
     if (owner_->requestHandler_ && owner_->requestHandler_(request, response, size)) return;
     inner_->DebugRequest(request, response, size);
   }
-  DriverPose_t GetPose() override { return inner_->GetPose(); }
+  // The stock driver's device, built with the host's compiler.
+  DriverPose_t GetPose() override { return GetPoseFromOtherDriver(inner_); }
 
  private:
   StockHmd* owner_;
   std::string serial_;
   ITrackedDeviceServerDriver* inner_;
   std::atomic<bool> alive_{false};
+  DeviceForHost forHost_{this};
 };
 
 class StockHmd::Host : public IVRServerDriverHost {
@@ -446,7 +452,7 @@ class StockHmd::Host : public IVRServerDriverHost {
       owner_->devices_.push_back(proxy);
     }
     if (owner_->log_) owner_->log_(std::string("stock driver: head-mounted display ") + (serial ? serial : "?"));
-    return owner_->realHost_->TrackedDeviceAdded(serial, cls, proxy);
+    return owner_->realHost_->TrackedDeviceAdded(serial, cls, proxy->ForHost());
   }
   void TrackedDevicePoseUpdated(uint32_t id, const DriverPose_t& pose, uint32_t size) override {
     {

@@ -14,6 +14,7 @@
 #include "openvr/haptic_routing.hpp"
 #include "openvr/telemetry_server.hpp"
 #include "openvr/watchdog.hpp"
+#include "openvr/device_abi.hpp"
 #include "openvr/pairing_mailbox.hpp"
 #include "lh/session.hpp"
 #include <cstring>
@@ -745,4 +746,78 @@ TEST(PairingMailbox, AKeepAliveKeepsWhatWasOnTheReceiver) {
   pairing.Poll(session, "");
   ASSERT_EQ(mailbox.Results(), std::vector<std::string>{"success"});
   EXPECT_EQ(mailbox.sent.back().value("connectedSerial", ""), "LHR-12CB1821");
+}
+
+namespace {
+// One of our devices, with a pose to recognize.
+struct PoseDevice : vr::ITrackedDeviceServerDriver {
+  vr::DriverPose_t pose{};
+  vr::EVRInitError Activate(uint32_t) override { return vr::VRInitError_None; }
+  void Deactivate() override {}
+  void EnterStandby() override {}
+  void* GetComponent(const char*) override { return nullptr; }
+  void DebugRequest(const char*, char* response, uint32_t size) override {
+    if (size) response[0] = 0;
+  }
+  vr::DriverPose_t GetPose() override { return pose; }
+};
+
+// A pointer as another binary hands it over: the optimizer may not lean on what it was cast from
+// (calling through a reinterpret_cast to an unrelated class is only well-defined across binaries).
+template <class T>
+T* Opaque(T* p) {
+#if defined(__GNUC__)
+  asm volatile("" : "+r"(p));
+#endif
+  return p;
+}
+
+// A device as MSVC builds it: slot 5 (GetPose) takes `this` first and the result pointer second.
+struct MsvcBuiltDevice {
+  void** vtable;
+  vr::DriverPose_t pose;
+};
+vr::DriverPose_t* MsvcBuiltGetPose(MsvcBuiltDevice* self, vr::DriverPose_t* out) {
+  *out = self->pose;
+  return out;
+}
+}  // namespace
+
+// Other drivers, built with MSVC, call GetPose on our devices: Bigscreen's eye tracking driver does
+// on the headset, and a MinGW build's GetPose took its result buffer for the device and crashed
+// vrserver. What the host is given must take the result pointer after `this`, as MSVC passes it.
+TEST(DeviceAbi, GetPoseInTheHostsOrder) {
+  PoseDevice device;
+  device.pose.vecPosition[0] = 1.5;
+  device.pose.poseIsValid = true;
+  lh::openvr::DeviceForHost forHost(&device);
+  vr::ITrackedDeviceServerDriver* host = Opaque(forHost.Host());
+  if constexpr (lh::openvr::kMsvcGetPoseOrder) {
+    // What MSVC code does for host->GetPose(): slot 5, `this` first, the result pointer second.
+    using MsvcGetPose = vr::DriverPose_t* (*)(void* self, vr::DriverPose_t* out);
+    void** vtable = *reinterpret_cast<void***>(host);
+    vr::DriverPose_t out;
+    std::memset(&out, 0xcc, sizeof out);  // an MSVC debug build's uninitialized stack
+    vr::DriverPose_t* returned = reinterpret_cast<MsvcGetPose>(vtable[5])(host, &out);
+    EXPECT_EQ(returned, &out);
+    EXPECT_EQ(out.vecPosition[0], 1.5);
+    EXPECT_TRUE(out.poseIsValid);
+    // The other slots still reach the device.
+    EXPECT_EQ(host->Activate(3), vr::VRInitError_None);
+  } else {
+    EXPECT_EQ(host, &device);  // same compiler as the host: the device itself
+  }
+}
+
+// The stock headset we wrap is the stock driver's, built with MSVC: we call its GetPose its way.
+TEST(DeviceAbi, GetPoseOfAnotherDriversDevice) {
+  if constexpr (!lh::openvr::kMsvcGetPoseOrder) GTEST_SKIP() << "built with the host's compiler";
+  void* vtable[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, reinterpret_cast<void*>(&MsvcBuiltGetPose)};
+  MsvcBuiltDevice device{vtable, {}};
+  device.pose.vecPosition[2] = -0.25;
+  device.pose.result = vr::TrackingResult_Running_OK;
+  const vr::DriverPose_t pose = lh::openvr::GetPoseFromOtherDriver(
+      Opaque(reinterpret_cast<vr::ITrackedDeviceServerDriver*>(&device)));
+  EXPECT_EQ(pose.vecPosition[2], -0.25);
+  EXPECT_EQ(pose.result, vr::TrackingResult_Running_OK);
 }

@@ -35,11 +35,14 @@ namespace lh::openvr {
 
 // The same pose with the head offset folded in: qRotation is the head's rotation and vecPosition
 // the head's position (qDriverFromHead becomes the identity), so worldFromDriver * pose *
-// driverFromHead is unchanged. For callers that take qRotation for the head's rotation and
-// ignore qDriverFromHeadRotation: Bigscreen's eye tracking driver does, and a Beyond's IMU sits
-// half a turn about (nearly) +Y from its head frame, so with the IMU's rotation that driver saw
-// every nod and roll of the head reversed, and fast nods made it hand SteamVR a gaze tens of
-// degrees off (yaw was unaffected). The stock driver hands over the IMU's rotation; we don't.
+// driverFromHead is unchanged: a caller that applies qDriverFromHead and one that ignores it get
+// the same head pose. That needs the rotation and the position folded together; folding only the
+// rotation would misplace the head for callers that apply the offset. For callers that take
+// qRotation for the head's rotation and ignore qDriverFromHeadRotation: Bigscreen's eye tracking
+// driver does, and a Beyond's IMU sits half a turn about (nearly) +Y from its head frame, so with
+// the IMU's rotation that driver saw every nod and roll of the head reversed, and fast nods made it
+// hand SteamVR a gaze tens of degrees off (yaw was unaffected). The stock driver hands over the
+// IMU's rotation; we don't.
 // Velocities follow: linear of the head's origin, angular in the head frame.
 inline vr::DriverPose_t InHeadFrame(const vr::DriverPose_t& p) {
   using Q = vr::HmdQuaternion_t;

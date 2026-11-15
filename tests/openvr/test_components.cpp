@@ -1,5 +1,6 @@
 #include "common/test_paths.hpp"
 #include <array>
+#include <atomic>
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
 #include "openvr/hand_skeleton.hpp"
@@ -898,4 +899,57 @@ TEST(PublishedPose, InHeadFrameKeepsTheHeadPose) {
   const vr::DriverPose_t hn = lh::openvr::InHeadFrame(q);
   const Quaterniond turn = head.conjugate() * Quaterniond(hn.qRotation.w, hn.qRotation.x, hn.qRotation.y, hn.qRotation.z);
   EXPECT_LT(turn.angularDistance(nod), 1e-9);
+}
+
+// The headset's GetPose asks the stock driver only until ours publishes, and never after cleanup:
+// the stock driver's device may be gone by then, while other drivers' threads still call it.
+TEST(PublishedPose, NeverAsksTheStockDriverAfterClose) {
+  lh::openvr::PublishedPose published;
+  int stockCalls = 0;
+  const auto stock = [&stockCalls] {
+    ++stockCalls;
+    vr::DriverPose_t p{};
+    p.result = vr::TrackingResult_Calibrating_InProgress;  // the stock driver's placeholder
+    return p;
+  };
+  EXPECT_EQ(published.Get(stock).result, vr::TrackingResult_Calibrating_InProgress);
+  EXPECT_EQ(stockCalls, 1);
+
+  vr::DriverPose_t pose{};
+  pose.qRotation = pose.qWorldFromDriverRotation = pose.qDriverFromHeadRotation = {1, 0, 0, 0};
+  pose.poseIsValid = pose.deviceIsConnected = true;
+  pose.result = vr::TrackingResult_Running_OK;
+  published.SetActive(true);
+  published.Publish(pose);
+  EXPECT_TRUE(published.Get(stock).poseIsValid);
+  EXPECT_EQ(stockCalls, 1);
+
+  published.Close();
+  const vr::DriverPose_t closed = published.Get(stock);
+  EXPECT_FALSE(closed.poseIsValid);
+  EXPECT_FALSE(closed.deviceIsConnected);
+  EXPECT_EQ(closed.qRotation.w, 1);
+  published.SetActive(true);  // a late activation doesn't open it again
+  published.Publish(pose);
+  EXPECT_FALSE(published.Get(stock).poseIsValid);
+  EXPECT_EQ(stockCalls, 1);
+}
+
+// Cleanup closes it before the stock provider's Cleanup; a GetPose already inside the stock driver
+// finishes first.
+TEST(PublishedPose, CloseWaitsForACallInTheStockDriver) {
+  lh::openvr::PublishedPose published;
+  std::atomic<bool> inside{false}, left{false};
+  std::thread caller([&] {
+    published.Get([&] {
+      inside = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      left = true;
+      return vr::DriverPose_t{};
+    });
+  });
+  while (!inside) std::this_thread::yield();
+  published.Close();
+  EXPECT_TRUE(left);
+  caller.join();
 }

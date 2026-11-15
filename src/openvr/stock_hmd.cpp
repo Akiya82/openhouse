@@ -426,20 +426,19 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
     published_.SetActive(false);  // and its last pose isn't this device's any more
     inner_->Deactivate();
   }
-  // StockHmd::Cleanup: whatever ours published is gone with it.
-  void ForgetPublishedPose() { published_.SetActive(false); }
+  // StockHmd::Cleanup, before the stock provider's: GetPose no longer touches the stock device.
+  void Close() { published_.Close(); }
   void EnterStandby() override { inner_->EnterStandby(); }
   void* GetComponent(const char* name) override { return inner_->GetComponent(name); }
   void DebugRequest(const char* request, char* response, uint32_t size) override {
     if (owner_->requestHandler_ && owner_->requestHandler_(request, response, size)) return;
     inner_->DebugRequest(request, response, size);
   }
-  // The pose ours published for it, once there is one (PublishedPose), with qRotation as the
-  // head's rotation (InHeadFrame: the callers there are read only that). Before that, the stock
-  // driver's, which is built with the host's compiler.
+  // The pose ours published for it, once there is one, with qRotation as the head's rotation
+  // (PublishedPose, InHeadFrame). Before that, the stock driver's, which is built with the host's
+  // compiler; after cleanup, an invalid pose.
   DriverPose_t GetPose() override {
-    if (const auto pose = published_.Latest()) return InHeadFrame(*pose);
-    return GetPoseFromOtherDriver(inner_);
+    return published_.Get([this] { return GetPoseFromOtherDriver(inner_); });
   }
 
  private:
@@ -848,12 +847,16 @@ bool StockHmd::Load(const std::string& path, IVRDriverContext* realContext, LogF
 }
 
 void StockHmd::Cleanup() {
-  if (provider_) provider_->Cleanup();
-  provider_ = nullptr;
+  // First: other drivers (Bigscreen's eye tracking) may call the headset's GetPose from their own
+  // threads until the host unloads them, and the stock device may be gone after its Cleanup.
+  std::deque<DeviceProxy*> devices;
   {
     std::lock_guard lock(mutex_);
-    for (auto* proxy : devices_) proxy->ForgetPublishedPose();
+    devices = devices_;
   }
+  for (auto* proxy : devices) proxy->Close();
+  if (provider_) provider_->Cleanup();
+  provider_ = nullptr;
   // The library, proxies and context stay alive: the host may still hold the headset's
   // proxy until it shuts down, and unloading code that may still run is worse than a leak.
 }

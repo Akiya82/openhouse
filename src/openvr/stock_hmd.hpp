@@ -15,7 +15,7 @@
 // are dropped (ours sets it); every other property passes.
 // Of the stock provider's standby calls only LeaveStandby is forwarded (it turns the
 // headset's panels back on); EnterStandby would power off controllers it doesn't own
-// here. The headset's own device calls are forwarded.
+// here. The headset's own device calls are forwarded, except GetPose (PublishedPose).
 #pragma once
 
 #include <atomic>
@@ -33,41 +33,13 @@
 
 namespace lh::openvr {
 
-// The pose our driver publishes for a headset it tracks through the stock driver's device:
-// what that device's GetPose returns (as InHeadFrame) once there is one, for other drivers that ask
-// (Bigscreen's eye tracking driver does). The stock driver doesn't track the headset, so its
-// own pose is a placeholder. Forgotten whenever the host activates or deactivates the device.
-class PublishedPose {
- public:
-  // Activate (true) / Deactivate (false): forget the last pose either way.
-  void SetActive(bool active) {
-    std::lock_guard lock(mutex_);
-    active_ = active;
-    pose_.reset();
-  }
-  // From our driver's thread, after each pose it publishes. Ignored while not active.
-  void Publish(const vr::DriverPose_t& pose) {
-    std::lock_guard lock(mutex_);
-    if (active_) pose_ = pose;
-  }
-  std::optional<vr::DriverPose_t> Latest() const {
-    std::lock_guard lock(mutex_);
-    return pose_;
-  }
-
- private:
-  mutable std::mutex mutex_;
-  bool active_ = false;
-  std::optional<vr::DriverPose_t> pose_;
-};
-
 // The same pose with the head offset folded in: qRotation is the head's rotation and vecPosition
 // the head's position (qDriverFromHead becomes the identity), so worldFromDriver * pose *
 // driverFromHead is unchanged. For callers that take qRotation for the head's rotation and
 // ignore qDriverFromHeadRotation: Bigscreen's eye tracking driver does, and a Beyond's IMU sits
 // half a turn about (nearly) +Y from its head frame, so with the IMU's rotation that driver saw
-// every nod and roll of the head reversed and, above about 125 deg/s, published a gaze tens of
-// degrees off (measured on its binary in captures/vr-selftest's rig; yaw was unaffected).
+// every nod and roll of the head reversed, and fast nods made it hand SteamVR a gaze tens of
+// degrees off (yaw was unaffected). The stock driver hands over the IMU's rotation; we don't.
 // Velocities follow: linear of the head's origin, angular in the head frame.
 inline vr::DriverPose_t InHeadFrame(const vr::DriverPose_t& p) {
   using Q = vr::HmdQuaternion_t;
@@ -103,6 +75,63 @@ inline vr::DriverPose_t InHeadFrame(const vr::DriverPose_t& p) {
   rotate(headFromImu, p.vecAngularAcceleration, out.vecAngularAcceleration);
   return out;
 }
+
+// What the headset's GetPose returns when our driver tracks it through the stock driver's device,
+// for other drivers that ask (Bigscreen's eye tracking driver does): the last pose ours published,
+// as InHeadFrame. The stock driver doesn't track the headset, so its own pose is a placeholder;
+// it's asked only until ours has published one. Forgotten whenever the host activates or
+// deactivates the device, and closed for good on cleanup.
+class PublishedPose {
+ public:
+  // Activate (true) / Deactivate (false): forget the last pose either way.
+  void SetActive(bool active) {
+    std::lock_guard lock(mutex_);
+    active_ = active && !closed_;
+    pose_.reset();
+  }
+  // From our driver's thread, after each pose it publishes. Ignored while not active.
+  void Publish(const vr::DriverPose_t& pose) {
+    std::lock_guard lock(mutex_);
+    if (active_) pose_ = pose;
+  }
+  std::optional<vr::DriverPose_t> Latest() const {
+    std::lock_guard lock(mutex_);
+    return pose_;
+  }
+  // GetPose: the last pose ours published, in the head frame. Before there is one, stock() (the
+  // stock driver's GetPose), called under the lock so Close can't happen meanwhile. After Close, an
+  // invalid, disconnected pose.
+  template <class Stock>
+  vr::DriverPose_t Get(Stock stock) const {
+    std::lock_guard lock(mutex_);
+    if (closed_) return Closed();
+    if (pose_) return InHeadFrame(*pose_);
+    return stock();
+  }
+  // Before the stock provider's Cleanup, after which its device may be gone: other drivers can
+  // still call GetPose from their own threads until the host unloads them. Waits for a stock()
+  // call in progress.
+  void Close() {
+    std::lock_guard lock(mutex_);
+    closed_ = true;
+    active_ = false;
+    pose_.reset();
+  }
+
+ private:
+  static vr::DriverPose_t Closed() {
+    vr::DriverPose_t p{};
+    p.qRotation = p.qWorldFromDriverRotation = p.qDriverFromHeadRotation = {1, 0, 0, 0};
+    p.result = vr::TrackingResult_Uninitialized;
+    p.poseIsValid = false;
+    p.deviceIsConnected = false;
+    return p;
+  }
+  mutable std::mutex mutex_;
+  bool active_ = false;
+  bool closed_ = false;
+  std::optional<vr::DriverPose_t> pose_;
+};
 
 class StockHmd {
  public:

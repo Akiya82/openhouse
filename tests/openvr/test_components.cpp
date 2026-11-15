@@ -15,6 +15,7 @@
 #include "openvr/telemetry_server.hpp"
 #include "openvr/watchdog.hpp"
 #include "openvr/device_abi.hpp"
+#include "openvr/stock_hmd.hpp"
 #include "openvr/pairing_mailbox.hpp"
 #include "lh/session.hpp"
 #include <cstring>
@@ -820,4 +821,32 @@ TEST(DeviceAbi, GetPoseOfAnotherDriversDevice) {
       Opaque(reinterpret_cast<vr::ITrackedDeviceServerDriver*>(&device)));
   EXPECT_EQ(pose.vecPosition[2], -0.25);
   EXPECT_EQ(pose.result, vr::TrackingResult_Running_OK);
+}
+
+// The headset's GetPose returns the pose our driver published for it once there is one (other
+// drivers ask: Bigscreen's eye tracking; the stock driver's own is a placeholder), and never one
+// from before an activation or after a deactivation.
+TEST(PublishedPose, OnlyWhileActiveAndOnlyOncePublished) {
+  lh::openvr::PublishedPose published;
+  vr::DriverPose_t pose{};
+  pose.vecPosition[1] = 1.7;
+  pose.poseIsValid = true;
+  pose.deviceIsConnected = true;
+
+  published.Publish(pose);  // not activated yet
+  EXPECT_FALSE(published.Latest());
+  published.SetActive(true);
+  EXPECT_FALSE(published.Latest());  // nothing published since: the stock driver's
+  published.Publish(pose);
+  ASSERT_TRUE(published.Latest());
+  EXPECT_EQ(published.Latest()->vecPosition[1], 1.7);
+  EXPECT_TRUE(published.Latest()->poseIsValid);
+
+  published.SetActive(false);  // deactivated: that pose isn't the device's any more
+  EXPECT_FALSE(published.Latest());
+  published.Publish(pose);  // one late publish from our thread
+  EXPECT_FALSE(published.Latest());
+
+  published.SetActive(true);  // activated again: nothing until we publish
+  EXPECT_FALSE(published.Latest());
 }

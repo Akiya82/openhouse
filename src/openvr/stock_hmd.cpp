@@ -404,8 +404,9 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
     const EVRInitError r = inner_->Activate(id);
     if (r == VRInitError_None) {
       alive_ = true;
+      published_.SetActive(true);  // nothing from an earlier activation
       std::lock_guard lock(owner_->mutex_);
-      owner_->activated_.push_back({serial_, id, &alive_});
+      owner_->activated_.push_back({serial_, id, &alive_, &published_});
       // SteamVR sends "leave standby" when it comes up and the stock driver powers the
       // headset's panels then; other hosts (Monado) never do, and the panels stay dark.
       // Harmless under SteamVR (it is out of standby already).
@@ -422,22 +423,30 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
   }
   void Deactivate() override {
     alive_ = false;  // ours stops publishing its pose first
+    published_.SetActive(false);  // and its last pose isn't this device's any more
     inner_->Deactivate();
   }
+  // StockHmd::Cleanup: whatever ours published is gone with it.
+  void ForgetPublishedPose() { published_.SetActive(false); }
   void EnterStandby() override { inner_->EnterStandby(); }
   void* GetComponent(const char* name) override { return inner_->GetComponent(name); }
   void DebugRequest(const char* request, char* response, uint32_t size) override {
     if (owner_->requestHandler_ && owner_->requestHandler_(request, response, size)) return;
     inner_->DebugRequest(request, response, size);
   }
-  // The stock driver's device, built with the host's compiler.
-  DriverPose_t GetPose() override { return GetPoseFromOtherDriver(inner_); }
+  // The pose ours published for it, once there is one (PublishedPose). Before that, the stock
+  // driver's, which is built with the host's compiler.
+  DriverPose_t GetPose() override {
+    if (const auto pose = published_.Latest()) return *pose;
+    return GetPoseFromOtherDriver(inner_);
+  }
 
  private:
   StockHmd* owner_;
   std::string serial_;
   ITrackedDeviceServerDriver* inner_;
   std::atomic<bool> alive_{false};
+  PublishedPose published_;
   DeviceForHost forHost_{this};
 };
 
@@ -840,6 +849,10 @@ bool StockHmd::Load(const std::string& path, IVRDriverContext* realContext, LogF
 void StockHmd::Cleanup() {
   if (provider_) provider_->Cleanup();
   provider_ = nullptr;
+  {
+    std::lock_guard lock(mutex_);
+    for (auto* proxy : devices_) proxy->ForgetPublishedPose();
+  }
   // The library, proxies and context stay alive: the host may still hold the headset's
   // proxy until it shuts down, and unloading code that may still run is worse than a leak.
 }

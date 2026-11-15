@@ -33,6 +33,34 @@
 
 namespace lh::openvr {
 
+// The pose our driver publishes for a headset it tracks through the stock driver's device:
+// what that device's GetPose returns once there is one, for other drivers that ask
+// (Bigscreen's eye tracking driver does). The stock driver doesn't track the headset, so its
+// own pose is a placeholder. Forgotten whenever the host activates or deactivates the device.
+class PublishedPose {
+ public:
+  // Activate (true) / Deactivate (false): forget the last pose either way.
+  void SetActive(bool active) {
+    std::lock_guard lock(mutex_);
+    active_ = active;
+    pose_.reset();
+  }
+  // From our driver's thread, after each pose it publishes. Ignored while not active.
+  void Publish(const vr::DriverPose_t& pose) {
+    std::lock_guard lock(mutex_);
+    if (active_) pose_ = pose;
+  }
+  std::optional<vr::DriverPose_t> Latest() const {
+    std::lock_guard lock(mutex_);
+    return pose_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  bool active_ = false;
+  std::optional<vr::DriverPose_t> pose_;
+};
+
 class StockHmd {
  public:
   using LogFn = std::function<void(const std::string&)>;
@@ -50,7 +78,8 @@ class StockHmd {
 
   // A headset the stock driver added and the host activated: (serial, object id). alive
   // stays valid for the process's life and turns false when the host deactivates it.
-  struct Activated { std::string serial; uint32_t objectId; const std::atomic<bool>* alive; };
+  // published: where our driver hands each pose it publishes for it (same life as alive).
+  struct Activated { std::string serial; uint32_t objectId; const std::atomic<bool>* alive; PublishedPose* published; };
   std::optional<Activated> TakeActivated();
   // Our driver publishes this device's pose from now on: drop the stock driver's.
   void OwnPose(uint32_t objectId);

@@ -850,3 +850,52 @@ TEST(PublishedPose, OnlyWhileActiveAndOnlyOncePublished) {
   published.SetActive(true);  // activated again: nothing until we publish
   EXPECT_FALSE(published.Latest());
 }
+
+// What other drivers get from the headset's GetPose: the same head pose, with qRotation the head's
+// rotation (Bigscreen's eye tracking driver reads only that) and no head offset left to apply.
+TEST(PublishedPose, InHeadFrameKeepsTheHeadPose) {
+  using Eigen::Quaterniond;
+  using Eigen::Vector3d;
+  vr::DriverPose_t p{};
+  const Quaterniond imu = Quaterniond(0.4, -0.3, 0.8, 0.2).normalized();
+  const Quaterniond imuFromHead = Quaterniond(0.0, 0.0, 0.995134, 0.09853).normalized();  // a Beyond's
+  const Vector3d position(0.3, 1.6, -0.4), offset(0.01, 0.05, 0.08), spin(0.5, -2.0, 0.25);  // spin: IMU frame
+  p.qRotation = {imu.w(), imu.x(), imu.y(), imu.z()};
+  p.qDriverFromHeadRotation = {imuFromHead.w(), imuFromHead.x(), imuFromHead.y(), imuFromHead.z()};
+  p.qWorldFromDriverRotation = {1, 0, 0, 0};
+  for (int i = 0; i < 3; ++i) {
+    p.vecPosition[i] = position[i];
+    p.vecDriverFromHeadTranslation[i] = offset[i];
+    p.vecAngularVelocity[i] = spin[i];
+  }
+  p.poseIsValid = true;
+  p.result = vr::TrackingResult_Running_OK;
+
+  const vr::DriverPose_t h = lh::openvr::InHeadFrame(p);
+  const Quaterniond head(h.qRotation.w, h.qRotation.x, h.qRotation.y, h.qRotation.z);
+  EXPECT_LT(head.angularDistance(imu * imuFromHead), 1e-9);
+  EXPECT_EQ(h.qDriverFromHeadRotation.w, 1);
+  EXPECT_EQ(h.qDriverFromHeadRotation.x, 0);
+  const Vector3d headPosition = position + imu * offset;
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(h.vecPosition[i], headPosition[i], 1e-12);
+    EXPECT_EQ(h.vecDriverFromHeadTranslation[i], 0);
+  }
+  // The same spin, seen from the head frame; the head's origin moves with it.
+  const Vector3d headSpin = imuFromHead.conjugate() * spin;
+  const Vector3d swing = (imu * spin).cross(imu * offset);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(h.vecAngularVelocity[i], headSpin[i], 1e-12);
+    EXPECT_NEAR(h.vecVelocity[i], swing[i], 1e-12);
+  }
+  EXPECT_TRUE(h.poseIsValid);
+  EXPECT_EQ(h.result, vr::TrackingResult_Running_OK);
+  // A nod (about the head's +X) turns qRotation about the head's +X, not the IMU's.
+  const Quaterniond nod(Eigen::AngleAxisd(0.3, Vector3d::UnitX()));
+  vr::DriverPose_t q = p;
+  const Quaterniond nodded = imu * imuFromHead * nod * imuFromHead.conjugate();
+  q.qRotation = {nodded.w(), nodded.x(), nodded.y(), nodded.z()};
+  const vr::DriverPose_t hn = lh::openvr::InHeadFrame(q);
+  const Quaterniond turn = head.conjugate() * Quaterniond(hn.qRotation.w, hn.qRotation.x, hn.qRotation.y, hn.qRotation.z);
+  EXPECT_LT(turn.angularDistance(nod), 1e-9);
+}

@@ -34,7 +34,7 @@
 namespace lh::openvr {
 
 // The pose our driver publishes for a headset it tracks through the stock driver's device:
-// what that device's GetPose returns once there is one, for other drivers that ask
+// what that device's GetPose returns (as InHeadFrame) once there is one, for other drivers that ask
 // (Bigscreen's eye tracking driver does). The stock driver doesn't track the headset, so its
 // own pose is a placeholder. Forgotten whenever the host activates or deactivates the device.
 class PublishedPose {
@@ -60,6 +60,49 @@ class PublishedPose {
   bool active_ = false;
   std::optional<vr::DriverPose_t> pose_;
 };
+
+// The same pose with the head offset folded in: qRotation is the head's rotation and vecPosition
+// the head's position (qDriverFromHead becomes the identity), so worldFromDriver * pose *
+// driverFromHead is unchanged. For callers that take qRotation for the head's rotation and
+// ignore qDriverFromHeadRotation: Bigscreen's eye tracking driver does, and a Beyond's IMU sits
+// half a turn about (nearly) +Y from its head frame, so with the IMU's rotation that driver saw
+// every nod and roll of the head reversed and, above about 125 deg/s, published a gaze tens of
+// degrees off (measured on its binary in captures/vr-selftest's rig; yaw was unaffected).
+// Velocities follow: linear of the head's origin, angular in the head frame.
+inline vr::DriverPose_t InHeadFrame(const vr::DriverPose_t& p) {
+  using Q = vr::HmdQuaternion_t;
+  const auto mul = [](const Q& a, const Q& b) {
+    return Q{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+             a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+  };
+  const auto rotate = [&mul](const Q& q, const double v[3], double out[3]) {
+    const Q r = mul(mul(q, Q{0, v[0], v[1], v[2]}), Q{q.w, -q.x, -q.y, -q.z});
+    out[0] = r.x; out[1] = r.y; out[2] = r.z;
+  };
+  const auto cross = [](const double a[3], const double b[3], double out[3]) {
+    out[0] = a[1] * b[2] - a[2] * b[1]; out[1] = a[2] * b[0] - a[0] * b[2]; out[2] = a[0] * b[1] - a[1] * b[0];
+  };
+  vr::DriverPose_t out = p;
+  const Q headFromImu{p.qDriverFromHeadRotation.w, -p.qDriverFromHeadRotation.x, -p.qDriverFromHeadRotation.y,
+                      -p.qDriverFromHeadRotation.z};
+  double arm[3];  // IMU origin to head origin, driver frame
+  rotate(p.qRotation, p.vecDriverFromHeadTranslation, arm);
+  double spin[3], swing[3], swung[3];  // angular velocity in the driver frame; its effect at the head
+  rotate(p.qRotation, p.vecAngularVelocity, spin);
+  cross(spin, arm, swing);
+  cross(spin, swing, swung);
+  out.qRotation = mul(p.qRotation, p.qDriverFromHeadRotation);
+  out.qDriverFromHeadRotation = Q{1, 0, 0, 0};
+  for (int i = 0; i < 3; ++i) {
+    out.vecPosition[i] = p.vecPosition[i] + arm[i];
+    out.vecDriverFromHeadTranslation[i] = 0;
+    out.vecVelocity[i] = p.vecVelocity[i] + swing[i];
+    out.vecAcceleration[i] = p.vecAcceleration[i] + swung[i];
+  }
+  rotate(headFromImu, p.vecAngularVelocity, out.vecAngularVelocity);
+  rotate(headFromImu, p.vecAngularAcceleration, out.vecAngularAcceleration);
+  return out;
+}
 
 class StockHmd {
  public:

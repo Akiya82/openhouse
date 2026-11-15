@@ -434,10 +434,11 @@ class StockHmd::DeviceProxy : public ITrackedDeviceServerDriver {
     if (owner_->requestHandler_ && owner_->requestHandler_(request, response, size)) return;
     inner_->DebugRequest(request, response, size);
   }
-  // The pose ours published for it, once there is one (PublishedPose). Before that, the stock
+  // The pose ours published for it, once there is one (PublishedPose), with qRotation as the
+  // head's rotation (InHeadFrame: the callers there are read only that). Before that, the stock
   // driver's, which is built with the host's compiler.
   DriverPose_t GetPose() override {
-    if (const auto pose = published_.Latest()) return *pose;
+    if (const auto pose = published_.Latest()) return InHeadFrame(*pose);
     return GetPoseFromOtherDriver(inner_);
   }
 

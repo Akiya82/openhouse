@@ -830,26 +830,37 @@ TEST(DeviceAbi, GetPoseOfAnotherDriversDevice) {
 TEST(PublishedPose, OnlyWhileActiveAndOnlyOncePublished) {
   lh::openvr::PublishedPose published;
   vr::DriverPose_t pose{};
+  pose.qRotation = pose.qWorldFromDriverRotation = pose.qDriverFromHeadRotation = {1, 0, 0, 0};
   pose.vecPosition[1] = 1.7;
   pose.poseIsValid = true;
   pose.deviceIsConnected = true;
+  const auto stock = [] {  // the stock driver's placeholder
+    vr::DriverPose_t p{};
+    p.vecPosition[2] = -2;
+    p.result = vr::TrackingResult_Calibrating_InProgress;
+    return p;
+  };
+  // What GetPose returns: ours (true) or the stock driver's (false).
+  const auto ours = [&] {
+    const vr::DriverPose_t p = published.Get(stock);
+    EXPECT_EQ(p.poseIsValid, p.vecPosition[1] == 1.7);
+    return p.vecPosition[1] == 1.7;
+  };
 
   published.Publish(pose);  // not activated yet
-  EXPECT_FALSE(published.Latest());
+  EXPECT_FALSE(ours());
   published.SetActive(true);
-  EXPECT_FALSE(published.Latest());  // nothing published since: the stock driver's
+  EXPECT_FALSE(ours());  // nothing published since: the stock driver's
   published.Publish(pose);
-  ASSERT_TRUE(published.Latest());
-  EXPECT_EQ(published.Latest()->vecPosition[1], 1.7);
-  EXPECT_TRUE(published.Latest()->poseIsValid);
+  EXPECT_TRUE(ours());
 
   published.SetActive(false);  // deactivated: that pose isn't the device's any more
-  EXPECT_FALSE(published.Latest());
+  EXPECT_FALSE(ours());
   published.Publish(pose);  // one late publish from our thread
-  EXPECT_FALSE(published.Latest());
+  EXPECT_FALSE(ours());
 
   published.SetActive(true);  // activated again: nothing until we publish
-  EXPECT_FALSE(published.Latest());
+  EXPECT_FALSE(ours());
 }
 
 // What other drivers get from the headset's GetPose: the same head pose, with qRotation the head's

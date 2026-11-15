@@ -94,10 +94,6 @@ class PublishedPose {
     std::lock_guard lock(mutex_);
     if (active_) pose_ = pose;
   }
-  std::optional<vr::DriverPose_t> Latest() const {
-    std::lock_guard lock(mutex_);
-    return pose_;
-  }
   // GetPose: the last pose ours published, in the head frame. Before there is one, stock() (the
   // stock driver's GetPose), called under the lock so Close can't happen meanwhile. After Close, an
   // invalid, disconnected pose.

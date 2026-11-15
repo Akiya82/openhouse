@@ -1,7 +1,6 @@
 #include "stock_hmd.hpp"
 
 #include "device_abi.hpp"
-
 #include "pairing_mailbox.hpp"
 
 #include <algorithm>

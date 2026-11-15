@@ -16,6 +16,9 @@ namespace lh::openvr {
 
 #if defined(_WIN32) && !defined(_MSC_VER)
 inline constexpr bool kMsvcGetPoseOrder = true;
+// x64 has one calling convention for member functions and plain functions alike, which the raw
+// slot call below relies on; 32-bit MSVC passes `this` in ECX (thiscall).
+static_assert(sizeof(void*) == 8, "MSVC's GetPose order is only mirrored for 64-bit Windows");
 
 // ITrackedDeviceServerDriver as MSVC lays it out and calls it (no virtual destructor, six slots):
 // GetPose takes the result pointer after `this` and returns it.

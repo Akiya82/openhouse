@@ -228,7 +228,6 @@ openhouse tracks the headset itself, but the display part (lens distortion, disp
 
 Huge thanks to the [libsurvive](https://github.com/collabora/libsurvive) project. Their work on the watchman protocol, device and light decoding, controller inputs and the 2.0 basestations was used as a reference a lot while making openhouse.
 
----
 ## Code signing policy
 
 Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
@@ -238,7 +237,6 @@ The Windows release (`openhouse-windows-x64.zip`) is built from this repository'
 Team roles:
 - Committers and reviewers: [members](https://github.com/YusufOzmen01/openhouse/graphs/contributors)
 - Approvers: [YusufOzmen01](https://github.com/YusufOzmen01).
----
 
 ## Privacy
 See [PRIVACY.md](PRIVACY.md)

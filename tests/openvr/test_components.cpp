@@ -10,6 +10,14 @@
 #include <set>
 #include <sstream>
 #include "openvr/room_publisher.hpp"
+#ifdef _WIN32
+#include <windows.h>
+#undef SendMessage  // IVRMailbox::SendMessage, below
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include "openvr/host_frame.hpp"
 #include "openvr/haptic_routing.hpp"
 #include "openvr/telemetry_server.hpp"
@@ -315,6 +323,56 @@ TEST(RawAlignment, PreservesHostFrameAcrossRoomRebuild) {
   EXPECT_FALSE(alignment.Update(snapshot));
   EXPECT_TRUE(alignment.RoomId().empty());
 }
+
+#if defined(__linux__) || defined(_WIN32)
+// What a reader (an alignment tool) sees: the room under its published name, same layout on
+// Linux and Windows, with a live beat until the driver closes it.
+TEST(RoomPublisher, PublishesTheRoomWhereReadersLookForIt) {
+  lh::SessionSnapshot snapshot;
+  snapshot.roomId = "room-test";
+  lh::BaseStationState base;
+  base.serial = "LHB-A101B835"; base.id = 0xA101B835; base.known = base.seen = base.origin = true;
+  base.worldFromBase.orientation = {1, 0, 0, 0};
+  base.worldFromBase.position = {1, 2, 3};
+  snapshot.bases.push_back(base);
+  lh::openvr::RoomPublisher publisher;
+  publisher.Publish(snapshot, Eigen::Isometry3d::Identity(), 0);
+#ifdef _WIN32
+  HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, OPENHOUSE_ROOM_WIN32_NAME);
+  ASSERT_NE(mapping, nullptr);
+  const auto* room = static_cast<const openhouse_room*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(openhouse_room)));
+  const int pid = int(GetCurrentProcessId());
+#else
+  const std::string path = OPENHOUSE_ROOM_PATH_PREFIX + std::to_string(unsigned(getuid()));
+  const int fd = shm_open(path.c_str(), O_RDONLY, 0);
+  ASSERT_GE(fd, 0);
+  void* m = mmap(nullptr, sizeof(openhouse_room), PROT_READ, MAP_SHARED, fd, 0);
+  close(fd);
+  ASSERT_NE(m, MAP_FAILED);
+  const auto* room = static_cast<const openhouse_room*>(m);
+  const int pid = int(getpid());
+#endif
+  ASSERT_NE(room, nullptr);
+  EXPECT_EQ(room->magic, OPENHOUSE_ROOM_MAGIC);
+  EXPECT_EQ(room->version, uint32_t(OPENHOUSE_ROOM_VERSION));
+  EXPECT_EQ(room->pid, pid);
+  EXPECT_EQ(room->seq % 2, 0u);
+  EXPECT_GT(room->beat, 0);
+  EXPECT_STREQ(room->room, "room-test");
+  ASSERT_EQ(room->count, 1);
+  EXPECT_STREQ(room->bases[0].serial, "LHB-A101B835");
+  EXPECT_EQ(room->bases[0].origin, 1);
+  EXPECT_DOUBLE_EQ(room->bases[0].p[2], 3);
+  publisher.Close();
+  EXPECT_EQ(room->beat, 0);  // still mapped here: readers see the driver left
+#ifdef _WIN32
+  UnmapViewOfFile(room);
+  CloseHandle(mapping);
+#else
+  munmap(m, sizeof(openhouse_room));
+#endif
+}
+#endif
 
 TEST(RoomPublisher, SettlesAfterTheRoomStopsMovingAndBumpsTheEpochOnARealChange) {
   using lh::openvr::RoomSettle;

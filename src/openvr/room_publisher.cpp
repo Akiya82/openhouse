@@ -11,9 +11,31 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #endif
 
 namespace lh::openvr {
+namespace {
+// The heartbeat clock (room_shm.h): CLOCK_MONOTONIC on Linux, QueryPerformanceCounter on Windows.
+double MonotonicSeconds() {
+#ifdef _WIN32
+  LARGE_INTEGER now, frequency;
+  QueryPerformanceCounter(&now);
+  QueryPerformanceFrequency(&frequency);
+  return double(now.QuadPart) / double(frequency.QuadPart);
+#elif defined(__linux__)
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return double(ts.tv_sec) + 1e-9 * double(ts.tv_nsec);
+#else
+  return 0;
+#endif
+}
+}  // namespace
 
 bool RoomSettle::Close(const Eigen::Isometry3d& a, const Eigen::Isometry3d& b, double m, double rad) {
   const double d = (a.translation() - b.translation()).norm();
@@ -55,6 +77,13 @@ void RoomPublisher::Close() {
     munmap(shm_, sizeof *shm_);
     shm_unlink(path_.c_str());
   }
+#elif defined(_WIN32)
+  if (shm_) {
+    shm_->beat = 0;
+    UnmapViewOfFile(shm_);
+  }
+  if (mapping_) CloseHandle(mapping_);  // the mapping goes with its last handle
+  mapping_ = nullptr;
 #endif
   shm_ = nullptr;
   failed_ = false;
@@ -76,6 +105,22 @@ bool RoomPublisher::Open() {
   shm_->magic = OPENHOUSE_ROOM_MAGIC;
   shm_->version = OPENHOUSE_ROOM_VERSION;
   shm_->pid = int32_t(getpid());
+  return true;
+#elif defined(_WIN32)
+  if (shm_ || failed_) return shm_ != nullptr;
+  // Local\: this logon session's namespace, the Windows counterpart of the uid suffix.
+  path_ = OPENHOUSE_ROOM_WIN32_NAME;
+  HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWORD(sizeof(openhouse_room)),
+                                      path_.c_str());
+  if (!mapping) { failed_ = true; return false; }
+  void* m = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(openhouse_room));
+  if (!m) { CloseHandle(mapping); failed_ = true; return false; }
+  mapping_ = mapping;
+  shm_ = static_cast<openhouse_room*>(m);
+  std::memset(shm_, 0, sizeof *shm_);
+  shm_->magic = OPENHOUSE_ROOM_MAGIC;
+  shm_->version = OPENHOUSE_ROOM_VERSION;
+  shm_->pid = int32_t(GetCurrentProcessId());
   return true;
 #else
   return false;
@@ -120,14 +165,12 @@ void RoomPublisher::Publish(const SessionSnapshot& snapshot, const Eigen::Isomet
       pendingLog_ = text + e;
     }
   }
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
   if (!Open()) return;
   auto* seq = reinterpret_cast<volatile uint32_t*>(&shm_->seq);
   __atomic_store_n(&shm_->seq, *seq + 1, __ATOMIC_RELEASE);
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
-  timespec ts{};
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  shm_->beat = double(ts.tv_sec) + 1e-9 * double(ts.tv_nsec);
+  shm_->beat = MonotonicSeconds();
   shm_->epoch = settle_.epoch();
   shm_->settled = settled;
   std::snprintf(shm_->room, sizeof shm_->room, "%s", snapshot.roomId.c_str());

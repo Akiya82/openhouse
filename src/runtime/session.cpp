@@ -1212,6 +1212,21 @@ RoomSolveInput SessionImpl::SolveInput() {
   for (const auto& b : room_.Bases()) in.known[b.serial] = b.worldFromBase;
   // A knocked origin is relearned against another placed base, held fixed meanwhile.
   in.origin = room_.OriginRelearning() && room_.OriginGauge() ? room_.OriginGauge() : room_.Origin();
+  // An origin off this session (a room with a station that's elsewhere or unplugged now):
+  // the solver held every placed base fixed, so one placed wrong (re-aimed while the
+  // origin was off) was never found, and the room fit 2 deg off forever. One placed base
+  // in view, the best placed, holds the gauge instead; the others are solved against it.
+  if (const auto o = bases_.find(in.origin); o == bases_.end() || !o->second.seen) {
+    uint32_t gauge = 0;
+    int best = -1;
+    for (const auto& b : room_.Bases()) {
+      const auto seen = bases_.find(b.serial);
+      if (seen == bases_.end() || !seen->second.seen || b.observations <= best) continue;
+      best = b.observations;
+      gauge = b.serial;
+    }
+    if (gauge) in.origin = gauge;
+  }
   for (const auto& [serial, b] : bases_)
     if (b.config.cal.size() == 14) {
       std::array<double, 14> cal;
@@ -1319,6 +1334,7 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
   // base it relocks too soon can't cycle.
   constexpr double kFloor = 0.015, kFloorPerMetre = 0.01, kRotFloor = 0.75 * M_PI / 180, kSigmas = 4;
   constexpr double kCooldown = 60;
+  constexpr double kBigTurn = 3 * M_PI / 180, kGoodFit = 2e-3;  // rad: see the second rule below
   constexpr int kStrikes = 3, kStrikesOneDevice = 5;  // solves in a row (1-4 s apart)
   constexpr double kOneDeviceSpan = 10;              // s of one device's keyframes of the base
   const uint32_t origin = room_.Origin();
@@ -1362,6 +1378,11 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
     // rejected). A base that moved also has its keyframes rejected.
     if ((dp > std::max(floor, kSigmas * sigma) || dr > std::max(kRotFloor, kSigmas * rsigma)) &&
         b.supportingDevices >= needDevices && b.rejected >= 8 && b.rejected * 8 >= b.seen)
+      moved[serial] = {dp * 1e3, dr * 180 / M_PI, b.devices >= 2 ? kStrikes : kStrikesOneDevice};
+    // Turned far more than a solve ever wanders, and fitting well there: moved, rejections or
+    // not. With two bases every keyframe sees both, so a wrong one misfits them all alike and
+    // none stands out to be rejected (Taco 2026-11-15: 5 deg off, rms 35 mrad, 0 rejected).
+    else if (dr > kBigTurn && b.rms < kGoodFit && b.supportingDevices >= needDevices)
       moved[serial] = {dp * 1e3, dr * 180 / M_PI, b.devices >= 2 ? kStrikes : kStrikesOneDevice};
   }
   // Every other base off at once (3+ bases): the origin moved, not all of them.

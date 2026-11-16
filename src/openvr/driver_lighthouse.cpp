@@ -1061,6 +1061,7 @@ class Provider : public IServerTrackedDeviceProvider {
       std::string chaperone = lh::platform::SteamRoot() + "/config/chaperone_info.vrchap";
       if (const char* p = std::getenv("LH_CHAPERONE")) chaperone = p;
       const auto setUp = lh::openvr::ChaperoneUniverses(chaperone);
+      setUpUniverses_ = setUp;
       // SteamVR's universes (an imported room stays in its own), and those with Room Setup.
       if (!text.empty()) {
         if (!alignment_.LoadText(lh::openvr::ForeignUniverses(text, AllUniverseIds(text)), &alignmentError)) Log(alignmentError);
@@ -1191,6 +1192,7 @@ class Provider : public IServerTrackedDeviceProvider {
     snapshot_ = {};
     alignment_ = {};
     setUpAlignment_ = {};
+    setUpUniverses_.clear();
     roomFrame_ = {};
     writtenUniverse_.clear();
     lastUniverseWrite_ = -1e300;
@@ -1503,6 +1505,7 @@ class Provider : public IServerTrackedDeviceProvider {
   bool replay_ = false;
   std::string referencePath_;
   lh::openvr::RawAlignment setUpAlignment_;  // SteamVR's universes with Room Setup done
+  std::set<std::string> setUpUniverses_;      // every universe with Room Setup (chaperone_info.vrchap)
   enum class RoomFrame { Undecided, Steam, Own };
   struct {
     std::string room;
@@ -1540,6 +1543,13 @@ class Provider : public IServerTrackedDeviceProvider {
       *rawFromWorld = hostFrame_.Update(snapshot_, now);
       *universe = 0;
       return;
+    }
+    // Room Setup done in our room's own universe (as with 1.0.2, which had no SteamVR rooms):
+    // that is the user's room. A SteamVR universe sharing a base would replace its floor and
+    // tilt with another room's, re-estimated by the stock driver on every start.
+    if (f.frame == RoomFrame::Undecided && !imported && setUpUniverses_.count(std::to_string(UniverseId(f.room)))) {
+      f.frame = RoomFrame::Own;
+      Log("room " + f.room + ": its own universe " + std::to_string(UniverseId(f.room)) + " (Room Setup done for it)");
     }
     auto& steam = imported ? alignment_ : setUpAlignment_;
     if (f.frame != RoomFrame::Own && steam.Update(snapshot_)) {

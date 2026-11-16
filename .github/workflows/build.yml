@@ -81,6 +81,8 @@ jobs:
 
   windows:
     runs-on: ubuntu-24.04
+    outputs:
+      unsigned-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -133,6 +135,49 @@ jobs:
         with:
           name: openhouse-windows-x64
           path: dist/openhouse-windows-x64.zip
+          if-no-files-found: error
+      # What SignPath signs: the package folder, which GitHub stores as a ZIP with the
+      # folder's contents at its root (.signpath/artifact-configuration.xml).
+      - name: Upload the package for signing
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhouse-windows-x64-unsigned
+          path: dist/openhouse-windows-x64/
+          if-no-files-found: error
+
+  # Code signing through SignPath (signpath.io), for pushes to master, version tags and
+  # manual runs only: pull requests (forks have no secrets) and other branches stay
+  # unsigned. Needs the repository secret SIGNPATH_API_TOKEN and the repository variables
+  # SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG and SIGNPATH_SIGNING_POLICY_SLUG
+  # (test-signing until the production certificate is in; then the release policy).
+  windows-signed:
+    needs: windows
+    if: >-
+      github.repository == 'YusufOzmen01/openhouse' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Sign with SignPath
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.windows.outputs.unsigned-artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed/openhouse-windows-x64
+      # The same layout as the unsigned zip: one openhouse-windows-x64 folder inside.
+      - name: Package the signed build
+        run: cd signed && zip -qr ../openhouse-windows-x64.zip openhouse-windows-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openhouse-windows-x64-signed
+          path: openhouse-windows-x64.zip
           if-no-files-found: error
 
   firmware:

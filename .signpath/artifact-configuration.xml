@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file-set>
+      <include path="driver_lighthouse.dll" />
+      <include path="openhouse-installer.exe" />
+      <include path="apps/liblh.dll" />
+      <include path="apps/lhcapture.exe" />
+      <include path="apps/lhtool.exe" />
+      <include path="apps/lhviz.exe" />
+      <include path="apps/openhouse-check.exe" />
+      <include path="apps/openhouse-compare.exe" />
+      <include path="apps/openhouse-viewer.exe" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>

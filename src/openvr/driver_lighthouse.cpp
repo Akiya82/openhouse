@@ -37,6 +37,7 @@
 #include <thread>
 #include <vector>
 
+#include "device_abi.hpp"
 #include "pairing_mailbox.hpp"
 #include "stock_hmd.hpp"
 #include "watchdog.hpp"
@@ -268,6 +269,9 @@ class Device : public ITrackedDeviceServerDriver {
     pose_.deviceIsConnected = true;
   }
 
+  // What the host is given for this device: GetPose in the host's order (device_abi.hpp).
+  ITrackedDeviceServerDriver* ForHost() { return forHost_.Host(); }
+
   EVRInitError Activate(uint32_t objectId) override {
     active_ = false;
     lastInputTime_ = lastPoseTime_ = -1;
@@ -290,11 +294,13 @@ class Device : public ITrackedDeviceServerDriver {
     id_ = k_unTrackedDeviceIndexInvalid;
   }
   // A device the host activated through another driver (a headset from the stock driver,
-  // stock_hmd.hpp): we only publish its pose; its properties are that driver's.
-  void AttachExternal(uint32_t objectId, const std::atomic<bool>* alive) {
+  // stock_hmd.hpp): we only publish its pose; its properties are that driver's. published:
+  // also handed every pose we publish for it (on our thread, after poseMutex_ is released).
+  void AttachExternal(uint32_t objectId, const std::atomic<bool>* alive, lh::openvr::PublishedPose* published = nullptr) {
     id_ = objectId;
     container_ = VRProperties()->TrackedDeviceToPropertyContainer(objectId);
     externalAlive_ = alive;
+    published_ = published;
     active_ = true;
   }
   // SteamVR's idle power-off (power/turnOffControllersTimeout) calls this; the stock
@@ -440,6 +446,7 @@ class Device : public ITrackedDeviceServerDriver {
         pose_ = p;
       }
       VRServerDriverHost()->TrackedDevicePoseUpdated(id_, p, sizeof(p));
+      if (published_) published_->Publish(p);
       Record(p, now, held);
     }
     if (u.batteryPercent && (*u.batteryPercent != battery_ || u.charging != charging_)) {
@@ -481,6 +488,8 @@ class Device : public ITrackedDeviceServerDriver {
   }
 
  private:
+  lh::openvr::DeviceForHost forHost_{this};
+
   // At most 100 Hz per device, but every change of state.
   void Record(const DriverPose_t& p, double now, bool held) {
     if (!g_recorder.On()) return;
@@ -940,6 +949,7 @@ class Device : public ITrackedDeviceServerDriver {
   DeviceStatic info_;
   std::atomic<bool> active_{false};
   const std::atomic<bool>* externalAlive_ = nullptr;  // AttachExternal: the host still has it
+  lh::openvr::PublishedPose* published_ = nullptr;  // AttachExternal: handed every pose we publish
   std::atomic<bool> powerOffRequested_{false};
   std::chrono::steady_clock::time_point lastUse_{};
   static int32_t NextHandPriority() {
@@ -1333,7 +1343,8 @@ class Provider : public IServerTrackedDeviceProvider {
           // The stock driver's headset is up: our tracking drives its pose.
           DeviceStatic info{hmd->serial, {}, {}, {}, {}, lh::DeviceRole::Hmd, {}};
           auto device = std::make_unique<Device>(info);
-          device->AttachExternal(hmd->objectId, hmd->alive);
+          // Its GetPose returns what we publish (other drivers ask: Bigscreen's eye tracking).
+          device->AttachExternal(hmd->objectId, hmd->alive, hmd->published);
           devices_[hmd->serial] = std::move(device);
           stock_.OwnPose(hmd->objectId);
           Log("head-mounted display " + hmd->serial + ": pose from our tracking");
@@ -1453,7 +1464,7 @@ class Provider : public IServerTrackedDeviceProvider {
     Device* raw = device.get();
     devices_[info.serial] = std::move(device);
     // The host may call Activate() from inside this call (Monado does).
-    if (!VRServerDriverHost()->TrackedDeviceAdded(info.serial.c_str(), cls, raw))
+    if (!VRServerDriverHost()->TrackedDeviceAdded(info.serial.c_str(), cls, raw->ForHost()))
       Log("host declined " + info.serial + (cls == TrackedDeviceClass_TrackingReference ? " (base station)" : ""));
     else
       Log("registered " + info.serial);

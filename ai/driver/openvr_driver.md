@@ -220,6 +220,19 @@ Power requests take priority over pending vibration for that receiver.
 The packet is decompilation-backed (`0x3ce5a0`, `0x3ce6e0`); callback routing and
 packet bytes are tested, but actual power-down/reconnect needs a live-device check.
 
+The headset proxy's `GetPose` isn't forwarded either. SteamVR never calls it, but other
+drivers do: Bigscreen's eye tracking driver reads the head's rotation from it once DFR is
+on. It returns the last pose ours published for the headset with the head offset folded
+in (`InHeadFrame`: `qRotation` is the head's rotation, `qDriverFromHeadRotation` the
+identity), the stock driver's until there is one, and an invalid, disconnected pose once
+`StockHmd::Cleanup` has closed it (before the stock provider's `Cleanup`). Bigscreen's
+driver ignores the head offset, and a Beyond's IMU sits half a turn about Y from its head,
+so with the IMU's rotation, which is what the stock driver hands over, it saw nods
+reversed and sent SteamVR a gaze tens of degrees off on fast ones. Under MinGW the host
+is given a `DeviceForHost` (`device_abi.hpp`) for each of our devices and the headset's
+proxy: `GetPose` returns a `DriverPose_t` by value, and MSVC and GCC pass its hidden
+result pointer in different places, so an MSVC-built caller crashed vrserver.
+
 Base stations remain listed and the room map remains cached when tracked devices
 disappear, as requested. Newly observed bases continue through the existing room
 learning pipeline; this change does not expire or remove them.

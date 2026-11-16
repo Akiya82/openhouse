@@ -141,9 +141,10 @@ jobs:
           path: dist/openhouse-windows-x64.zip
           if-no-files-found: error
 
-  # Code signing through SignPath (signpath.io), for pushes to master, version tags and
-  # manual runs only: pull requests (forks have no secrets) and other branches stay
-  # unsigned. Needs the repository secret SIGNPATH_API_TOKEN and the repository variables
+  # Code signing through SignPath (signpath.io), for releases only: a pushed version tag
+  # (v1.0.4), or a manual run ("Run workflow") on master or a tag, for a signed test build.
+  # Pushes, pull requests (forks have no secrets) and other branches stay unsigned:
+  # every signing waits for manual approval. Needs the repository secret SIGNPATH_API_TOKEN and the repository variables
   # SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG (the
   # test-signing policy until the production certificate is in, then the release one) and
   # SIGNPATH_ARTIFACT_CONFIGURATION_SLUG.
@@ -151,7 +152,8 @@ jobs:
     needs: windows
     if: >-
       github.repository == 'YusufOzmen01/openhouse' &&
-      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'))
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -169,6 +171,9 @@ jobs:
           artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ needs.windows.outputs.unsigned-artifact-id }}
           wait-for-completion: true
+          # Each signing waits for manual approval in SignPath (a release policy rule): up
+          # to 2 h, then the job fails and the request can still be approved and re-run.
+          wait-for-completion-timeout-in-seconds: 7200
           # Unpacked: the package zip itself, its binaries signed inside.
           output-artifact-directory: signed
       - uses: actions/upload-artifact@v4

@@ -12,7 +12,7 @@ This project is heavily AI assisted. I've personally audited the codes it genera
 
 ---
 <div align="center">
-<i>If you want to support the progress of openhouse, feel free to donate! I normally did not want to accept donations for this project, as even though I've spent days and nights testing it and used my years of knowledge about software development and electronics, it is still heavily AI assisted. But I need to get a code signing certificate (which costs $10/mo on Microsoft Azure) for this project to get around false detections on Windows Defender or other antivirus softwares and I am kind of broke
+<i>If you want to support the progress of openhouse, feel free to donate! I normally did not want to accept donations for this project, as even though I've spent days and nights testing it and used my years of knowledge about software development and electronics, it is still heavily AI assisted. So, donate with your own moral judgement
 <br><br>
 In any way, thanks to every contributor and user, along with people that did work before openhouse such as the libsurvive project! It makes me happy to see people finding openhouse useful!</i>
 <br><br>
@@ -227,6 +227,21 @@ openhouse tracks the headset itself, but the display part (lens distortion, disp
 ## Credits
 
 Huge thanks to the [libsurvive](https://github.com/collabora/libsurvive) project. Their work on the watchman protocol, device and light decoding, controller inputs and the 2.0 basestations was used as a reference a lot while making openhouse.
+
+---
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+The Windows release (`openhouse-windows-x64.zip`) is built from this repository's source by [GitHub Actions](.github/workflows/build.yml) and signed there
+
+Team roles:
+- Committers and reviewers: [members](https://github.com/YusufOzmen01/openhouse/graphs/contributors)
+- Approvers: [YusufOzmen01](https://github.com/YusufOzmen01).
+---
+
+## Privacy
+See [PRIVACY.md](PRIVACY.md)
 
 ## License
 

@@ -12,7 +12,6 @@ python3 "$repo/scripts/package-driver.py" "$build/openvr/lighthouse/bin/linux64/
 cp "$repo/packaging/install-linux.sh" "$out/install.sh"
 cp "$repo/packaging/uninstall-linux.sh" "$out/uninstall.sh"
 cp "$repo/packaging/steamvr-dir.sh" "$out/.steamvr-dir.sh"
-cp "$repo/packaging/settingsschema.vrsettings" "$out/"
 # Notices: openhouse's own, the vcpkg libraries built in, and what the tools link or embed.
 cp "$repo/LICENSE" "$out/LICENSE.txt"
 prefix=$(sed -n 's/^VCPKG_INSTALLED_DIR:[A-Z]*=//p' "$build/CMakeCache.txt")/$(sed -n 's/^VCPKG_TARGET_TRIPLET:[A-Z]*=//p' "$build/CMakeCache.txt")
@@ -30,7 +29,7 @@ find "$out/lh-licenses" -xtype l -delete  # a link whose target wasn't there
 # directory as its RUNPATH.
 cp -L "$build/liblh.so.1" "$out/tools/"
 strip --strip-unneeded "$out/tools/liblh.so.1"
-for tool in lhtool lhcapture openhouse-viewer openhouse-check openhouse-compare; do
+for tool in lhtool lhcapture openhouse-check openhouse-overlay openhouse-compare; do
   cp "$build/$tool" "$out/tools/"
   strip "$out/tools/$tool"
   if readelf -d "$out/tools/$tool" | grep -q 'liblh\.so'; then

@@ -18,7 +18,7 @@ shutil.rmtree(out, ignore_errors=True)
 (out / 'apps').mkdir(parents=True)
 files = {build / 'openvr/lighthouse/bin/win64/driver_lighthouse.dll': out / 'driver_lighthouse.dll',
          build / 'openhouse-installer.exe': out / 'openhouse-installer.exe'}
-files.update({build / name: out / 'apps' / name for name in ['liblh.dll', 'openhouse-viewer.exe', 'openhouse-compare.exe', 'lhviz.exe', 'lhtool.exe', 'lhcapture.exe', 'openhouse-check.exe']})
+files.update({build / name: out / 'apps' / name for name in ['liblh.dll', 'openhouse-compare.exe', 'lhviz.exe', 'lhtool.exe', 'lhcapture.exe', 'openhouse-check.exe', 'openhouse-overlay.exe']})
 system = {'advapi32.dll', 'winhttp.dll', 'kernel32.dll', 'shlwapi.dll', 'user32.dll', 'gdi32.dll',
           'shell32.dll', 'winmm.dll', 'ole32.dll', 'comdlg32.dll', 'msvcrt.dll',
           'ucrtbase.dll', 'ntdll.dll', 'imm32.dll', 'version.dll', 'oleaut32.dll', 'setupapi.dll', 'opengl32.dll', 'hid.dll', 'ws2_32.dll'}
@@ -51,7 +51,6 @@ for package in ['mingw-w64-crt', 'mingw-w64-headers', 'mingw-w64-winpthreads', '
 gpl = Path('/usr/share/licenses/spdx/GPL-3.0-only.txt')
 if gpl.is_file():
     shutil.copy2(gpl, licenses / 'GCC-GPL-3.0.txt')
-shutil.copy2(repo / 'packaging/settingsschema.vrsettings', out / 'settingsschema.vrsettings')
 (out / 'BUILD.json').write_text(json.dumps({
     'source_commit': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
     'source_dirty': bool(subprocess.check_output(['git', '-C', str(repo), 'diff', '--name-only'], text=True).strip()),

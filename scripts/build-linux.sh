@@ -11,7 +11,8 @@ fi
 [[ -x "$root/vcpkg" ]] || "$root/bootstrap-vcpkg.sh" -disableMetrics
 export VCPKG_ROOT="$root" VCPKG_MAX_CONCURRENCY="${VCPKG_MAX_CONCURRENCY:-16}"
 triplet=x64-linux-static-release
-"$root/vcpkg" install --x-manifest-root="$repo" --x-install-root="$root/installed" \
+# Each platform has its own install folder: a manifest install removes what it didn't ask for.
+"$root/vcpkg" install --x-manifest-root="$repo" --x-install-root="$root/installed-linux" \
   --overlay-triplets="$repo/cmake/triplets" --triplet=$triplet --x-feature=tests
 build="$repo/build-release"
 # A build configured against the system Ceres can't be switched in place.
@@ -20,8 +21,8 @@ if [[ -f "$build/CMakeCache.txt" ]] && ! grep -q "VCPKG_TARGET_TRIPLET:STRING=$t
 fi
 cmake -S "$repo" -B "$build" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$root/scripts/buildsystems/vcpkg.cmake" \
-  -DVCPKG_TARGET_TRIPLET=$triplet -DVCPKG_OVERLAY_TRIPLETS="$repo/cmake/triplets" -DVCPKG_INSTALLED_DIR="$root/installed" \
+  -DVCPKG_TARGET_TRIPLET=$triplet -DVCPKG_OVERLAY_TRIPLETS="$repo/cmake/triplets" -DVCPKG_INSTALLED_DIR="$root/installed-linux" \
   -DVCPKG_MANIFEST_MODE=OFF -DCMAKE_BUILD_TYPE=Release \
-  -DLH_BUILD_TESTS=ON -DLH_BUILD_VIEWER=ON -DLH_BUILD_TOOLS=ON
+  -DLH_BUILD_TESTS=ON -DLH_BUILD_VIEWER=ON -DLH_BUILD_TOOLS=ON -DLH_STATIC_GLFW=ON
 cmake --build "$build" -j"${VCPKG_MAX_CONCURRENCY}"
 "$repo/scripts/package-linux.sh" "$build"

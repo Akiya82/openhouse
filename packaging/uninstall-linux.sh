@@ -5,10 +5,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/.steamvr-dir.sh"
 # The update check goes first, so it's removed even when there's no driver backup.
 check_registration unregister
+overlay_registration unregister
 remove_monado_check
 # Only the files the installer put there: the folder is also the driver's data directory,
 # with your recordings (Record Session) in it.
-rm -f "$check_dir/openhouse-check" "$check_dir/openhouse-check.vrmanifest" "$check_dir/openhouse-monado-watch"
+rm -f "$check_dir/openhouse-check" "$check_dir/openhouse-check.vrmanifest" "$check_dir/openhouse-monado-watch" \
+      "$check_dir/openhouse-overlay" "$check_dir/openhouse-overlay.vrmanifest"
 rmdir "$check_dir" 2>/dev/null || true  # only goes when nothing else is in it
 remove_schema
 remove_defaults

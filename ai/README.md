@@ -51,7 +51,7 @@ Goals and constraints (from the owner):
 | `src/openvr` | the OpenVR driver (devices, inputs, skeleton, host frame, room publisher, stock HMD, pairing, telemetry server) |
 | `src/common` | small shared pieces (loopback sockets) |
 | `src/platform` | OS helpers (paths, precise sleep) |
-| `apps/` | `openhouse-viewer` (live status of the running driver, bug report button), `openhouse-compare` (openhouse vs the stock driver side by side; hosts the stock DLL in-process), `lhtool` (replay/session/track), `lhcapture` (recorder), `lhviz` (developer viewer), `openhouse-check` (update check), `example_app` (standalone CMake example for users of `lh::Session`) |
+| `apps/` | `openhouse-overlay` (management app: SteamVR dashboard overlay or desktop window; live status, settings, bug report), `openhouse-compare` (openhouse vs the stock driver side by side; hosts the stock DLL in-process), `lhtool` (replay/session/track), `lhcapture` (recorder), `lhviz` (developer viewer), `openhouse-check` (update check), `example_app` (standalone CMake example for users of `lh::Session`) |
 | `tests/` | unit, runtime, OpenVR component/mock-host, oracle tests (load the original binary) |
 | `tools/` | `eval_replay.sh/.py` (tracking scorer) |
 | `scripts/` | Release builds (`build-linux.sh`, `build-windows.sh`, `build-firmware.sh`) and the packagers they call (`package-linux.sh`, `package-driver.py`, `package-windows.py`, `package-firmware.py`), the Windows installer script |
@@ -101,7 +101,7 @@ Captures (owner's machine; ask for them if absent):
 
 Logs and diagnostics: every message has a level (DEBUG/INFO/WARN/ERR). Replays print
 them with `lhtool session` (`"level"` field); live, the host log gets INFO+ unless
-`LH_LOG_LEVEL=DEBUG`, and `openhouse-viewer` shows everything. Recording inside the host:
+`LH_LOG_LEVEL=DEBUG`, and `openhouse-overlay`'s Debug page shows everything. Recording inside the host:
 `LH_CAPTURE=DIR` or `capture` under `driver_lighthouse` in `steamvr.vrsettings`; the
 recording has `driver.jsonl` (what the driver did and logged) next to `input.lhraw`.
 

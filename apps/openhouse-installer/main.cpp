@@ -6,8 +6,9 @@
 //   * offers to close Steam / SteamVR (they hold the driver DLL open);
 //   * install: keeps SteamVR's driver as driver_lighthouse.dll.stock whenever the one in
 //     place isn't openhouse's (a SteamVR update's newer one replaces an older backup),
-//     copies ours over it, the settings page schema, and the update check (an app SteamVR
-//     starts with every session: Steam's appconfig.json + vrappconfig);
+//     copies ours over it, and the update check and openhouse-overlay (apps SteamVR starts
+//     with every session: Steam's appconfig.json + vrappconfig). The SteamVR settings page
+//     older versions added is removed: settings are openhouse-overlay's now;
 //   * uninstall: puts the backup back, unless a SteamVR update already put its own
 //     newer driver there (then the outdated backup goes instead), and removes the update
 //     check's files from %LOCALAPPDATA%\openhouse, not the folder: recordings live there.
@@ -40,9 +41,10 @@ namespace {
 
 constexpr const char* kMarker = "liblh session started";  // only openhouse's driver has it
 constexpr const char* kCheckKey = "openhouse.check";
+constexpr const char* kOverlayKey = "openhouse.overlay";
 const wchar_t* kHosts[] = {L"steam.exe",       L"steamwebhelper.exe", L"vrserver.exe",  L"vrmonitor.exe",
                            L"vrcompositor.exe", L"vrdashboard.exe",    L"vrwebhelper.exe", L"vrstartup.exe",
-                           L"vrservice.exe",   L"monado-service.exe"};
+                           L"vrservice.exe",   L"monado-service.exe", L"openhouse-overlay.exe"};
 
 struct Failure : std::runtime_error {
   using std::runtime_error::runtime_error;
@@ -219,10 +221,12 @@ void CloseHosts() {
 // ---- the update check's registration ----
 
 struct Paths {
-  fs::path here, steamvr, directory, target, backup, schema, defaults, checkDir, checkManifest;
+  fs::path here, steamvr, directory, target, backup, schema, defaults, checkDir, checkManifest, overlayManifest;
 };
 
-void SetCheckRegistration(const Paths& p, bool registerIt) {
+// An app SteamVR starts with every session: its manifest in Steam's appconfig.json, and
+// auto-launch in vrappconfig/<key>.vrappconfig.
+void SetAppRegistration(const Paths& p, const fs::path& manifestPath, const char* key, bool registerIt) {
   const fs::path config = SteamConfig(p.steamvr);
   const fs::path appconfig = config / "appconfig.json";
   ordered_json data = ordered_json::object();
@@ -248,32 +252,27 @@ void SetCheckRegistration(const Paths& p, bool registerIt) {
     }
   }
   ordered_json kept = ordered_json::array();
-  const std::string manifest = Show(p.checkManifest);
+  const std::string manifest = Show(manifestPath);
   if (data.contains("manifest_paths") && data["manifest_paths"].is_array())
     for (const auto& m : data["manifest_paths"])
-      if (m.is_string() && fs::path(FromUtf8(m.get<std::string>())).lexically_normal() != p.checkManifest.lexically_normal())
+      if (m.is_string() && fs::path(FromUtf8(m.get<std::string>())).lexically_normal() != manifestPath.lexically_normal())
         kept.push_back(m);
   if (registerIt) kept.push_back(manifest);
   data["manifest_paths"] = kept;
   WriteText(appconfig, data.dump(2));
-  const fs::path app = config / "vrappconfig" / (std::string(kCheckKey) + ".vrappconfig");
+  const fs::path app = config / "vrappconfig" / (std::string(key) + ".vrappconfig");
   if (registerIt) WriteText(app, R"({ "autolaunch" : true, "last_launch_time" : "0" })");
   else RemoveFile(app);
 }
 
-// ---- the settings page schema ----
+void SetCheckRegistration(const Paths& p, bool registerIt) { SetAppRegistration(p, p.checkManifest, kCheckKey, registerIt); }
+void SetOverlayRegistration(const Paths& p, bool registerIt) { SetAppRegistration(p, p.overlayManifest, kOverlayKey, registerIt); }
+
+// ---- the settings page older versions added (settings are openhouse-overlay's now) ----
 
 bool HasOurSection(const fs::path& schema) {
   std::error_code ec;
   return fs::exists(schema, ec) && ReadFile(schema).find("driver_openhouse") != std::string::npos;
-}
-
-void InstallSchema(const Paths& p) {
-  const fs::path source = p.here / "settingsschema.vrsettings";
-  if (!fs::exists(source)) return;
-  fs::create_directories(p.schema.parent_path());
-  if (fs::exists(p.schema) && !HasOurSection(p.schema)) CopyOver(p.schema, fs::path(p.schema) += ".stock");
-  CopyOver(source, p.schema);
 }
 
 void RemoveSchema(const Paths& p) {
@@ -286,27 +285,7 @@ void RemoveSchema(const Paths& p) {
   }
 }
 
-// ---- the settings page's defaults ----
-// SteamVR's "reset to default" takes values from the driver's default.vrsettings, SteamVR's
-// own file: without our section every toggle reset to off and every number to 0. One line
-// is added after its opening brace and removed again on uninstall; the rest stays SteamVR's.
-constexpr const char* kDefaultsLine =
-    R"("driver_openhouse": { "predictWithAcceleration": true, "positionSmoothingMs": 60, "rotationSmoothingMs": 60, "hideLostDevices": false, "useSteamVRRooms": true, "record": false, "resetRoom": false, "mixedLight": false, "mixedLightControllers": true, "mixedLightTrackers": true, "mixedLightScout": true, "mixedLightPreferLh2": false },)";
-
-void RemoveDefaults(const Paths& p);
-
-void InstallDefaults(const Paths& p) {
-  std::error_code ec;
-  if (!fs::exists(p.defaults, ec)) return;
-  if (ReadFile(p.defaults).find(kDefaultsLine) != std::string::npos) return;
-  RemoveDefaults(p);  // an older version's line, with fewer settings
-  std::string text = ReadFile(p.defaults);
-  const size_t brace = text.find('{');
-  if (brace == std::string::npos) return;
-  text.insert(brace + 1, std::string("\n") + kDefaultsLine);
-  WriteText(p.defaults, text);
-}
-
+// Its line in SteamVR's default.vrsettings: any version's (they all start the same).
 void RemoveDefaults(const Paths& p) {
   std::error_code ec;
   if (!fs::exists(p.defaults, ec)) return;
@@ -336,8 +315,8 @@ void Install(const Paths& p) {
   }
   CopyOver(ours, p.target);
   if (ReadFile(p.target) != ReadFile(ours)) throw Failure("The installed driver doesn't match the package's (" + Show(p.target) + ")");
-  InstallSchema(p);
-  InstallDefaults(p);
+  RemoveSchema(p);  // an older version's SteamVR settings page
+  RemoveDefaults(p);
   const fs::path checkExe = p.here / "apps" / "openhouse-check.exe";
   if (fs::exists(checkExe)) {
     fs::create_directories(p.checkDir);
@@ -357,6 +336,26 @@ void Install(const Paths& p) {
     WriteText(p.checkManifest, manifest.dump(2));
     SetCheckRegistration(p, true);
   }
+  // openhouse-overlay: the openhouse page in SteamVR's dashboard, started with each session.
+  const fs::path overlayExe = p.here / "apps" / "openhouse-overlay.exe";
+  if (fs::exists(overlayExe)) {
+    fs::create_directories(p.checkDir);
+    const fs::path installed = p.checkDir / "openhouse-overlay.exe";
+    CopyOver(overlayExe, installed);
+    ordered_json app;
+    app["app_key"] = kOverlayKey;
+    app["launch_type"] = "binary";
+    app["binary_path_windows"] = Show(installed);
+    app["arguments"] = "--overlay";
+    app["is_dashboard_overlay"] = true;
+    app["strings"]["en_us"] = {{"name", "openhouse"},
+                               {"description", "openhouse's devices, base stations, room and settings in the SteamVR dashboard"}};
+    ordered_json manifest;
+    manifest["source"] = "openhouse";
+    manifest["applications"] = ordered_json::array({app});
+    WriteText(p.overlayManifest, manifest.dump(2));
+    SetOverlayRegistration(p, true);
+  }
   std::cout << "Installed. Start SteamVR.\n";
 }
 
@@ -365,9 +364,11 @@ void Uninstall(const Paths& p) {
   RemoveSchema(p);
   RemoveDefaults(p);
   SetCheckRegistration(p, false);
+  SetOverlayRegistration(p, false);
   // Only the files we put there: the folder is also the driver's data directory, with the
   // user's recordings (Record Session) in it.
-  for (const char* name : {"openhouse-check.exe", "openhouse-check.vrmanifest"}) RemoveFile(p.checkDir / name);
+  for (const char* name : {"openhouse-check.exe", "openhouse-check.vrmanifest", "openhouse-overlay.exe", "openhouse-overlay.vrmanifest"})
+    RemoveFile(p.checkDir / name);
   std::error_code ec;
   fs::remove(p.checkDir, ec);  // only goes when nothing else is in it
   if (ReadFile(p.target).find(kMarker) == std::string::npos) {
@@ -419,6 +420,7 @@ int Run(int argc, wchar_t** argv) {
   p.defaults = p.schema.parent_path() / "default.vrsettings";
   p.checkDir = EnvPath(L"LOCALAPPDATA") / "openhouse";
   p.checkManifest = p.checkDir / "openhouse-check.vrmanifest";
+  p.overlayManifest = p.checkDir / "openhouse-overlay.vrmanifest";
   if (!fs::exists(p.target)) throw Failure("Driver not found at " + Show(p.target) + ". Run this with --steamvr PATH.");
   if (action == "status") {
     std::cout << "Driver: " << Show(p.target) << "\n"

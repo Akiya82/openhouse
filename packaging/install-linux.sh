@@ -27,8 +27,8 @@ for lib in "$here/lh-libs/"*; do
 done
 rm -f "$target.new"
 cp "$here/driver_lighthouse.so" "$target.new" && mv -f "$target.new" "$target"
-install_schema  # the openhouse page in SteamVR's settings
-install_defaults
+remove_schema  # an older version's page in SteamVR's settings
+remove_defaults
 # The update check: warns in SteamVR's next session if an update replaced this driver.
 mkdir -p "$check_dir"
 cp "$here/tools/openhouse-check" "$check_dir/openhouse-check"
@@ -46,6 +46,24 @@ cat > "$check_dir/openhouse-check.vrmanifest" <<MANIFEST
 }
 MANIFEST
 check_registration register
+# openhouse-overlay: the openhouse page in SteamVR's dashboard, started with each session.
+if [[ -f "$here/tools/openhouse-overlay" ]]; then
+  cp "$here/tools/openhouse-overlay" "$check_dir/openhouse-overlay.new" && mv -f "$check_dir/openhouse-overlay.new" "$check_dir/openhouse-overlay"
+  cat > "$check_dir/openhouse-overlay.vrmanifest" <<MANIFEST
+{
+   "source": "openhouse",
+   "applications": [{
+      "app_key": "$overlay_key",
+      "launch_type": "binary",
+      "binary_path_linux": "$check_dir/openhouse-overlay",
+      "arguments": "--overlay",
+      "is_dashboard_overlay": true,
+      "strings": { "en_us": { "name": "openhouse", "description": "openhouse's devices, base stations, room and settings in the SteamVR dashboard" } }
+   }]
+}
+MANIFEST
+  overlay_registration register
+fi
 if [[ -f "$monado_unit" ]]; then
   install_monado_check   # installed before: keep it, with this install's paths
 elif [[ -t 0 ]] && command -v systemctl >/dev/null; then

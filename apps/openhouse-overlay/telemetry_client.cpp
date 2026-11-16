@@ -44,6 +44,19 @@ void TelemetryClient::Poll(double now) {
   if (buffer_.size() > (16u << 20)) Disconnect();
 }
 
+uint64_t TelemetryClient::SendCommand(const std::string& text) {
+  if (!Connected()) return 0;
+  json j = json::parse(text, nullptr, false);
+  if (!j.is_object()) return 0;
+  const uint64_t id = nextCommand_++;
+  j["type"] = "command";
+  j["id"] = id;
+  const std::string line = j.dump() + "\n";
+  // Loopback and short: it goes at once (a full send buffer drops it, as a lost reply would).
+  if (net::SendSome(socket_, line.data(), line.size()) != long(line.size())) return 0;
+  return id;
+}
+
 void TelemetryClient::Handle(const std::string& line) {
   const json j = json::parse(line, nullptr, false);
   if (j.is_discarded() || !j.is_object()) return;
@@ -70,6 +83,9 @@ void TelemetryClient::Handle(const std::string& line) {
       s.room.settled = r->value("settled", false);
       s.room.epoch = r->value("epoch", 0ull);
       s.room.settleSigma = r->value("settleSigma", 0.005);
+      s.room.resets = r->value("resets", 0ull);
+      s.room.learned = r->value("learned", 0);
+      s.room.seen = r->value("seen", 0);
     }
     for (const auto& b : j.value("bases", json::array())) {
       Base x;
@@ -80,6 +96,7 @@ void TelemetryClient::Handle(const std::string& line) {
       x.placed = b.value("placed", false);
       x.origin = b.value("origin", false);
       x.locked = b.value("locked", false);
+      x.lh2 = b.value("lh2", false);
       x.observations = b.value("observations", 0);
       x.sigma = b.value("sigma", 0.0);
       x.learned = b.value("learned", x.locked || x.sigma <= 0.005);
@@ -110,8 +127,16 @@ void TelemetryClient::Handle(const std::string& line) {
       s.devices.push_back(std::move(x));
     }
     for (const auto& r : j.value("receivers", json::array())) s.receivers.push_back({r.value("serial", ""), r.value("connected", "")});
+    if (const auto st = j.find("settings"); st != j.end() && st->is_object()) s.settingsJson = st->dump();
     state_ = std::move(s);
     haveState_ = true;
+  } else if (type == "reply") {
+    Reply r;
+    r.id = j.value("id", 0ull);
+    r.ok = j.value("ok", false);
+    r.error = j.value("error", "");
+    replies_.push_back(std::move(r));
+    if (replies_.size() > 256) replies_.erase(replies_.begin());
   }
 }
 

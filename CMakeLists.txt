@@ -62,7 +62,7 @@ if(WIN32)
   target_link_libraries(lh_common PUBLIC ws2_32)
 endif()
 
-# ---- lh_report: the bug report zip (driver and openhouse-viewer) ----------------
+# ---- lh_report: the bug report zip (driver and openhouse-overlay) ----------------
 add_library(lh_report STATIC src/report/bug_report.cpp)
 set_target_properties(lh_report PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(lh_report PRIVATE src)
@@ -256,8 +256,26 @@ endif()
 install(TARGETS lh EXPORT lighthouseTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
 # ---- lhviz: 3D visualizer on top of liblh ---------------------------------------
+option(LH_STATIC_GLFW "Build GLFW from source and link it statically (release packages)" OFF)
+if(LH_BUILD_VIEWER AND LH_STATIC_GLFW)
+  # GLFW loads X11/Wayland/libGL itself at run time: only their headers are needed here,
+  # and users don't need libglfw installed.
+  include(FetchContent)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+  set(BUILD_SHARED_LIBS_SAVED ${BUILD_SHARED_LIBS})
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_Declare(glfw URL https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip
+                       URL_HASH SHA256=b5ec004b2712fd08e8861dc271428f048775200a2df719ccf575143ba749a3e9)
+  FetchContent_MakeAvailable(glfw)
+  set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
+endif()
 if(LH_BUILD_VIEWER)
-  find_package(glfw3 QUIET)
+  if(NOT TARGET glfw)
+    find_package(glfw3 QUIET)
+  endif()
   # Some distributions ship GLFW without its CMake package (only glfw3.pc): find it there.
   if(NOT TARGET glfw)
     find_package(PkgConfig QUIET)
@@ -288,12 +306,23 @@ if(LH_BUILD_VIEWER)
     add_executable(lhviz apps/lhviz/main.cpp)
     target_link_libraries(lhviz PRIVATE lh lh_imgui Eigen3::Eigen)
     install(TARGETS lhviz RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    # openhouse-viewer: the running driver's status and log (telemetry over loopback)
-    add_executable(openhouse-viewer apps/openhouse-viewer/main.cpp apps/openhouse-viewer/telemetry_client.cpp
-                   apps/openhouse-viewer/log_view.cpp apps/openhouse-viewer/views.cpp)
-    target_include_directories(openhouse-viewer PRIVATE src)
-    target_link_libraries(openhouse-viewer PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json)
-    install(TARGETS openhouse-viewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # openhouse-overlay: the management app, a SteamVR dashboard overlay or a window. SteamVR's
+    # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
+    if(OPENVR_INCLUDE_DIR)
+      add_executable(openhouse-overlay WIN32 apps/openhouse-overlay/main.cpp apps/openhouse-overlay/ui.cpp
+                     apps/openhouse-overlay/openvr_runtime.cpp apps/openhouse-overlay/update_check.cpp
+                     apps/openhouse-overlay/telemetry_client.cpp apps/openhouse-overlay/log_view.cpp
+                     apps/openhouse-overlay/views.cpp)
+      target_include_directories(openhouse-overlay PRIVATE src ${OPENVR_INCLUDE_DIR})
+      target_link_libraries(openhouse-overlay PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+      if(WIN32)
+        target_link_libraries(openhouse-overlay PRIVATE winhttp shell32)
+      endif()
+      if(MSVC)
+        target_link_options(openhouse-overlay PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+      endif()
+      install(TARGETS openhouse-overlay RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
     # openhouse-compare: openhouse and SteamVR's own driver tracking side by side
     if(OPENVR_INCLUDE_DIR AND LH_BUILD_USB)
       add_executable(openhouse-compare apps/openhouse-compare/main.cpp apps/openhouse-compare/stock_host.cpp)
@@ -302,7 +331,7 @@ if(LH_BUILD_VIEWER)
       install(TARGETS openhouse-compare RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
   else()
-    message(WARNING "LH_BUILD_VIEWER is on, but ${LH_VIEWER_MISSING} wasn't found: lhviz, openhouse-viewer "
+    message(WARNING "LH_BUILD_VIEWER is on, but ${LH_VIEWER_MISSING} wasn't found: lhviz, openhouse-overlay "
                     "and openhouse-compare are not built. Install it, or configure with -DLH_BUILD_VIEWER=OFF.")
   endif()
 endif()
@@ -410,7 +439,7 @@ foreach(entry
     "lhtool|openhouse replay and diagnostics tool"
     "lhcapture|openhouse device recorder"
     "openhouse-check|openhouse update check"
-    "openhouse-viewer|openhouse viewer"
+    "openhouse-overlay|openhouse overlay"
     "openhouse-compare|openhouse and SteamVR driver comparison"
     "lhviz|openhouse developer viewer"
     "openhouse-installer|openhouse driver installer")

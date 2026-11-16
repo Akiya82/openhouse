@@ -31,7 +31,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libudev-dev libglfw3-dev libgl-dev patchelf
+          sudo apt-get install -y ninja-build pkg-config libudev-dev libglfw3-dev libgl-dev patchelf libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev wayland-protocols
       - name: OpenVR headers
         run: |
           git clone --depth 1 --branch "$OPENVR_TAG" https://github.com/ValveSoftware/openvr.git "$RUNNER_TEMP/openvr"

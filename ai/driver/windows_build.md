@@ -5,7 +5,7 @@
 `scripts/build-windows.sh` builds and packages:
 
 * `build-win64/openvr/lighthouse/bin/win64/driver_lighthouse.dll`;
-* `apps/`: `liblh.dll`, `openhouse-viewer.exe`, `openhouse-compare.exe`, `lhviz.exe`,
+* `apps/`: `liblh.dll`, `openhouse-overlay.exe`, `openhouse-compare.exe`, `lhviz.exe`,
   `lhtool.exe`, `lhcapture.exe`, `openhouse-check.exe`; `openhouse-installer.exe` at the top;
 * `dist/openhouse-windows-x64.zip`: stripped binaries, `LICENSE.txt`, dependency notices
   (`licenses/`), `BUILD.json` (hashes), the settings page schema, and the installer.

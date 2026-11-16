@@ -46,10 +46,15 @@ steam_config() {
   [[ -n "$c" ]] || c="$(cd "$dir/../../../../../../.." && pwd)/config"   # .../Steam/config
   echo "$c"
 }
+# openhouse-overlay: the openhouse page in SteamVR's dashboard, registered the same way.
+overlay_key="openhouse.overlay"
 # register|unregister: edits appconfig.json and the app's vrappconfig.
-check_registration() {
-  command -v python3 >/dev/null || { echo "python3 not found: SteamVR update warning not $1ed." >&2; return 0; }
-  python3 - "$1" "$(steam_config)" "$check_dir/openhouse-check.vrmanifest" "$check_key" <<'PY'
+check_registration() { app_registration "$1" "$check_dir/openhouse-check.vrmanifest" "$check_key"; }
+overlay_registration() { app_registration "$1" "$check_dir/openhouse-overlay.vrmanifest" "$overlay_key"; }
+# register|unregister MANIFEST KEY
+app_registration() {
+  command -v python3 >/dev/null || { echo "python3 not found: $3 not $1ed with SteamVR." >&2; return 0; }
+  python3 - "$1" "$(steam_config)" "$2" "$3" <<'PY'
 import json, os, sys
 mode, config, manifest, key = sys.argv[1:]
 path = os.path.join(config, 'appconfig.json')
@@ -59,7 +64,7 @@ try:
     with open(path) as f: data = json.load(f)
 except FileNotFoundError: data = {}
 except (OSError, ValueError):
-    print(f"cannot read {path}; leaving it as it is (SteamVR update warning not {mode}ed)", file=sys.stderr)
+    print(f"cannot read {path}; leaving it as it is ({key} not {mode}ed)", file=sys.stderr)
     sys.exit(0)
 if not isinstance(data, dict):
     print(f"{path} isn't what Steam writes; leaving it as it is", file=sys.stderr)
@@ -120,27 +125,11 @@ remove_monado_check() {
   systemctl --user daemon-reload 2>/dev/null || true
 }
 
-# The openhouse page in SteamVR's settings: a settings schema in the lighthouse driver's
-# resources (SteamVR has none there today; one it ships later is kept as .stock).
+# The openhouse page older versions added to SteamVR's settings (settings are
+# openhouse-overlay's now): its schema in the lighthouse driver's resources, and its line
+# in SteamVR's default.vrsettings. Both are removed by install and uninstall.
 schema="$(cd "$dir/../.." && pwd)/resources/settings/settingsschema.vrsettings"
-install_schema() {
-  mkdir -p "$(dirname "$schema")"
-  if [[ -f "$schema" ]] && ! grep -q driver_openhouse "$schema"; then cp -p "$schema" "$schema.stock"; fi
-  cp "$here/settingsschema.vrsettings" "$schema"
-}
-# Its defaults, for SteamVR's "reset to default": one line added to SteamVR's own
-# default.vrsettings after its opening brace, removed again on uninstall.
 defaults="$(dirname "$schema")/default.vrsettings"
-defaults_line='"driver_openhouse": { "predictWithAcceleration": true, "positionSmoothingMs": 60, "rotationSmoothingMs": 60, "hideLostDevices": false, "useSteamVRRooms": true, "record": false, "resetRoom": false, "mixedLight": false, "mixedLightControllers": true, "mixedLightTrackers": true, "mixedLightScout": true },'
-install_defaults() {
-  [[ -f "$defaults" ]] || return 0
-  grep -qF "$defaults_line" "$defaults" && return 0
-  remove_defaults  # an older version's line, with fewer settings
-  local tmp="$defaults.openhouse-tmp"
-  # Its own line after the brace's, with the same ending (SteamVR's file has CRLF).
-  awk -v line="$defaults_line" '{ print } !done && /\{/ { cr = sub(/\r$/, "") ? "\r" : ""; print line cr; done = 1 }' "$defaults" > "$tmp" && cat "$tmp" > "$defaults"
-  rm -f "$tmp"
-}
 remove_defaults() {
   [[ -f "$defaults" ]] || return 0
   local tmp="$defaults.openhouse-tmp"

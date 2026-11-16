@@ -36,13 +36,19 @@ struct Device {
 struct Base {
   std::string serial, channel;
   int mode = 0, observations = 0, faults = 0;
-  bool seen = false, placed = false, origin = false, locked = false, learned = false;
+  bool seen = false, placed = false, origin = false, locked = false, learned = false, lh2 = false;
   double sigma = 0;
   std::array<double, 3> p{};
   std::array<double, 4> q{1, 0, 0, 0};
 };
 
-struct Room { std::string id; bool settled = false; unsigned long long epoch = 0; double settleSigma = 0.005; };
+struct Room {
+  std::string id;
+  bool settled = false;
+  unsigned long long epoch = 0, resets = 0;
+  double settleSigma = 0.005;
+  int learned = 0, seen = 0;
+};
 
 struct State {
   double time = 0;
@@ -50,7 +56,11 @@ struct State {
   std::vector<Device> devices;
   std::vector<Base> bases;
   std::vector<std::pair<std::string, std::string>> receivers;  // serial, connected device
+  std::string settingsJson = "{}";  // the driver's settings (lh/telemetry.hpp), as sent
 };
+
+// The answer to a command (SendCommand).
+struct Reply { uint64_t id = 0; bool ok = false; std::string error; };
 
 class TelemetryClient {
  public:
@@ -68,6 +78,10 @@ class TelemetryClient {
   const State& Current() const { return state_; }
   bool HaveState() const { return haveState_; }
   const std::deque<LogLine>& Logs() const { return logs_; }
+  // A command to the driver (lh/telemetry.hpp): `json` an object without "type"/"id". Returns
+  // its id (0 when not connected); its reply turns up in TakeReplies().
+  uint64_t SendCommand(const std::string& json);
+  std::vector<Reply> TakeReplies() { std::vector<Reply> out; out.swap(replies_); return out; }
   void ClearLogs() { logs_.clear(); }
   uint64_t LogsReceived() const { return received_; }
 
@@ -86,6 +100,8 @@ class TelemetryClient {
   State state_;
   std::deque<LogLine> logs_;
   uint64_t received_ = 0;
+  uint64_t nextCommand_ = 1;
+  std::vector<Reply> replies_;
 };
 
 }  // namespace openhouse::viewer

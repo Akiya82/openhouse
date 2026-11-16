@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -67,6 +68,7 @@ constexpr const char* kStockFile = "driver_lighthouse.so.stock";
 #include "platform/platform.hpp"
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <sstream>
 #ifdef _WIN32
@@ -78,7 +80,7 @@ namespace {
 
 using namespace vr;
 
-// "Hide lost devices" (SteamVR's settings page, or settings.json "hideLostDevices"):
+// "Hide lost devices" (settings.json "hideLostDevices", set from openhouse-overlay):
 // set by ApplyTuning, read by Device::Update.
 std::atomic<bool> g_hideLost{false};
 
@@ -1016,10 +1018,11 @@ class Provider : public IServerTrackedDeviceProvider {
     const std::string hostFrameMode = hostFrame ? hostFrame : "";
     steamFrame_ = hostFrameMode == "steamvr";
     steamRooms_ = false;
-    if (steamvrHost && hostFrameMode.empty() && VRSettings()) {
-      EVRSettingsError e = VRSettingsError_None;
-      const bool on = VRSettings()->GetBool("driver_openhouse", "useSteamVRRooms", &e);
-      steamRooms_ = e != VRSettingsError_None || on;  // no value yet: on
+    if (steamvrHost) MigrateSteamVRSettings();  // older versions' SteamVR settings page
+    if (steamvrHost && hostFrameMode.empty()) {
+      const nlohmann::json settings = ReadSettings();
+      const auto on = settings.find("useSteamVRRooms");
+      steamRooms_ = on == settings.end() || !on->is_boolean() || on->get<bool>();  // no value: on
     }
     if (const char* force = std::getenv("LH_STEAMVR_ROOMS"); force && *force && hostFrameMode.empty())
       steamRooms_ = std::string(force) == "1";  // any host (tests)
@@ -1385,7 +1388,7 @@ class Provider : public IServerTrackedDeviceProvider {
           if (r != dongles.end()) d->SetDongle(r->second);
         }
       }
-      if (now - lastTuning_ >= 1.0) {  // the SteamVR settings page: applies while playing
+      if (now - lastTuning_ >= 1.0) {  // settings.json edits apply while playing
         lastTuning_ = now;
         ApplyTuning(false);
       }
@@ -1398,6 +1401,11 @@ class Provider : public IServerTrackedDeviceProvider {
       for (const auto& u : updates) {
         auto found = devices_.find(u.serial);
         if (found != devices_.end()) found->second->Update(u, SteadyNowFor(now));
+      }
+      HandleCommands();
+      if (now - lastSettings_ >= 0.25) {
+        lastSettings_ = now;
+        PublishSettings();
       }
       lh::platform::SleepFor(std::chrono::microseconds(500));
     }
@@ -1632,8 +1640,198 @@ class Provider : public IServerTrackedDeviceProvider {
   double lastSnapshot_ = -1e300;
   double lastTelemetry_ = -1e300;
   std::string recording_;  // the settings page's recording, while on
+  // openhouse-overlay: settings it set on a host with no settings page (by SteamVR key), and
+  // what ApplyTuning last applied (published to it).
+
+  nlohmann::json applied_ = nlohmann::json::object();
+  double lastSettings_ = -1e300;
   std::thread reportThread_;  // saving a bug report
   std::atomic<bool> reportDone_{true};
+  // The last bug report saved (openhouse-overlay shows where): its path, or "" with the error.
+  std::mutex reportMutex_;
+  std::string lastReport_, lastReportError_;
+  uint64_t reportCount_ = 0;
+
+  // ---- openhouse-overlay (telemetry commands, lh/telemetry.hpp) ----
+  // The settings it may change: SteamVR settings keys (the settings page's), with their type.
+  enum class SettingType { Bool, Number };
+  static std::optional<SettingType> OverlaySetting(const std::string& key) {
+    static const std::map<std::string, SettingType> keys = {
+        {"positionSmoothingMs", SettingType::Number}, {"rotationSmoothingMs", SettingType::Number},
+        {"predictWithAcceleration", SettingType::Bool}, {"hideLostDevices", SettingType::Bool},
+        {"mixedLight", SettingType::Bool}, {"mixedLightControllers", SettingType::Bool},
+        {"mixedLightTrackers", SettingType::Bool}, {"mixedLightScout", SettingType::Bool},
+        {"mixedLightPreferLh2", SettingType::Bool}, {"mixedLightRotorReference", SettingType::Bool},
+        {"useSteamVRRooms", SettingType::Bool}};  // takes effect when the runtime restarts
+    const auto it = keys.find(key);
+    return it == keys.end() ? std::nullopt : std::optional<SettingType>(it->second);
+  }
+
+  static bool steamvrHostNow() { return HostName().rfind("vrserver", 0) == 0; }
+
+  // Room calibration from openhouse-overlay (host_frame.hpp), with the devices' poses where
+  // the runtime sees them: "floor" (this device is on the floor, `height` m above it),
+  // "forward" (where it points is forward), "center" (where it is is the middle),
+  // "nudgeFloor" (`metres`), "nudgeYaw" (`degrees`), "reset".
+  bool Calibrate(const nlohmann::json& j, std::string* error) {
+    if (steamvrHostNow() || steamFrame_) { *error = "SteamVR has its own Room Setup"; return false; }
+    if (!hostFrame_.Anchored()) { *error = "the room isn't placed yet"; return false; }
+    const std::string action = j.value("action", "");
+    Eigen::Isometry3d c = hostFrame_.Calibration();
+    auto yawAbout = [](double radians) {
+      Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
+      t.linear() = Eigen::AngleAxisd(radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
+      return t;
+    };
+    if (action == "reset") c.setIdentity();
+    else if (action == "floorControllers") {
+      // The controllers lying on the floor: their middle sits about this high above it.
+      constexpr double kControllerOnFloor = 0.04;  // m
+      double sum = 0;
+      int n = 0;
+      for (const auto& d : snapshot_.devices) {
+        if (d.info.role != lh::DeviceRole::Controller || !d.info.connected || !d.pose.valid) continue;
+        const auto& p = d.pose.worldFromHead.position;
+        sum += (c * hostFrame_.Pinned() * Eigen::Vector3d(p[0], p[1], p[2])).y();
+        ++n;
+      }
+      if (!n) { *error = "no controller is tracking"; return false; }
+      c.translation().y() -= sum / n - kControllerOnFloor;
+    }
+    else if (action == "nudgeFloor") c.translation().y() -= j.value("metres", 0.0);
+    else if (action == "nudgeYaw") c = yawAbout(j.value("degrees", 0.0) * 0.017453292519943295) * c;
+    else {
+      const std::string serial = j.value("serial", "");
+      const lh::DeviceState* device = nullptr;
+      for (const auto& d : snapshot_.devices) if (d.info.serial == serial) device = &d;
+      if (!device || !device->pose.valid) { *error = serial + " isn't tracking"; return false; }
+      // The device where the runtime sees it now.
+      const auto& p = device->pose.worldFromHead;
+      Eigen::Isometry3d worldFromDevice = Eigen::Isometry3d::Identity();
+      worldFromDevice.linear() = Eigen::Quaterniond(p.orientation[0], p.orientation[1], p.orientation[2], p.orientation[3]).normalized().toRotationMatrix();
+      worldFromDevice.translation() = Eigen::Vector3d(p.position.data());
+      const Eigen::Isometry3d raw = c * hostFrame_.Pinned() * worldFromDevice;
+      if (action == "floor") {
+        c.translation().y() -= raw.translation().y() - j.value("height", 0.0);
+      } else if (action == "center") {
+        c.translation().x() -= raw.translation().x();
+        c.translation().z() -= raw.translation().z();
+      } else if (action == "forward") {
+        // Where it points (-z), on the floor, becomes forward (-z): a turn about the middle.
+        const Eigen::Vector3d f = raw.rotation() * Eigen::Vector3d(0, 0, -1);
+        if (std::hypot(f.x(), f.z()) < 0.3) { *error = "point it level, not up or down"; return false; }
+        c = yawAbout(std::atan2(f.x(), -f.z())) * c;
+      } else {
+        *error = "unknown calibration " + action;
+        return false;
+      }
+    }
+    if (!hostFrame_.SetCalibration(c)) { *error = "the room isn't placed yet"; return false; }
+    Log("room calibration: " + action + (j.contains("serial") ? " from " + j.value("serial", "") : ""));
+    lastSnapshot_ = -1e300;  // the devices take the new frame on the next pass
+    return true;
+  }
+
+  void PublishSettings() {
+    nlohmann::json j = applied_;
+    j["host"] = HostName();
+    j["steamvr"] = HostName().rfind("vrserver", 0) == 0;
+    j["recording"] = !recording_.empty();
+    j["recordingPath"] = recording_;
+    j["reportBusy"] = !reportDone_.load();
+    {
+      std::lock_guard lock(reportMutex_);
+      j["report"] = {{"count", reportCount_}, {"path", lastReport_}, {"error", lastReportError_}};
+    }
+    j["steamRooms"] = steamRooms_;
+    {
+      // Room calibration: only in our own frame, without SteamVR's Room Setup.
+      const Eigen::Isometry3d c = hostFrame_.Calibration();
+      const Eigen::Matrix3d r = c.rotation();
+      j["calibration"] = {{"available", !steamvrHostNow() && hostFrame_.Anchored() && !steamFrame_},
+                          {"yaw", std::atan2(r(0, 2), r(0, 0)) * 57.29577951308232},
+                          {"floor", -c.translation().y()}, {"x", c.translation().x()}, {"z", c.translation().z()}};
+    }
+    g_telemetry.SetSettings(j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+  }
+
+  // Main thread: what clients asked for since the last pass. Each gets a reply.
+  void HandleCommands() {
+    for (const auto& c : g_telemetry.TakeCommands()) {
+      const nlohmann::json j = nlohmann::json::parse(c.json, nullptr, false);
+      if (!j.is_object() || j.value("type", "") != "command") continue;
+      nlohmann::json reply = {{"type", "reply"}, {"ok", false}};
+      if (j.contains("id")) reply["id"] = j.at("id");
+      try {
+        std::string error;
+        reply["ok"] = RunCommand(j, &error);
+        if (!error.empty()) reply["error"] = error;
+      } catch (const std::exception& e) {
+        reply["error"] = e.what();
+      }
+      g_telemetry.Reply(c.client, reply.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+    }
+  }
+
+  bool RunCommand(const nlohmann::json& j, std::string* error) {
+    const std::string cmd = j.value("cmd", "");
+    auto text = [&](const char* key) {
+      const auto it = j.find(key);
+      return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    if (!session_) { *error = "no session"; return false; }
+    Log(lh::LogLevel::Debug, "overlay: " + cmd + (text("serial").empty() ? "" : " " + text("serial")));
+    if (cmd == "set") {
+      const std::string key = text("key");
+      const auto type = OverlaySetting(key);
+      const auto value = j.find("value");
+      if (!type || value == j.end()) { *error = "unknown setting " + key; return false; }
+      if (*type == SettingType::Bool && !value->is_boolean()) { *error = key + " takes true or false"; return false; }
+      if (*type == SettingType::Number && !value->is_number()) { *error = key + " takes a number"; return false; }
+      if (!UpdateSettings([&](nlohmann::json& s) { SetSetting(s, key, *value); })) {
+        *error = "couldn't save " + SettingsPath();
+        return false;
+      }
+      ApplyTuning(false);
+      Log("overlay set " + key + " to " + value->dump());
+      return true;
+    }
+    if (cmd == "record") {
+      const bool on = j.value("on", false);
+      recordWanted_ = on;
+      ApplyTuning(false);
+      if (on != recording_.empty()) return true;
+      *error = on ? "recording needs the USB devices (not available here)" : "couldn't stop";
+      return false;
+    }
+    if (cmd == "calibrate") return Calibrate(j, error);
+    if (cmd == "resetRoom") {
+      Log("room reset from openhouse-overlay");
+      session_->ResetRoom();
+      return true;
+    }
+    if (cmd == "saveReport") {
+      if (!reportDone_) { *error = "a bug report is still being saved"; return false; }
+      SaveReport(recording_);
+      return true;
+    }
+    const std::string serial = text("serial");
+    if (cmd == "identify") {
+      // A short buzz on a controller or tracker, to tell which one it is.
+      return session_->Haptic(serial, 160, 1.0, 0.4) || (*error = "no haptics for " + serial, false);
+    }
+    if (cmd == "powerOff") return session_->PowerOff(serial) || (*error = serial + " can't be powered off", false);
+    if (cmd == "enable") {
+      session_->SetDeviceEnabled(serial, j.value("enabled", true));
+      return true;
+    }
+    if (cmd == "pair") {
+      const double seconds = std::clamp(j.value("seconds", 30.0), 0.0, 300.0);
+      return session_->SetPairing(text("receiver"), seconds) || (*error = "no receiver " + text("receiver"), false);
+    }
+    *error = "unknown command " + cmd;
+    return false;
+  }
 
   // The bug report zip (lh/bug_report.hpp) with this recording, off the host thread.
   void SaveReport(const std::string& recording) {
@@ -1655,6 +1853,10 @@ class Provider : public IServerTrackedDeviceProvider {
         std::string error;
         const std::string path = lh::SaveBugReport(options, &error);
         Log(path.empty() ? "bug report failed: " + error : "bug report saved: " + path);
+        std::lock_guard lock(reportMutex_);
+        lastReport_ = path;
+        lastReportError_ = path.empty() ? error : "";
+        ++reportCount_;
       } catch (const std::exception& e) {
         Log(std::string("bug report failed: ") + e.what() + "; the recording stays in " + options.recording);
       } catch (...) {
@@ -1687,81 +1889,156 @@ class Provider : public IServerTrackedDeviceProvider {
   }
   double lastTuning_ = -1e300;
 
-  // SteamVR settings, section driver_openhouse (the page from settingsschema.vrsettings,
-  // which the installer puts in the lighthouse driver's resources). Missing values are
-  // written with their defaults first, so the page shows them.
-  static constexpr const char* kSection = "driver_openhouse";
-  // On the driver thread: a throw from here (a filesystem call when recording starts or
-  // stops, #34) must not end it, or vrserver with it.
-  void ApplyTuning(bool writeDefaults) {
-    try {
-      ApplyTuningOnce(writeDefaults);
-    } catch (const std::exception& e) {
-      Log(std::string("applying the SteamVR settings failed: ") + e.what());
-    } catch (...) {
-      Log("applying the SteamVR settings failed");
-    }
+  // openhouse's settings: settings.json in its config folder, the same file the session
+  // reads (mixedLight, hideLostDevices, disabledDevices...). openhouse-overlay changes them
+  // with "set"; a hand edit is picked up within a second (ApplyTuning runs every second).
+  static std::string SettingsPath() { return lh::platform::ConfigDirectory() + "/settings.json"; }
+  static nlohmann::json ReadSettings() {
+    std::ifstream in(std::filesystem::u8path(SettingsPath()));
+    if (!in) return nlohmann::json::object();
+    nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
+    return j.is_object() ? j : nlohmann::json::object();
   }
-  void ApplyTuningOnce(bool writeDefaults) {
-    if (!session_ || !VRSettings()) return;
-    auto number = [&](const char* key, float fallback) {
-      EVRSettingsError e = VRSettingsError_None;
-      const float v = VRSettings()->GetFloat(kSection, key, &e);
-      if (e == VRSettingsError_None) return v;
-      if (writeDefaults) VRSettings()->SetFloat(kSection, key, fallback);
-      return fallback;
-    };
-    auto flag = [&](const char* key, bool fallback) {
-      EVRSettingsError e = VRSettingsError_None;
-      const bool v = VRSettings()->GetBool(kSection, key, &e);
-      if (e == VRSettingsError_None) return v;
-      if (writeDefaults) VRSettings()->SetBool(kSection, key, fallback);
-      return fallback;
-    };
-    const double position = number("positionSmoothingMs", 60) / 1000.0;
-    const double rotation = number("rotationSmoothingMs", 60) / 1000.0;
-    const bool acceleration = flag("predictWithAcceleration", true);
-    session_->SetOutputTuning(position, rotation, acceleration);
-    // 1.0 and 2.0 base stations together (ai/driver/mixed_stations.md). SteamVR: the settings
-    // page, its missing values seeded from settings.json "mixedLight". Other hosts keep
-    // settings.json's: Monado's steamvr_lh answers every GetBool with false and no error.
-    if (HostName().rfind("vrserver", 0) == 0) {
-      // The sub-toggles default to on, but a key SteamVR has no default for can read false with
-      // no error (they showed off on Windows): the first time, they're written explicitly, and
-      // a hidden marker keeps whatever is chosen after that.
-      if (writeDefaults) {
-        EVRSettingsError e = VRSettingsError_None;
-        const lh::MixedLightOptions defaults = session_->MixedLight();
-        if (!VRSettings()->GetBool(kSection, "mixedLightDefaultsWritten", &e)) {
-          VRSettings()->SetBool(kSection, "mixedLightControllers", defaults.controllers);
-          VRSettings()->SetBool(kSection, "mixedLightTrackers", defaults.trackers);
-          VRSettings()->SetBool(kSection, "mixedLightScout", defaults.scout);
-          VRSettings()->SetBool(kSection, "mixedLightDefaultsWritten", true);
-        }
-        // The rotor reference came on by default after the marker above was written, so it has one of its own.
-        if (!VRSettings()->GetBool(kSection, "mixedLightRotorReferenceDefaultWritten", &e)) {
-          VRSettings()->SetBool(kSection, "mixedLightRotorReference", defaults.rotorReference);
-          VRSettings()->SetBool(kSection, "mixedLightRotorReferenceDefaultWritten", true);
+  // Read, change, write back (whatever else is in it stays). False: not written.
+  bool UpdateSettings(const std::function<void(nlohmann::json&)>& change) {
+    try {
+      const std::string path = SettingsPath();
+      nlohmann::json j = nlohmann::json::object();
+      {
+        std::ifstream in(std::filesystem::u8path(path));
+        if (in) {
+          j = nlohmann::json::parse(in, nullptr, false);
+          // Never overwrite a file we can't read: its controllers and roles would be lost.
+          if (!j.is_object()) { Log("settings " + path + " isn't valid JSON: not changed"); return false; }
         }
       }
-      const lh::MixedLightOptions file = session_->MixedLight();
-      lh::MixedLightOptions mixed;
-      mixed.enabled = flag("mixedLight", file.enabled);
-      mixed.controllers = flag("mixedLightControllers", file.controllers);
-      mixed.trackers = flag("mixedLightTrackers", file.trackers);
-      mixed.scout = flag("mixedLightScout", file.scout);
-      mixed.preferLh2 = flag("mixedLightPreferLh2", file.preferLh2);    // the same
-      mixed.rotorReference = flag("mixedLightRotorReference", file.rotorReference);  // on by default, written above
-      session_->SetMixedLight(mixed);
-      g_hideLost = flag("hideLostDevices", session_->HideLostDevices());
-    } else {
-      g_hideLost = session_->HideLostDevices();
+      change(j);
+      std::filesystem::create_directories(std::filesystem::u8path(path).parent_path());
+      const std::string temp = path + ".tmp";
+      {
+        std::ofstream out(std::filesystem::u8path(temp));
+        out << j.dump(2) << "\n";
+        out.close();
+        if (!out) { Log("cannot write " + temp); return false; }
+      }
+      lh::platform::ReplaceFile(temp, path);
+      return true;
+    } catch (const std::exception& e) {
+      Log(std::string("saving settings failed: ") + e.what());
+      return false;
     }
-    // Record session: raw device data to <data>/recordings while on (replay with
-    // `lhtool session`); turning it off saves the bug report zip with it.
-    const bool record = flag("record", false);
-    if (record != !recording_.empty()) {
-      if (record) {
+  }
+  // The overlay's names for the mixedLight object's fields.
+  static const char* MixedField(const std::string& key) {
+    static const std::map<std::string, const char*> fields = {
+        {"mixedLight", "enabled"}, {"mixedLightControllers", "controllers"}, {"mixedLightTrackers", "trackers"},
+        {"mixedLightScout", "scout"}, {"mixedLightPreferLh2", "preferLh2"}, {"mixedLightRotorReference", "rotorReference"}};
+    const auto it = fields.find(key);
+    return it == fields.end() ? nullptr : it->second;
+  }
+  static void SetSetting(nlohmann::json& j, const std::string& key, const nlohmann::json& value) {
+    if (const char* field = MixedField(key)) {
+      if (!j.contains("mixedLight") || !j["mixedLight"].is_object())
+        j["mixedLight"] = {{"enabled", j.contains("mixedLight") && j["mixedLight"].is_boolean() && j["mixedLight"].get<bool>()}};
+      j["mixedLight"][field] = value;
+    } else {
+      j[key] = value;
+    }
+  }
+
+  // Older versions kept these on a page in SteamVR's settings (steamvr.vrsettings, section
+  // driver_openhouse). Each value set there that settings.json doesn't have yet moves over,
+  // once. Read from the file itself: SteamVR's GetBool answers false with no error for a key
+  // it has no default for, which would turn options off.
+  void MigrateSteamVRSettings() {
+    const std::string path = lh::platform::SteamConfigDirectory() + "/steamvr.vrsettings";
+    std::ifstream in(std::filesystem::u8path(path));
+    if (!in) return;
+    const nlohmann::json vr = nlohmann::json::parse(in, nullptr, false);
+    if (!vr.is_object() || !vr.contains("driver_openhouse") || !vr["driver_openhouse"].is_object()) return;
+    const nlohmann::json& old = vr["driver_openhouse"];
+    const nlohmann::json current = ReadSettings();
+    auto has = [&](const std::string& key) {
+      if (const char* field = MixedField(key))
+        return current.contains("mixedLight") && (current["mixedLight"].is_object() ? current["mixedLight"].contains(field) : std::string(field) == "enabled");
+      return current.contains(key);
+    };
+    std::vector<std::string> moved;
+    nlohmann::json values = nlohmann::json::object();
+    for (const char* key : {"positionSmoothingMs", "rotationSmoothingMs", "predictWithAcceleration", "hideLostDevices",
+                            "useSteamVRRooms", "mixedLight", "mixedLightControllers", "mixedLightTrackers",
+                            "mixedLightScout", "mixedLightPreferLh2", "mixedLightRotorReference"}) {
+      if (!old.contains(key) || has(key)) continue;
+      const auto& v = old[key];
+      if (!v.is_boolean() && !v.is_number()) continue;
+      values[key] = v;
+      moved.push_back(key);
+    }
+    if (moved.empty()) return;
+    if (UpdateSettings([&](nlohmann::json& j) { for (const auto& [k, v] : values.items()) SetSetting(j, k, v); }))
+      Log("moved " + std::to_string(moved.size()) + " settings from SteamVR's settings to " + SettingsPath());
+  }
+
+  // On the driver thread: a throw from here (a filesystem call when recording starts or
+  // stops, #34) must not end it, or vrserver with it.
+  void ApplyTuning(bool first) {
+    try {
+      ApplyTuningOnce(first);
+    } catch (const std::exception& e) {
+      Log(std::string("applying the settings failed: ") + e.what());
+    } catch (...) {
+      Log("applying the settings failed");
+    }
+  }
+  void ApplyTuningOnce(bool first) {
+    (void)first;
+    if (!session_) return;
+    const nlohmann::json f = ReadSettings();
+    auto number = [&](const char* key, double fallback) {
+      const auto it = f.find(key);
+      return it != f.end() && it->is_number() ? it->get<double>() : fallback;
+    };
+    auto flag = [&](const nlohmann::json& j, const char* key, bool fallback) {
+      const auto it = j.find(key);
+      return it != j.end() && it->is_boolean() ? it->get<bool>() : fallback;
+    };
+    const double position = std::clamp(number("positionSmoothingMs", 60), 0.0, 1000.0) / 1000.0;
+    const double rotation = std::clamp(number("rotationSmoothingMs", 60), 0.0, 1000.0) / 1000.0;
+    const bool acceleration = flag(f, "predictWithAcceleration", true);
+    session_->SetOutputTuning(position, rotation, acceleration);
+    applied_ = {{"positionSmoothingMs", position * 1000}, {"rotationSmoothingMs", rotation * 1000},
+                {"predictWithAcceleration", acceleration}, {"useSteamVRRooms", flag(f, "useSteamVRRooms", true)}};
+    // 1.0 and 2.0 base stations together (ai/driver/mixed_stations.md): settings.json
+    // "mixedLight", true/false or an object (session.cpp LoadSettings has the fields).
+    lh::MixedLightOptions mixed = session_->MixedLight();
+    if (const auto m = f.find("mixedLight"); m != f.end()) {
+      if (m->is_boolean()) {
+        mixed.enabled = m->get<bool>();
+      } else if (m->is_object()) {
+        mixed.enabled = flag(*m, "enabled", false);
+        mixed.controllers = flag(*m, "controllers", true);
+        mixed.trackers = flag(*m, "trackers", true);
+        mixed.scout = flag(*m, "scout", true);
+        mixed.preferLh2 = flag(*m, "preferLh2", false);
+        mixed.rotorReference = flag(*m, "rotorReference", true);
+      }
+    }
+    const lh::MixedLightOptions now = session_->MixedLight();
+    if (mixed.enabled != now.enabled || mixed.controllers != now.controllers || mixed.trackers != now.trackers ||
+        mixed.scout != now.scout || mixed.preferLh2 != now.preferLh2 || mixed.rotorReference != now.rotorReference)
+      session_->SetMixedLight(mixed);
+    g_hideLost = flag(f, "hideLostDevices", false);
+    applied_["hideLostDevices"] = bool(g_hideLost);
+    applied_["mixedLight"] = mixed.enabled;
+    applied_["mixedLightControllers"] = mixed.controllers;
+    applied_["mixedLightTrackers"] = mixed.trackers;
+    applied_["mixedLightScout"] = mixed.scout;
+    applied_["mixedLightPreferLh2"] = mixed.preferLh2;
+    applied_["mixedLightRotorReference"] = mixed.rotorReference;
+    // Record session (openhouse-overlay): raw device data to <data>/recordings while on
+    // (replay with `lhtool session`); turning it off saves the bug report zip with it.
+    if (recordWanted_ != !recording_.empty()) {
+      if (recordWanted_) {
         const std::time_t t = std::time(nullptr);
         char name[64];
         std::strftime(name, sizeof name, "recording-%Y%m%d-%H%M%S.lhraw", std::localtime(&t));
@@ -1773,7 +2050,7 @@ class Provider : public IServerTrackedDeviceProvider {
           Log("recording to " + recording_);
         } else {
           Log("cannot record to " + dir);
-          VRSettings()->SetBool(kSection, "record", false);
+          recordWanted_ = false;
         }
       } else {
         session_->SetCapture("");
@@ -1782,13 +2059,8 @@ class Provider : public IServerTrackedDeviceProvider {
         recording_.clear();
       }
     }
-    // A one-shot switch: the settings page turns it on, we reset the room and turn it off.
-    if (flag("resetRoom", false)) {
-      VRSettings()->SetBool(kSection, "resetRoom", false);
-      Log("room reset from the SteamVR settings");
-      session_->ResetRoom();
-    }
   }
+  bool recordWanted_ = false;
 };
 
 Provider g_provider;

@@ -149,8 +149,9 @@ jobs:
   # Code signing through SignPath (signpath.io), for pushes to master, version tags and
   # manual runs only: pull requests (forks have no secrets) and other branches stay
   # unsigned. Needs the repository secret SIGNPATH_API_TOKEN and the repository variables
-  # SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG and SIGNPATH_SIGNING_POLICY_SLUG
-  # (test-signing until the production certificate is in; then the release policy).
+  # SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG (the
+  # test-signing policy until the production certificate is in, then the release one) and
+  # SIGNPATH_ARTIFACT_CONFIGURATION_SLUG.
   windows-signed:
     needs: windows
     if: >-
@@ -167,7 +168,10 @@ jobs:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          # Which certificate signs (the signing policy) and which files (the artifact
+          # configuration, .signpath/artifact-configuration.xml): two different SignPath slugs.
           signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ needs.windows.outputs.unsigned-artifact-id }}
           wait-for-completion: true
           output-artifact-directory: signed/openhouse-windows-x64

@@ -96,7 +96,12 @@ void MultiDisambiguator::Detect(const std::vector<Flash>& flashes) {
   // A lone station seen sweeping after < 35 % of its flashes: a stock base sweeps after
   // every flash (alone) or every other (paired); multi master at N >= 3 after 1/N.
   const auto& m = stations_[0];
-  if (m.flashes >= 400 && stockVotes_ == 0 && multiVotes_ == 0 && m.sweeps < 0.35 * m.flashes) ++lowShareVotes_;
+  // Not one whose OOTX says stock: a device facing away from a lone stock base still sees
+  // its flashes (the sync LEDs light the whole room) but none of its sweeps, and was taken
+  // for a multi master, then dropped every sweep as out of sequence and lost tracking with
+  // the base in plain view (2026-11-16, Beyond + Index, one 1.0 base in mode A).
+  if (m.flashes >= 400 && stockVotes_ == 0 && multiVotes_ == 0 && m.sweeps < 0.35 * m.flashes && !m.ootxStock)
+    ++lowShareVotes_;
   if ((multiVotes_ >= 50 && multiVotes_ > 5 * stockVotes_) || lowShareVotes_ >= 50) {
     active_ = true;
     char buf[160];
@@ -367,6 +372,7 @@ bool MultiDisambiguator::Identify(Station& b, int bit) {
   b.mode = id.dynamic.mode;
   b.multiN = id.dynamic.multiN;
   b.multiSlot = id.dynamic.multiSlot;
+  b.ootxStock = !id.dynamic.multi;
   b.recentBits.clear();
   BaseDynamicState recalled = id.dynamic;
   recalled.cached = true;
@@ -389,6 +395,7 @@ void MultiDisambiguator::PushOotx(Station& st, int slot, int bit) {
     st.mode = dyn.mode;
     st.multiN = dyn.multiN;
     st.multiSlot = dyn.multiSlot;
+    st.ootxStock = !dyn.multi;
     if (dyn.multiN >= 2) stationCount_ = dyn.multiN;
     if (dyn.multi && dyn.multiSlot != slot && dyn.multiSlot >= 0 && dyn.multiSlot < kMaxSlots)
       pendingShift_ = dyn.multiSlot - slot;

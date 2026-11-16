@@ -61,6 +61,7 @@ class MultiDisambiguator {
     uint32_t serial = 0;
     int uniqueId = 0;
     int mode = 0, multiN = 0, multiSlot = -1;
+    bool ootxStock = false;  // its OOTX (decoded or recalled) says a stock station: not the multi layout
     // Of the last 128 groups: present / swept after.
     std::deque<uint8_t> presence;
     int flashes = 0, sweeps = 0;

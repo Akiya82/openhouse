@@ -161,7 +161,7 @@ UsbTransport::~UsbTransport() { Stop(); }
 std::string UsbTransport::LoadSteamConfig(const std::string& dir, const std::string& serial) {
   std::string lower = serial;
   std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
-  std::ifstream f(dir + "/" + lower + "/config.json");
+  std::ifstream f(platform::FsPath(dir + "/" + lower + "/config.json"));
   if (!f) return {};
   std::stringstream ss;
   ss << f.rdbuf();

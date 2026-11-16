@@ -1001,7 +1001,20 @@ class Device : public ITrackedDeviceServerDriver {
 
 class Provider : public IServerTrackedDeviceProvider {
  public:
+  // A throw escaping Init ends vrserver (Error 301, then safe mode blocks every driver):
+  // it's logged and the driver doesn't load instead.
   EVRInitError Init(IVRDriverContext* context) override {
+    try {
+      return InitImpl(context);
+    } catch (const std::exception& e) {
+      Log(std::string("openhouse failed to start: ") + e.what());
+    } catch (...) {
+      Log("openhouse failed to start");
+    }
+    session_.reset();
+    return VRInitError_Init_HmdNotFound;
+  }
+  EVRInitError InitImpl(IVRDriverContext* context) {
     VR_INIT_SERVER_DRIVER_CONTEXT(context);
     context_ = context;
     lh::SessionOptions options;

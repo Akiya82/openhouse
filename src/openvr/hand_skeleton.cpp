@@ -1,4 +1,6 @@
 #include "hand_skeleton.hpp"
+
+#include "platform/platform.hpp"
 #include <Eigen/Geometry>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -96,7 +98,7 @@ void FixAux(Bones& out) {
 
 // Every frame of one of Valve's 31-bone hand GLBs, in OpenVR's convention.
 std::vector<Bones> LoadFrames(const std::string& path, bool left) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(lh::platform::FsPath(path), std::ios::binary);
   if (!f) throw std::runtime_error("cannot open " + path);
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), {});
   if (Word(bytes, 0) != 0x46546c67 || Word(bytes, 4) != 2 || Word(bytes, 8) != bytes.size() ||

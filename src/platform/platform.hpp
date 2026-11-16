@@ -23,9 +23,35 @@
 #endif
 
 namespace lh::platform {
+#ifdef _WIN32
+// UTF-16 <-> UTF-8: every path openhouse keeps as a std::string is UTF-8.
+inline std::string ToUtf8(const std::wstring& wide) {
+  if (wide.empty()) return {};
+  const int n = WideCharToMultiByte(CP_UTF8, 0, wide.data(), int(wide.size()), nullptr, 0, nullptr, nullptr);
+  std::string out(n > 0 ? n : 0, '\0');
+  if (n > 0) WideCharToMultiByte(CP_UTF8, 0, wide.data(), int(wide.size()), out.data(), n, nullptr, nullptr);
+  return out;
+}
+#endif
+// A UTF-8 path string as a filesystem path. Open files through this, not a std::string:
+// on Windows a std::string open goes through the ANSI code page, which can't name a folder
+// like C:\Users\Mattéo.
+inline std::filesystem::path FsPath(const std::string& utf8) {
+  return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()),
+                                             reinterpret_cast<const char8_t*>(utf8.data()) + utf8.size()));
+}
+// An environment variable, UTF-8. On Windows getenv gives the ANSI code page: a user name
+// like "Mattéo" came out as bytes no std::filesystem::path could convert, and the throw
+// took vrserver down at start.
 inline std::string Env(const char* key) {
+#ifdef _WIN32
+  std::wstring wideKey(key, key + std::char_traits<char>::length(key));
+  if (const wchar_t* value = _wgetenv(wideKey.c_str())) return ToUtf8(value);
+  return "";
+#else
   const char* value = std::getenv(key);
   return value ? value : "";
+#endif
 }
 inline unsigned long ProcessId() {
 #ifdef _WIN32
@@ -114,7 +140,7 @@ inline std::vector<std::string> JsonStringList(const std::string& text, const st
   return out;
 }
 inline std::string SteamVRFromOpenVRPaths() {
-  std::ifstream in(OpenVRPathsFile(), std::ios::binary);
+  std::ifstream in(FsPath(OpenVRPathsFile()), std::ios::binary);
   const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   std::error_code ec;
   for (const auto& dir : JsonStringList(text, "runtime"))

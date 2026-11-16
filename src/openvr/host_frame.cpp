@@ -38,7 +38,7 @@ Eigen::Isometry3d LevelPin(const Eigen::Isometry3d& anchor, const Eigen::Isometr
 void HostFrame::Load(const std::string& path) {
   path_ = path;
   anchors_.clear();
-  std::ifstream f(path);
+  std::ifstream f(lh::platform::FsPath(path));
   if (!f) return;
   try {
     const auto j = nlohmann::json::parse(f);
@@ -80,7 +80,7 @@ void HostFrame::Save() const {
   }
   const std::string tmp = path_ + ".tmp";
   {
-    std::ofstream f(tmp);
+    std::ofstream f(lh::platform::FsPath(tmp));
     f << j.dump(1);
     f.close();
     if (!f) return;

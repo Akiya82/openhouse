@@ -87,7 +87,7 @@ std::string FirstExisting(const std::vector<std::string>& paths) {
 }
 
 std::string ReadFile(const std::string& path) {
-  std::ifstream in(path);
+  std::ifstream in(platform::FsPath(path));
   std::stringstream s;
   s << in.rdbuf();
   return s.str();
@@ -783,7 +783,7 @@ void SessionImpl::UpdatePreinit(const DeviceId& id, const std::string& config) {
     if (json::parse(ReadFile(file->second)) == json::parse(config)) return;
     const std::string temp = file->second + ".tmp";
     {
-      std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+      std::ofstream out(platform::FsPath(temp), std::ios::binary | std::ios::trunc);
       out << config;
       out.close();  // a write error can show only when the buffer goes out (#43)
       if (!out) throw std::runtime_error("cannot write " + temp);
@@ -1589,7 +1589,7 @@ std::vector<SessionEvent> SessionImpl::PollEvents() {
 }
 
 void SessionImpl::LoadLearnedImu(const std::string& path) {
-  std::ifstream in(path);
+  std::ifstream in(platform::FsPath(path));
   if (!in) return;
   try {
     const json j = json::parse(in);
@@ -1671,7 +1671,7 @@ void SessionImpl::ApplyLearnedImu(const DeviceId& id, const std::string& config,
 
 void SessionImpl::LoadSettings() {
   if (settingsPath_.empty()) return;
-  std::ifstream in(settingsPath_);
+  std::ifstream in(platform::FsPath(settingsPath_));
   if (!in) return;
   try {
     const json j = json::parse(in);
@@ -1853,7 +1853,7 @@ void SessionImpl::SaveSettings() {
   try {
     json j = json::object();
     {
-      std::ifstream in(settingsPath_);
+      std::ifstream in(platform::FsPath(settingsPath_));
       if (in) j = json::parse(in);
     }
     j["disabledDevices"] = std::vector<std::string>(disabled_.begin(), disabled_.end());
@@ -1861,7 +1861,7 @@ void SessionImpl::SaveSettings() {
     if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path());
     const std::string temp = settingsPath_ + ".tmp";
     {
-      std::ofstream out(temp);
+      std::ofstream out(platform::FsPath(temp));
       out << j.dump(2) << "\n";
       out.close();
       // A failed write must not replace the good file: its controllers and roles were lost (#43).

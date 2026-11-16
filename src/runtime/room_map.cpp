@@ -80,7 +80,7 @@ double RoomMap::Now() {
 
 bool RoomMap::Load(const std::string& path, std::string* error) {
   try {
-    std::ifstream in(path);
+    std::ifstream in(platform::FsPath(path));
     if (!in) { if (error) error->clear(); return true; }
     const json j = json::parse(in);
     std::vector<Room> rooms;
@@ -201,7 +201,7 @@ bool RoomMap::Save(const std::string& path, std::string* error) const {
     if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path());
     const std::string temp = path + ".tmp";
     {
-      std::ofstream out(temp);
+      std::ofstream out(platform::FsPath(temp));
       out << j.dump(2) << "\n";
       out.close();  // a write error can show only when the buffer goes out
       if (!out) throw std::runtime_error("write failed");

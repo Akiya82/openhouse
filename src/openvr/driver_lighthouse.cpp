@@ -282,7 +282,7 @@ class Device : public ITrackedDeviceServerDriver {
     battery_ = -1; universe_ = 0; hadInput_ = false;
     std::fill(std::begin(sent_), std::end(sent_), false);
     std::fill(std::begin(handles_), std::end(handles_), k_ulInvalidInputComponentHandle);
-    haptic_ = skeletonHandle_ = k_ulInvalidInputComponentHandle;
+    haptic_ = skeletonHandle_ = skeletonOtherHandle_ = k_ulInvalidInputComponentHandle;
     id_ = objectId;
     container_ = VRProperties()->TrackedDeviceToPropertyContainer(objectId);
     SetProperties();
@@ -741,8 +741,9 @@ class Device : public ITrackedDeviceServerDriver {
       created(i, path, in->CreateScalarComponent(c, path, &handles_[i], VRScalarType_Absolute, VRScalarUnits_NormalizedTwoSided));
     };
     if (info_.controllerType == lh::ControllerType::ViveWand) {
-      // The wand's components, as vive_controller_profile.json names them. No skeleton:
-      // SteamVR estimates the hand from the buttons.
+      // The wand's components, as vive_controller_profile.json names them, and a hand
+      // estimated from the buttons, as the stock driver gives it (#105: without one,
+      // VRChat's gesture lock left the hand stuck in its idle pose).
       b(SystemClick, "/input/system/click");
       b(MenuClick, "/input/application_menu/click");
       b(GripClick, "/input/grip/click");
@@ -753,6 +754,7 @@ class Device : public ITrackedDeviceServerDriver {
       s2(PadX, "/input/trackpad/x");
       s2(PadY, "/input/trackpad/y");
       in->CreateHapticComponent(c, "/output/haptic", &haptic_);
+      CreateSkeleton();
       return;
     }
     if (info_.controllerType == lh::ControllerType::Mapped) CreateMappedInputs();
@@ -844,22 +846,29 @@ class Device : public ITrackedDeviceServerDriver {
       for (const char* root : {"/.local/share/Steam/steamapps/common/SteamVR", "/.steam/steam/steamapps/common/SteamVR"})
         paths.emplace_back(std::string(home) + root + "/drivers/indexcontroller/resources/anims/vr_glove_right_poses.glb");
     }
+    const bool wand = info_.controllerType == lh::ControllerType::ViveWand;
     const bool left = info_.controllerRole == "left_hand";
+    // A wand's hand is known only once SteamVR picks one (no role hint): both then.
+    const bool both = wand && info_.controllerRole != "left_hand" && info_.controllerRole != "right_hand";
     std::string error;
-    bool loaded = false;
-    for (const auto& path : paths) if (skeleton_.Load(path, left, &error)) { loaded = true; break; }
-    if (loaded && !error.empty()) Log("skeleton: " + error);
-    if (loaded) {
-      const auto& bones = skeleton_.GripLimit();
+    auto create = [&](lh::openvr::HandSkeleton& skeleton, bool isLeft, VRInputComponentHandle_t* handle) {
+      bool loaded = false;
+      for (const auto& path : paths) if (skeleton.Load(path, isLeft, &error)) { loaded = true; break; }
+      if (!loaded) { Log("skeleton unavailable: " + error); return; }
+      if (!error.empty()) Log("skeleton: " + error);
+      const auto& bones = skeleton.GripLimit();
       // Partial, as the stock Index driver reports it: each finger follows its own
       // capacitive sensor. Monado's steamvr_lh only exposes a skeleton that isn't
       // Estimated as (conforming) hand tracking; without it OpenXR apps and xrizer
-      // fall back to their own estimate, middle, ring and pinky as one.
-      const auto result = VRDriverInput()->CreateSkeletonComponent(c, left ? "/input/skeleton/left" : "/input/skeleton/right",
-          left ? "/skeleton/hand/left" : "/skeleton/hand/right", "/pose/raw", VRSkeletalTracking_Partial,
-          bones.data(), uint32_t(bones.size()), &skeletonHandle_);
-      if (result != VRInputError_None) { skeletonHandle_ = 0; Log("skeleton creation failed: " + std::to_string(result)); }
-    } else Log("skeleton unavailable: " + error);
+      // fall back to their own estimate, middle, ring and pinky as one. A wand has no
+      // finger sensors: Estimated, as the stock driver says.
+      const auto result = VRDriverInput()->CreateSkeletonComponent(c, isLeft ? "/input/skeleton/left" : "/input/skeleton/right",
+          isLeft ? "/skeleton/hand/left" : "/skeleton/hand/right", "/pose/raw",
+          wand ? VRSkeletalTracking_Estimated : VRSkeletalTracking_Partial, bones.data(), uint32_t(bones.size()), handle);
+      if (result != VRInputError_None) { *handle = 0; Log("skeleton creation failed: " + std::to_string(result)); }
+    };
+    create(skeleton_, both ? false : left, &skeletonHandle_);
+    if (both) create(skeletonOther_, true, &skeletonOtherHandle_);
   }
 
   // Monado's steamvr_lh stamps each skeleton update with the controller's latest pose
@@ -870,14 +879,26 @@ class Device : public ITrackedDeviceServerDriver {
   // The hand's springs and fades advance here, on the host clock, with the latest
   // input: stepped only when an input report came, they moved in jumps.
   void SendSkeleton(double now) {
-    if (!skeletonHandle_) return;
-    skeleton_.Update(skeletonInput_, lastSkeletonSent_ < -1e299 ? 0 : now - lastSkeletonSent_);
+    if (!skeletonHandle_ && !skeletonOtherHandle_) return;
+    const double dt = lastSkeletonSent_ < -1e299 ? 0 : now - lastSkeletonSent_;
     lastSkeletonSent_ = now;
-    for (bool withController : {true, false}) {
-      const auto bones = skeleton_.Current(withController);
-      VRDriverInput()->UpdateSkeletonComponent(
-          skeletonHandle_, withController ? VRSkeletalMotionRange_WithController : VRSkeletalMotionRange_WithoutController,
-          bones.data(), uint32_t(bones.size()));
+    // A wand's buttons as the fingers they stand for: trigger -> index, grip -> the other three.
+    lh::ControllerInput in = skeletonInput_;
+    if (info_.controllerType == lh::ControllerType::ViveWand) {
+      in.fingerIndex = float(in.trigger);
+      in.triggerTouch = in.trigger > 0.05 || in.triggerClick;
+      in.fingerMiddle = in.fingerRing = in.fingerPinky = in.gripClick ? 1.f : 0.f;
+      in.gripForce = in.gripClick ? 0.3f : 0.f;
+    }
+    for (auto [skeleton, handle] : {std::pair{&skeleton_, skeletonHandle_}, std::pair{&skeletonOther_, skeletonOtherHandle_}}) {
+      if (!handle) continue;
+      skeleton->Update(in, dt);
+      for (bool withController : {true, false}) {
+        const auto bones = skeleton->Current(withController);
+        VRDriverInput()->UpdateSkeletonComponent(
+            handle, withController ? VRSkeletalMotionRange_WithController : VRSkeletalMotionRange_WithoutController,
+            bones.data(), uint32_t(bones.size()));
+      }
     }
   }
 
@@ -911,7 +932,7 @@ class Device : public ITrackedDeviceServerDriver {
         double(s.trackpadTouch), s.trackpadX, s.trackpadY, s.trackpadForce, s.fingerIndex, s.fingerMiddle,
         s.fingerRing, s.fingerPinky, double(s.trackpadClick), double(s.gripClick), double(s.menuClick)};
     auto* in = ComponentInput();
-    if (skeletonHandle_) {
+    if (skeletonHandle_ || skeletonOtherHandle_) {
       skeletonInput_ = s;
       SendSkeleton(now);
     }
@@ -997,6 +1018,9 @@ class Device : public ITrackedDeviceServerDriver {
   static constexpr double kSkeletonInterval = 0.005;  // s: at most 200 Hz, with the poses
   lh::openvr::HandSkeleton skeleton_;
   VRInputComponentHandle_t skeletonHandle_ = 0;
+  // A wand with no hand yet: the other hand's skeleton too (SteamVR uses the one for the hand it takes).
+  lh::openvr::HandSkeleton skeletonOther_;
+  VRInputComponentHandle_t skeletonOtherHandle_ = 0;
 };
 
 class Provider : public IServerTrackedDeviceProvider {

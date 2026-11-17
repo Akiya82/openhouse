@@ -386,7 +386,9 @@ int SessionCommand(int argc, char** argv) {
         const auto& in = *d.input;
         j["input"] = {{"trigger", in.trigger}, {"grip", in.gripForce}, {"stick", {in.thumbstickX, in.thumbstickY}},
                       {"buttons", {{"system", in.systemClick}, {"a", in.aClick}, {"b", in.bClick},
-                                   {"trigger", in.triggerClick}, {"stick", in.thumbstickClick}}},
+                                   {"trigger", in.triggerClick}, {"stick", in.thumbstickClick},
+                                   {"grip", in.gripClick}, {"menu", in.menuClick}}},
+                      {"pad", {{"touch", in.trackpadTouch}, {"click", in.trackpadClick}, {"x", in.trackpadX}, {"y", in.trackpadY}}},
                       {"fingers", {in.fingerIndex, in.fingerMiddle, in.fingerRing, in.fingerPinky}}};
       }
       printf("%s\n", j.dump().c_str());

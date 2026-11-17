@@ -856,6 +856,7 @@ class Device : public ITrackedDeviceServerDriver {
       for (const auto& path : paths) if (skeleton.Load(path, isLeft, &error)) { loaded = true; break; }
       if (!loaded) { Log("skeleton unavailable: " + error); return; }
       if (!error.empty()) Log("skeleton: " + error);
+      skeleton.SetIndexFromTrigger(wand);
       const auto& bones = skeleton.GripLimit();
       // Partial, as the stock Index driver reports it: each finger follows its own
       // capacitive sensor. Monado's steamvr_lh only exposes a skeleton that isn't

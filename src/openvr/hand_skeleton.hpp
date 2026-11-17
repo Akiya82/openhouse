@@ -18,6 +18,9 @@ class HandSkeleton {
   bool Load(const std::string& glovePoses, bool left, std::string* error);
   // Advances the smoothing and thumb fades by `seconds` with the latest input.
   void Update(const ControllerInput& input, double seconds);
+  // A Vive wand: no finger sensors, so the index bends as far as the trigger is pulled
+  // (on an Index any pull closes it all the way: the finger is already round the trigger).
+  void SetIndexFromTrigger(bool on) { indexFromTrigger_ = on; }
   // The current hand, after Update.
   Bones Current(bool withController) const;
   // Stateless: the hand once settled on this input.
@@ -46,5 +49,6 @@ class HandSkeleton {
   Bones grip_{};
   bool left_ = false;
   State state_;
+  bool indexFromTrigger_ = false;
 };
 }

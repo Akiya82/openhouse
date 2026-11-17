@@ -267,8 +267,9 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
     Spring(Bias(fingers[f], kBias[f]), dt, 250, &s.fist[f], &s.fistV[f]);
   }
   s.trigger = finite(in.trigger);
-  // Pulling the trigger closes the index all the way without the controller.
-  Spring(s.trigger > 0 ? 1.f : s.fist[0], dt, 250, &s.indexClose, &s.indexCloseV);
+  // Pulling the trigger closes the index all the way without the controller; on a wand,
+  // as far as it's pulled (#105: it went from open to closed on the lightest pull).
+  Spring(indexFromTrigger_ ? s.trigger : s.trigger > 0 ? 1.f : s.fist[0], dt, 250, &s.indexClose, &s.indexCloseV);
   const float force = finite(in.gripForce);
   s.squeeze = force > 0 ? Bias(std::min(1.f, force), 0.8f) : 0.f;
   // The thumb's close-clip time follows index and middle (0x2803ed..0x2804b7): it

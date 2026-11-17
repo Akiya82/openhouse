@@ -1135,6 +1135,7 @@ class Provider : public IServerTrackedDeviceProvider {
     }
     session_ = lh::Session::Create(options);
     std::string error;
+    poweredOffForExit_ = false;
     if (!session_->Start(&error)) {
       Log("could not start: " + error);
       session_.reset();
@@ -1211,23 +1212,7 @@ class Provider : public IServerTrackedDeviceProvider {
   }
 
   void Cleanup() override {
-    // SteamVR's "Turn off controllers when exiting SteamVR" (power/powerOffOnExit,
-    // default on): the stock driver powers its wireless devices off at shutdown; so do
-    // we, while the USB thread still runs to send it.
-    if (session_) {
-      EVRSettingsError error = VRSettingsError_None;
-      const bool powerOff = VRSettings() ? VRSettings()->GetBool("power", "powerOffOnExit", &error) : false;
-      if ((error == VRSettingsError_None ? powerOff : true) && !std::getenv("LH_NO_POWER_OFF_ON_EXIT")) {
-        int queued = 0;
-        for (const auto& d : session_->Snapshot().devices)
-          if (d.info.connected && (d.info.role == lh::DeviceRole::Controller || d.info.role == lh::DeviceRole::Tracker))
-            queued += session_->PowerOff(d.info.serial);
-        if (queued) {
-          Log("SteamVR exiting: powering off " + std::to_string(queued) + " device(s)");
-          std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        }
-      }
-    }
+    PowerOffForExit("SteamVR exiting");  // if EnterStandby didn't already
     stop_ = true;
     if (thread_.joinable()) thread_.join();
     if (reportThread_.joinable()) reportThread_.join();  // a report being saved finishes first
@@ -1307,8 +1292,37 @@ class Provider : public IServerTrackedDeviceProvider {
   // it a headset that went to sleep stayed dark (#20). Its provider EnterStandby isn't
   // forwarded: it would power off controllers it doesn't own here.
   bool ShouldBlockStandbyMode() override { return false; }
-  void EnterStandby() override { Log("SteamVR entering standby"); }
+  // SteamVR calls this first when it quits, Cleanup later. The stock driver powers its
+  // devices off here ("powering off upon entering standby"); left to Cleanup, nothing
+  // was powered off when vrserver crashed on its way out before reaching it (#102).
+  void EnterStandby() override {
+    Log("SteamVR entering standby");
+    PowerOffForExit("SteamVR entering standby");
+  }
+
+  // SteamVR's "Turn off controllers when exiting SteamVR" (power/powerOffOnExit, default
+  // on): its wireless controllers and trackers, once per session, while the USB thread
+  // still runs to send it.
+  void PowerOffForExit(const char* why) {
+    if (!session_ || poweredOffForExit_ || std::getenv("LH_NO_POWER_OFF_ON_EXIT")) return;
+    bool on = true;  // the default, also when the setting can't be read
+    if (VRSettings()) {
+      EVRSettingsError error = VRSettingsError_None;
+      const bool value = VRSettings()->GetBool("power", "powerOffOnExit", &error);
+      if (error == VRSettingsError_None) on = value;
+    }
+    if (!on) return;
+    poweredOffForExit_ = true;
+    int queued = 0;
+    for (const auto& d : session_->Snapshot().devices)
+      if (d.info.connected && (d.info.role == lh::DeviceRole::Controller || d.info.role == lh::DeviceRole::Tracker))
+        queued += session_->PowerOff(d.info.serial);
+    Log(std::string(why) + ": powering off " + std::to_string(queued) + " device(s)");
+    if (queued) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  }
+  bool poweredOffForExit_ = false;
   void LeaveStandby() override {
+    poweredOffForExit_ = false;  // back from standby: the next one (or the exit) powers off again
     Log("SteamVR leaving standby");
     stock_.LeaveStandby();
   }

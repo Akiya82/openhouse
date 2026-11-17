@@ -160,7 +160,7 @@ bool RoomMap::Load(const std::string& path, std::string* error) {
     return true;
   } catch (const std::exception& e) {
     // Moved aside, or the next save replaced it with an empty map and every stored
-    // room was lost (#43). Its rooms can still be taken back from that copy by hand.
+    // room was lost. Its rooms can still be taken back from that copy by hand.
     const std::string kept = path + ".bad-" + std::to_string(std::time(nullptr));
     std::error_code ec;
     std::filesystem::rename(path, kept, ec);
@@ -542,7 +542,7 @@ void RoomMap::Observe(const std::string& device, uint32_t primary, uint32_t alt,
       target->rotationVariance = std::max(target->rotationVariance, 0.0523599 * 0.0523599);
       target->inconsistent = 0;
       target->farSolves = 0;
-      // Still the solver's (#42): with solved cleared, the next observation from this same
+      // Still the solver's: with solved cleared, the next observation from this same
       // device blended the base half way to its view.
       relearned_.push_back(target->serial);
       Changed();
@@ -623,7 +623,7 @@ void RoomMap::Bump(uint32_t serial, const std::string& why) {
   if (!room || frozen_) return;
   auto found = room->bases.find(serial);
   if (found == room->bases.end()) return;
-  ++bumps_;  // a solve already running was made from keyframes before this (#42)
+  ++bumps_;  // a solve already running was made from keyframes before this
   RoomBase& b = found->second;
   if (b.origin) {
     if (!OriginGauge()) { Log("Origin base " + Hex(serial) + " knocked (" + why + "), but no other placed base to relearn it against"); return; }
@@ -784,7 +784,7 @@ void RoomMap::ApplySolved(uint32_t serial, const Eigen::Isometry3d& pose, double
     b.positionVariance = std::max(pv, kFloorVariance);
     b.rotationVariance = std::max(rv, 1e-9);
     b.observations = keyframes;
-    b.storedObservations = 0;  // earlier sessions' evidence is for the old place (#42), as after a bump
+    b.storedObservations = 0;  // earlier sessions' evidence is for the old place, as after a bump
     b.farSolves = 0;
     ++b.epoch;
     relearned_.push_back(serial);  // keyframes from before the move are stale

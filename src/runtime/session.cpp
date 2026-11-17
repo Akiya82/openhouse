@@ -311,7 +311,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   void LoadLearnedImu(const std::string& path);
   void ApplyLearnedImu(const DeviceId& id, const std::string& config, TrackedObjectModel* model);
   // SteamVR's learned per-unit IMU calibration (lighthousedb.json "known_objects"), by serial:
-  // used only for a device whose own config has none (#69).
+  // used only for a device whose own config has none.
   struct LearnedImu { std::array<double, 3> accBias{}, accScale{1, 1, 1}, gyroBias{}; bool acc = false, scale = false, gyro = false; };
   std::map<DeviceId, LearnedImu> learnedImu_;
   std::set<DeviceId> learnedImuLogged_;
@@ -445,7 +445,7 @@ bool SessionImpl::Start(std::string* error) {
   finished_ = false;
   syncSolve_ = replay && !options_.replayRealtime;
   // The solver thread starts only once Start can't fail any more: a failed Start left it
-  // running, and a second Start then terminated on the joinable thread (#49.7).
+  // running, and a second Start then terminated on the joinable thread.
   if (replay) {
 #ifdef LH_RUNTIME_USB
     if (!std::filesystem::exists(options_.replayPath)) {
@@ -690,8 +690,8 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     Eigen::Isometry3d objectFromHead = Eigen::Isometry3d::Identity();
     if (j.contains("head")) AxesRotation(j.at("head"), &objectFromHead);
     else if (j.contains("trackref_from_head")) PoseArray(j.at("trackref_from_head"), &objectFromHead);
-    // Tundra Trackers ship an identity head, so their pose (and model) came out bottom-up
-    // (#40). The stock driver replaces exactly that case (in 0x1dec60): plus_x -1,0,0,
+    // Tundra Trackers ship an identity head, so their pose (and model) came out bottom-up.
+    // The stock driver replaces exactly that case (in 0x1dec60): plus_x -1,0,0,
     // plus_z 0,0,-1 (180 deg about Y), position 0,0,0.001577.
     if (d.info.manufacturer == "Tundra Labs" && d.info.model == "Tundra Tracker" &&
         objectFromHead.isApprox(Eigen::Isometry3d::Identity(), 1e-9)) {
@@ -701,7 +701,7 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     // Knuckles EV2.0 (development Index controllers) ship a head with no position, and the
     // stock driver gives them the Index controller's (same function, from "EV2.0" in the
     // model number, "Right" for the right one): without it the model came out tilted about
-    // 25 deg and a few cm off the controller (#96).
+    // 25 deg and a few cm off the controller.
     if (d.info.model.find("Knuckles") != std::string::npos && d.info.model.find("EV2.0") != std::string::npos &&
         objectFromHead.translation().isZero(1e-9)) {
       const bool right = d.info.model.find("Right") != std::string::npos;
@@ -785,7 +785,7 @@ void SessionImpl::UpdatePreinit(const DeviceId& id, const std::string& config) {
     {
       std::ofstream out(platform::FsPath(temp), std::ios::binary | std::ios::trunc);
       out << config;
-      out.close();  // a write error can show only when the buffer goes out (#43)
+      out.close();  // a write error can show only when the buffer goes out
       if (!out) throw std::runtime_error("cannot write " + temp);
     }
     platform::ReplaceFile(temp, file->second);  // rename doesn't replace a file on Windows
@@ -1358,7 +1358,7 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
     // wrong view must not relearn the room.
     const int needDevices = std::min(2, std::max(1, b.checkedDevices));
     // Devices that see it at all: one whose keyframes of it are all rejected is in neither
-    // checkedDevices nor devices, and alone it met a one-device rule (#42).
+    // checkedDevices nor devices, and alone it met a one-device rule.
     if (b.rejected >= 15 && b.rejected * 4 >= b.seen && othersSeen >= 10 && othersRejected * 10 <= othersSeen &&
         b.rejectingDevices >= std::min(2, std::max(1, b.seeingDevices))) {
       moved[serial] = {0, 0, kStrikes, b.rejected, b.seen};
@@ -1391,7 +1391,7 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
   const auto originCooling = lightCooldown_.find(origin);
   const bool originCool = originCooling != lightCooldown_.end() && now_ < originCooling->second;
   if (others >= 2 && farOff == others && int(moved.size()) == others && originCool) {
-    moved.clear();  // the origin was just relearned from this: nothing else is bumped in its place (#42)
+    moved.clear();  // the origin was just relearned from this: nothing else is bumped in its place
   } else if (others >= 2 && farOff == others && int(moved.size()) == others) {
     int strikes = kStrikes;
     for (const auto& [serial, m] : moved) strikes = std::max(strikes, m.strikes);
@@ -1430,7 +1430,7 @@ void SessionImpl::SolverMain() {
     lock.lock();
     // A reset meanwhile: solved against the old room. A base bumped meanwhile: solved from
     // keyframes before the knock, it would re-place the base where it was and end the
-    // relearn (#42). The next solve, from the fresh keyframes, is soon.
+    // relearn. The next solve, from the fresh keyframes, is soon.
     if (resets == roomResets_ && bumps == room_.Bumps()) ApplySolve(out);
   }
 }
@@ -1564,7 +1564,7 @@ std::vector<DeviceUpdate> SessionImpl::Updates() const {
     DeviceUpdate u;
     u.serial = id;
     u.role = d.info.role;
-    // As Snapshot(): a preinitialized device shows connected (not tracking) before it attaches (#49.6).
+    // As Snapshot(): a preinitialized device shows connected (not tracking) before it attaches.
     u.connected = d.preinitConnected || (d.attached && now_ - d.lastData < 1.0);
     u.enabled = Enabled(id);
     u.batteryPercent = d.info.batteryPercent;
@@ -1864,7 +1864,7 @@ void SessionImpl::SaveSettings() {
       std::ofstream out(platform::FsPath(temp));
       out << j.dump(2) << "\n";
       out.close();
-      // A failed write must not replace the good file: its controllers and roles were lost (#43).
+      // A failed write must not replace the good file: its controllers and roles were lost.
       if (!out) throw std::runtime_error("cannot write " + temp);
     }
     platform::ReplaceFile(temp, target);
@@ -1937,7 +1937,7 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
   if (persist_) {
     std::string err;
     // Seen only once it's written: a failed write then looked like the file being
-    // deleted, and reset the room again every second (#43).
+    // deleted, and reset the room again every second.
     if (room_.Save(roomPath_, &err)) {
       room_.ClearDirty();
       roomFileSeen_ = true;

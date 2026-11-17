@@ -166,12 +166,12 @@ bool LighthouseDirect::ImuUpdate(const ImuSample& sample) {
     // reaching their limits: the accelerometer jumps 2-4 m/s2 from one sample to the next
     // and its average reads 11-12.5 m/s2, not 9.8. Learned from that, the IMU alignment came
     // out 17-21 deg off within 1.5 s of every reacquire, tracking reset over and over and
-    // the controller flew off between (#90). From then until 0.5 s after, gravity and the
+    // the controller flew off between. From then until 0.5 s after, gravity and the
     // IMU calibration are held and the accelerometer is trusted 100x less (from the next
     // sample), so the light carries the pose. Vibration is told from a hard swing, which
     // jumps as much per sample, by its roughness: the second difference over the first
     // (both averaged over ~0.25 s) is ~1.9 (the reading flips nearly every sample), a
-    // swing's or a stomp's 0.4-1.0. (#90 recordings, two controllers: resets 21/8 and
+    // swing's or a stomp's 0.4-1.0. (two controllers' recordings: resets 21/8 and
     // 17 -> 0-1, steps > 5 cm 387/246 and 93 -> 1-43. Held as violent motion instead,
     // frames rejected too: a vibrating pickup in vrchat-01 flew off 4 m. On the jumps
     // alone, without roughness, hard swings jumped twice as often.)

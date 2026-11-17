@@ -35,7 +35,7 @@ struct RoomBase {
   bool origin = false;
   std::optional<int> resetCount;  // OOTX sys_unlock_count when located
   int inconsistent = 0;           // consecutive observations disagreeing with the map (Observe)
-  int farSolves = 0;              // consecutive room solves far off the map (ApplySolved; #84)
+  int farSolves = 0;              // consecutive room solves far off the map (ApplySolved)
   bool solved = false;            // pose owned by the room solver (no filter blending)
   bool relearn = false;           // bumped this session: the next confident solve is taken whole
   uint32_t epoch = 0;             // bumps each time the base is re-placed (moved, knocked): devices resync

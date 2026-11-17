@@ -70,7 +70,7 @@ fs::path EnvPath(const wchar_t* name) {
 std::string ReadFile(const fs::path& p) {
   std::ifstream in(p, std::ios::binary);
   // An unreadable driver read as "" looked like SteamVR's own, and uninstall deleted the
-  // stock backup (#44): stop instead.
+  // stock backup: stop instead.
   if (!in) throw Failure("Could not read " + Show(p) + " (is SteamVR still running?)");
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
@@ -232,7 +232,7 @@ void SetAppRegistration(const Paths& p, const fs::path& manifestPath, const char
   ordered_json data = ordered_json::object();
   {
     // Steam's list of every registered VR app: one we can't read or parse is left alone.
-    // Rewriting it from an empty object dropped all the others (#44).
+    // Rewriting it from an empty object dropped all the others.
     std::error_code ec;
     if (fs::exists(appconfig, ec)) {
       std::ifstream in(appconfig, std::ios::binary);

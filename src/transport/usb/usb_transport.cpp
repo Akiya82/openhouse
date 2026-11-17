@@ -37,7 +37,7 @@ namespace {
 
 // No wireless data for this long: a new radio epoch (the receiver may have missed the off notification).
 constexpr double kRadioGap = 1.0;  // s
-// #92: how long a receiver that doesn't say which device it has is asked again, and how often.
+// How long a receiver that doesn't say which device it has is asked again, and how often.
 constexpr double kDeviceCheck = 3.0, kDeviceRecheck = 0.25;  // s
 
 constexpr uint16_t kValveVid = 0x28de;
@@ -102,7 +102,7 @@ void ReportDecoder::AddEndpoint(const EndpointInfo& e) {
   eps_[e.ep] = std::move(ep);
   // The buttons interface carries no config: its device attaches with its IMU interface.
   // Announced when it's new, carries a config, or is the device's only endpoint again after
-  // an unplug (a replugged device without a readable config was otherwise never re-attached, #49.3).
+  // an unplug (a replugged device without a readable config was otherwise never re-attached).
   const bool alone = std::none_of(eps_.begin(), eps_.end(), [&](const auto& other) {
     return other.first != e.ep && other.second.info.serial == e.serial;
   });
@@ -187,7 +187,7 @@ std::optional<uint32_t> UsbTransport::ConnectedSerial(hid_device_* receiver) {
   return di.serial;
 }
 
-// #92: whether the device on a receiver is no longer the one it was set up for. A dongle can be
+// Whether the device on a receiver is no longer the one it was set up for. A dongle can be
 // paired with several devices and serves whichever is on (one at a time), staying plugged in; it was
 // identified only when opened, so a 3.0 tracker switched on in place of a 2018 one was taken for it,
 // with the 2018's sensor layout. Asked only after a disconnect or a radio gap (Run asks again while
@@ -196,7 +196,7 @@ std::optional<uint32_t> UsbTransport::ConnectedSerial(hid_device_* receiver) {
 int UsbTransport::OtherDeviceConnected(const std::string& path, const std::string& serial, const std::string& receiver) {
   hid_device* h = nullptr;
   {
-    static std::mutex openMutex;  // hid_open_path's error string is process-wide (#49.5)
+    static std::mutex openMutex;  // hid_open_path's error string is process-wide
     std::lock_guard openLock(openMutex);
     h = hid_open_path(path.c_str());
   }
@@ -266,7 +266,7 @@ bool UsbTransport::RequestProtocolVersion(hid_device_* dev, int version) {
 
 UsbTransport::OpenResult UsbTransport::OpenEndpoint(const hid_device_info* d, Open* out) {
   // One open at a time: hidapi's hid_open_path resets and sets a process-wide error string,
-  // which parallel opens would free twice (#49.5). The config read after it stays parallel.
+  // which parallel opens would free twice. The config read after it stays parallel.
   static std::mutex openMutex;
   hid_device* h = nullptr;
   {
@@ -342,7 +342,7 @@ void UsbTransport::Enumerate(bool startup) {
       workers.emplace_back([&, i] { results[i] = OpenEndpoint(fresh[i], &opened[i]); });
     for (auto& w : workers) w.join();
   }
-  // Every opened handle goes to a list Stop() closes, stopping or not (#49.4).
+  // Every opened handle goes to a list Stop() closes, stopping or not.
   for (size_t i = 0; i < fresh.size(); ++i) {
     Open& o = opened[i];
     const OpenResult result = results[i];
@@ -716,7 +716,7 @@ void UsbTransport::Haptic(const DeviceId& serial, double frequency, double ampli
   // Coalesce by device: a newer command replaces a pending one.
   for (auto it = haptics_.begin(); it != haptics_.end();) {
     if (it->serial == serial && it->powerOff) return;
-    // Only pending pulses: a queued light-mode command must still go out (#49.2).
+    // Only pending pulses: a queued light-mode command must still go out.
     if (it->serial == serial && it->opticalMode < 0) it = haptics_.erase(it); else ++it;
   }
   if (haptics_.size() < 64) haptics_.push_back({serial, HapticReport(frequency, amplitude, duration), HostNow() + 0.1});
@@ -797,7 +797,7 @@ void UsbTransport::Run() {
       // is reopened (as one with no device) and the new one picked up when it connects.
       if (!o.disconnected && TakePairing(o)) {
         // Pairing takes the receiver from its device: report it gone now, as the endpoint
-        // is closed below in this pass and nothing would say so later (#49.1).
+        // is closed below in this pass and nothing would say so later.
         o.disconnected = true;
         sink_->OnDeviceDetached(o.info.serial);
       }
@@ -823,7 +823,7 @@ void UsbTransport::Run() {
       for (int i = 0; i < count; i++) {
         const bool last = i == count - 1;
         if (o.info.kind == EndpointKind::Wireless) {
-          // #92: after a disconnect or a radio gap, the first data may be another device paired to this
+          // After a disconnect or a radio gap, the first data may be another device paired to this
           // receiver. Then it's reopened as one that has no device, as after pairing, and the new device
           // set up when the probe picks it up; its data isn't decoded as the old one's meanwhile.
           const uint8_t id = reps[i].buf[0];

@@ -1237,7 +1237,7 @@ TEST(MixedLight, TheCommandLineWins) {
   EXPECT_TRUE(MixedFromSettings(R"({"mixedLight": false})", true).enabled);
 }
 
-// #86: a room learned before device model scales were applied (no "modelScale") keeps its
+// A room learned before device model scales were applied (no "modelScale") keeps its
 // bases, unlocked and less certain, once: the solver refines them in the same room.
 TEST(RoomMap, RoomLearnedWithoutModelScalesIsRefinedOnce) {
   const auto path = (std::filesystem::temp_directory_path() / ("lh-test-scale-" + std::to_string(lh::platform::ProcessId()) + ".json")).string();

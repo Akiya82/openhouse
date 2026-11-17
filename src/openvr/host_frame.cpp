@@ -85,7 +85,7 @@ void HostFrame::Save() const {
     f.close();
     if (!f) return;
   }
-  // std::rename doesn't replace an existing file on Windows: only the first save took (#43).
+  // std::rename doesn't replace an existing file on Windows: only the first save took.
   try {
     lh::platform::ReplaceFile(tmp, path_);
   } catch (const std::exception&) {

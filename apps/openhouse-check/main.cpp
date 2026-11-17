@@ -191,7 +191,7 @@ void Show() {
     Log(tool + " exited with " + std::to_string(rc));
     // Shown: it exited cleanly, or stayed up a while. zenity exits 1 both when dismissed with
     // Esc and when it can't open a display; only the second is quick, and only then does the
-    // next tool get a turn (closing the warning showed it again, #54.4).
+    // next tool get a turn (closing the warning showed it again).
     if (rc == 0 || std::chrono::steady_clock::now() - shownAt > std::chrono::seconds(1)) return;
   }
   std::fprintf(stderr, "%s: %s\n", kTitle, kText);

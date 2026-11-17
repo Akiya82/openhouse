@@ -145,7 +145,7 @@ std::string Timestamp(const char* format) {
 }
 
 // For names in the zip (flagged UTF-8) and messages. path::string() converts to the
-// Windows code page and throws for what it can't hold (#34: nothing here may throw).
+// Windows code page and throws for what it can't hold (nothing here may throw).
 std::string Utf8(const fs::path& p) {
   const auto s = p.u8string();
   return std::string(s.begin(), s.end());
@@ -205,7 +205,7 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
   std::error_code ec;
   fs::create_directories(dir, ec);
   if (ec) return fail("cannot create " + Utf8(dir) + ": " + ec.message());
-  // The process id too: the driver and the viewer can both save one in the same second (#46).
+  // The process id too: the driver and the viewer can both save one in the same second.
   const fs::path zip = dir / ("openhouse-report-" + Timestamp("%Y%m%d-%H%M%S") + "-" +
                               std::to_string(platform::ProcessId()) + ".zip");
 
@@ -231,7 +231,7 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
   else info << "recording: " << Utf8(recording.filename()) << "\n";
   std::vector<std::pair<std::string, fs::path>> present;
   for (const auto& f : files) {
-    // Present if it opens: one that is there but unreadable lost the whole report (#46).
+    // Present if it opens: one that is there but unreadable lost the whole report.
     if (fs::is_regular_file(f.second, ec) && std::ifstream(f.second, std::ios::binary)) present.push_back(f);
     else info << "missing: " << Utf8(f.second) << "\n";
   }
@@ -251,7 +251,7 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
 }
 }  // namespace
 
-// Nothing may throw out of here: both callers run it on their own thread (#34, #46).
+// Nothing may throw out of here: both callers run it on their own thread.
 std::string SaveBugReport(const BugReportOptions& options, std::string* error) {
   try {
     return SaveBugReportOnce(options, error);

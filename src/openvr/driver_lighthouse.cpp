@@ -373,7 +373,7 @@ class Device : public ITrackedDeviceServerDriver {
     VRProperties()->SetUint64Property(container_, Prop_CurrentUniverseId_Uint64, universe);
   }
   // The receiver it's connected through, as the stock driver publishes it. Tools that
-  // power devices off (OyasumiVR, #37) need it: they run lighthouse_console against it.
+  // power devices off (OyasumiVR) need it: they run lighthouse_console against it.
   void SetDongle(const std::string& receiver) {
     if (!active_ || receiver == dongle_) return;
     dongle_ = receiver;
@@ -650,8 +650,8 @@ class Device : public ITrackedDeviceServerDriver {
       default: {  // trackers (HTC's: inputs from CreateTrackerInputs)
         // As the stock driver (0x1cf860, 0x1d69f0): an HTC tracker gets HTC's profile and
         // type, and "vr_tracker_vive_1_0" becomes {htc}vr_tracker_vive_3_0 on a 3.0. Any
-        // other maker's (Tundra Labs) keeps its own resource root, profile and icons
-        // (#29, #40): they were all HTC's.
+        // other maker's (Tundra Labs) keeps its own resource root, profile and icons, instead
+        // of HTC's.
         const bool htc = HtcTracker();
         const std::string root = htc || info_.resourceRoot.empty() ? "htc" : info_.resourceRoot;
         std::string renderModel = info_.renderModel.empty() ? "{htc}vr_tracker_vive_1_0" : info_.renderModel;
@@ -742,8 +742,8 @@ class Device : public ITrackedDeviceServerDriver {
     };
     if (info_.controllerType == lh::ControllerType::ViveWand) {
       // The wand's components, as vive_controller_profile.json names them, and a hand
-      // estimated from the buttons, as the stock driver gives it (#105: without one,
-      // VRChat's gesture lock left the hand stuck in its idle pose).
+      // estimated from the buttons, as the stock driver gives it: apps that animate the
+      // fingers from the skeleton have nothing to go by without it.
       b(SystemClick, "/input/system/click");
       b(MenuClick, "/input/application_menu/click");
       b(GripClick, "/input/grip/click");
@@ -1045,7 +1045,7 @@ class Provider : public IServerTrackedDeviceProvider {
     lh::SessionOptions options;
     if (const char* replay = std::getenv("LH_REPLAY")) options.replayPath = replay;
     if (const char* room = std::getenv("LH_ROOM_MAP")) options.roomMapPath = room;
-    // SteamVR's rooms (steam_rooms.hpp, #82): under SteamVR, by default, SteamVR's rooms are
+    // SteamVR's rooms (steam_rooms.hpp): under SteamVR, by default, SteamVR's rooms are
     // imported, a room SteamVR already has Room Setup for uses that universe and its frame,
     // and our other rooms are written into lighthousedb.json as universes of their own.
     // Off ("Use SteamVR's rooms" on the settings page, LH_HOST_FRAME=openhouse, other
@@ -1168,7 +1168,7 @@ class Provider : public IServerTrackedDeviceProvider {
     // Wired 0x2300 devices that may be headsets (Index, Beyond) are asked by their configs even
     // when a 0x2000 one (Vive, Vive Pro) already made it a yes: with an old Vive left plugged in
     // beside an Index, the Index was hidden from the stock driver, which then found only the
-    // Vive and no display for it (#28).
+    // Vive and no display for it.
     if (!maybe.empty() && (presence == Presence::Maybe || presence == Presence::Yes)) {
       // Ask the device configs (role from device_class), up to 2 s: inside Monado's 3 s.
       const bool already = presence == Presence::Yes;
@@ -1269,7 +1269,7 @@ class Provider : public IServerTrackedDeviceProvider {
         std::lock_guard lock(expectedMutex_);
         expected = expectedControllers_;
       }
-      // A malformed mailbox message must not leave RunFrame: it ends vrserver (#45).
+      // A malformed mailbox message must not leave RunFrame: it ends vrserver.
       try {
         pairing_.Poll(*session_, expected);
       } catch (const std::exception& e) {
@@ -1280,7 +1280,7 @@ class Provider : public IServerTrackedDeviceProvider {
 
   // The headset's expected controllers (Prop_ExpectedControllerType_String), "" if none.
   // Main thread only: it is the one that changes devices_ (RunFrame reads the copy,
-  // expectedControllers_; walking the map there raced Main's inserts, #45).
+  // expectedControllers_; walking the map there raced Main's inserts).
   std::string ExpectedControllerType() const {
     for (const auto& [serial, device] : devices_)
       if (device && device->IsHmd() && device->Active()) return device->StringProperty(Prop_ExpectedControllerType_String);
@@ -1289,12 +1289,12 @@ class Provider : public IServerTrackedDeviceProvider {
 
   // Only leaving standby reaches the stock driver: it powers the headset's panels back up
   // there (the headset's own EnterStandby, through DeviceProxy, turned them off). Without
-  // it a headset that went to sleep stayed dark (#20). Its provider EnterStandby isn't
+  // it a headset that went to sleep stayed dark. Its provider EnterStandby isn't
   // forwarded: it would power off controllers it doesn't own here.
   bool ShouldBlockStandbyMode() override { return false; }
-  // SteamVR calls this first when it quits, Cleanup later. The stock driver powers its
-  // devices off here ("powering off upon entering standby"); left to Cleanup, nothing
-  // was powered off when vrserver crashed on its way out before reaching it (#102).
+  // SteamVR calls this first when it quits, Cleanup later. The devices are powered off
+  // here, as the stock driver does: if vrserver goes down on its way out, Cleanup may
+  // never run.
   void EnterStandby() override {
     Log("SteamVR entering standby");
     PowerOffForExit("SteamVR entering standby");
@@ -1900,7 +1900,7 @@ class Provider : public IServerTrackedDeviceProvider {
       // The USB thread closes the capture on its next pass: let it finish the file.
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       // Nothing thrown here may leave the thread: that is std::terminate, and it took
-      // vrserver down with the report unwritten (#34).
+      // vrserver down with the report unwritten.
       try {
         std::string error;
         const std::string path = lh::SaveBugReport(options, &error);
@@ -2032,7 +2032,7 @@ class Provider : public IServerTrackedDeviceProvider {
   }
 
   // On the driver thread: a throw from here (a filesystem call when recording starts or
-  // stops, #34) must not end it, or vrserver with it.
+  // stops) must not end it, or vrserver with it.
   void ApplyTuning(bool first) {
     try {
       ApplyTuningOnce(first);
@@ -2126,7 +2126,7 @@ Provider g_provider;
 #endif
 extern "C" LH_DRIVER_EXPORT void* HmdDriverFactory(const char* interfaceName, int* returnCode) {
   if (std::strcmp(interfaceName, IServerTrackedDeviceProvider_Version) == 0) return &g_provider;
-  if (std::strcmp(interfaceName, IVRWatchdogProvider_Version) == 0) return lh::openvr::WatchdogProvider();  // #38
+  if (std::strcmp(interfaceName, IVRWatchdogProvider_Version) == 0) return lh::openvr::WatchdogProvider();
   if (returnCode) *returnCode = VRInitError_Init_InterfaceNotFound;
   return nullptr;
 }

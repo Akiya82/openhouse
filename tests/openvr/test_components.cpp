@@ -575,7 +575,7 @@ TEST(LogLevels, ClassifiesAndParses) {
   EXPECT_STREQ(lh::LogLevelName(lh::LogLevel::Error), "ERR");
 }
 
-// SteamVR's rooms (#82): our room written into lighthousedb.json as a universe of its own,
+// SteamVR's rooms: our room written into lighthousedb.json as a universe of its own,
 // beside SteamVR's (kept as they were), placed where the host frame has its bases; never
 // taken back as one of SteamVR's (import or alignment).
 TEST(SteamRooms, WritesOurUniverseAndLeavesSteamVRsAlone) {
@@ -638,7 +638,7 @@ TEST(SteamRooms, ReadsChaperoneUniverses) {
   EXPECT_TRUE(lh::openvr::ChaperoneUniverses(path).empty());
 }
 
-// #91: a tracker or controller on a charging cable shows up on USB while off, so plugging it in doesn't
+// A tracker or controller on a charging cable shows up on USB while off, so plugging it in doesn't
 // start SteamVR; a headset (the Bigscreen Beyond is the same 28de:2300 as a Vive tracker) or a device SteamVR
 // has no config for does. Configs as SteamVR caches them (config/lighthouse/<serial>/config.json).
 TEST(Watchdog, APluggedInTrackerOrControllerIsCharging) {

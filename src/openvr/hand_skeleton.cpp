@@ -268,7 +268,7 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
   }
   s.trigger = finite(in.trigger);
   // Pulling the trigger closes the index all the way without the controller; on a wand,
-  // as far as it's pulled (#105: it went from open to closed on the lightest pull).
+  // which has no finger sensors, as far as it's pulled.
   Spring(indexFromTrigger_ ? s.trigger : s.trigger > 0 ? 1.f : s.fist[0], dt, 250, &s.indexClose, &s.indexCloseV);
   const float force = finite(in.gripForce);
   s.squeeze = force > 0 ? Bias(std::min(1.f, force), 0.8f) : 0.f;
@@ -288,7 +288,7 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
   bool target = true;
   float tx = 0, ty = 0;
   // A deflected stick has the thumb on it too, as in ThumbState: a stick whose touch sensor
-  // fails still moves the thumb (#98).
+  // fails still moves the thumb.
   if (in.thumbstickTouch || in.thumbstickClick || in.thumbstickX != 0 || in.thumbstickY != 0) {
     tx = Remap(-side * float(in.thumbstickX), -1, 1, 0.2f, 1.f); ty = float(in.thumbstickY);
   } else if (in.trackpadTouch) {

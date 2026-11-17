@@ -11,7 +11,7 @@ vr::IVRWatchdogProvider* WatchdogProvider();
 
 // A wired device just plugged in: whether that's it being turned on, from SteamVR's cached config for its
 // serial ("" when SteamVR hasn't seen it). A controller or tracker on a USB cable shows up whether or not
-// it's on, since that's how it charges (#91), so it doesn't start SteamVR: stock's watchdog starts it on
+// it's on, since that's how it charges, so it doesn't start SteamVR: stock's watchdog starts it on
 // a new wireless connection, a system button or the headset's button, never on a plug-in. A headset has
 // no other way (the Bigscreen Beyond has no power button), and a device SteamVR doesn't know might be one.
 inline bool WiredPlugInWakes(const std::string& cachedConfig) {

@@ -269,8 +269,8 @@ void* HookImport(HMODULE module, const char* dll, const char* name, void* hook) 
 }
 
 // The stock DLL carries hidapi and exports it (hid_open_path, hid_get_feature_report...),
-// and drivers that rewrite a headset's config as it is read (CustomHeadsetOpenVR for Pimax,
-// #32) detour those exports in "driver_lighthouse.dll". Here that module is ours and the
+// and drivers that rewrite a headset's config as it is read (CustomHeadsetOpenVR for Pimax)
+// detour those exports in "driver_lighthouse.dll". Here that module is ours and the
 // stock code is "driver_lighthouse.dll.stock", so they hook ours and the stock driver read
 // the raw config: no display. Each exported hid_* of the stock DLL is patched to jump to
 // ours, so every HID call it makes (internal ones too: the patch is at the function's entry)

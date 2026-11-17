@@ -114,7 +114,7 @@ void LogView::Draw(TelemetryClient& client) {
   ImGui::BeginChild("lines", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
   const auto& logs = client.Logs();
   // Paused: the lines received up to then that are still stored. An index would slide to newer
-  // lines once the log is full and drops its oldest (#54.2).
+  // lines once the log is full and drops its oldest.
   size_t end = logs.size();
   if (paused_) {
     const uint64_t first = client.LogsReceived() - logs.size();  // running number of logs[0]

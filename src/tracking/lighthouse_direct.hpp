@@ -177,7 +177,7 @@ class LighthouseDirect {
   double time_ = 0, lastOpticalTime_ = 0, opticalTimeout_ = 0.5;
   bool swing_ = false;
   double violentUntil_ = -1e300;  // IMU calibration held until (freezeImuCalibration)
-  // Vibration (#90): the accelerometer's first and second differences between samples,
+  // Vibration: the accelerometer's first and second differences between samples,
   // averaged over ~0.25 s. Jitter over kVibrationJitter (m/s2) with roughness over
   // kVibrationRoughness times it holds gravity and the IMU calibration, and scales the
   // accelerometer's variance by kVibrationAccelScale.

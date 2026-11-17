@@ -150,7 +150,7 @@ class UsbTransport {
     std::string path;      // hidapi path, unique while plugged in
     bool bluetooth = false;  // receiver's radio in Bluetooth mode: no device can connect
     int keepalive = -1;      // last keepalive to a receiver with no device: 1 sent, 0 failed, -1 none yet
-    // A receiver can stay plugged in while another device paired to it connects (#92): its first
+    // A receiver can stay plugged in while another device paired to it connects: its first
     // data after a disconnect or a radio gap is checked against the device it was set up for
     // (OtherDeviceConnected). lastData: host time of its last data report.
     // The check runs on the probe thread (DeviceCheck), so it never holds up this one.
@@ -219,7 +219,7 @@ class UsbTransport {
   bool TakePairing(Open& o);
   // The stock keepalive to a receiver with no device, each probe pass (logged when it changes).
   void KeepAlive(Open& o);
-  // #92: which device a wireless receiver has, asked by the probe thread on a handle of its own
+  // Which device a wireless receiver has, asked by the probe thread on a handle of its own
   // (the query can take ~0.1 s and the reader thread serves every device). path: the receiver's
   // interface; serial: the device it was set up for; result: 1 another device, 0 the same,
   // -1 no answer, unset while queued.

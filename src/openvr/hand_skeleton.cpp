@@ -283,7 +283,8 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
   // moments with nothing touched). Lifted off everything, it rises at once to the
   // open hand's thumb from where it was, and comes down again on the next touch. The
   // left hand mirrors x.
-  constexpr float kThumbMove = 60, kThumbRise = 12, kThumbLower = 30;
+  // Lifting off and settling back both take ~0.2 s (a critically damped spring at 30/s).
+  constexpr float kThumbMove = 60, kThumbRise = 30, kThumbLower = 30;
   const float side = left_ ? -1.f : 1.f;
   bool target = true;
   float tx = 0, ty = 0;
@@ -307,7 +308,8 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
   const bool rise = !target;
   Spring(rise ? 1.f : 0.f, dt, rise ? kThumbRise : kThumbLower, &s.thumbRaise, &s.thumbRaiseV);
   s.thumbRaise = std::clamp(s.thumbRaise, 0.f, 1.f);
-  // WithController thumb state machine, cross-faded (0.2 s, 0.9 s back to rest).
+  // WithController thumb state machine, cross-faded in 0.2 s. Stock takes 0.9 s back to rest
+  // (nothing touched): the thumb looked slow to lift off the buttons.
   const int state = ThumbState(in);
   s.padX = -side * float(std::isfinite(in.trackpadX) ? in.trackpadX : 0);
   s.padY = float(std::isfinite(in.trackpadY) ? in.trackpadY : 0);
@@ -318,7 +320,7 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
     s.thumbState = state;
     s.fade = 0;
   }
-  s.fade = std::min(1.f, s.fade + dt / (state == 8 ? 0.9f : 0.2f));
+  s.fade = std::min(1.f, s.fade + dt / 0.2f);
 }
 
 Bones HandSkeleton::ThumbPose(const State& s, bool blended) const {

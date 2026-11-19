@@ -20,6 +20,7 @@ inline bool WiredPlugInWakes(const std::string& cachedConfig) {
   const auto c = j.find("device_class");
   if (c == j.end() || !c->is_string()) return true;
   const std::string deviceClass = c->get<std::string>();
-  return deviceClass != "controller" && deviceClass != "generic_tracker";
+  // "null": a tracker kept out of SteamVR's device list (a stand-in for the headset), not a headset.
+  return deviceClass != "controller" && deviceClass != "generic_tracker" && deviceClass != "null";
 }
 }  // namespace lh::openvr

@@ -258,6 +258,10 @@ struct DeviceStatic {
   lh::ControllerType controllerType = lh::ControllerType::Index;
   bool lh2 = false;         // base stations: a 2.0 one
   std::string resourceRoot, inputProfile, registeredType;  // trackers: the config's own (lh::DeviceInfo)
+  // device_class "null": tracked as ever, but registered as TrackedDeviceClass_Invalid, so SteamVR and
+  // apps don't list it, while TrackingOverrides can still use it (e.g. a tracker on the head standing
+  // in for the headset). As the stock driver (0x2e8120): a class it doesn't know is Invalid.
+  bool hidden = false;
 };
 
 class Device : public ITrackedDeviceServerDriver {
@@ -673,7 +677,7 @@ class Device : public ITrackedDeviceServerDriver {
         props->SetStringProperty(c, Prop_RenderModelName_String, renderModel.c_str());
         props->SetStringProperty(c, Prop_RegisteredDeviceType_String, registered.c_str());
         props->SetInt32Property(c, Prop_ControllerRoleHint_Int32, TrackedControllerRole_OptOut);
-        props->SetInt32Property(c, Prop_DeviceClass_Int32, TrackedDeviceClass_GenericTracker);
+        props->SetInt32Property(c, Prop_DeviceClass_Int32, info_.hidden ? TrackedDeviceClass_Invalid : TrackedDeviceClass_GenericTracker);
         props->SetBoolProperty(c, Prop_DeviceProvidesBatteryStatus_Bool, true);
         props->SetFloatProperty(c, Prop_DeviceBatteryPercentage_Float, 1.0f);
         props->SetBoolProperty(c, Prop_DeviceIsCharging_Bool, false);
@@ -1505,8 +1509,10 @@ class Provider : public IServerTrackedDeviceProvider {
       info.resourceRoot = d.info.resourceRoot;
       info.inputProfile = d.info.inputProfile;
       info.registeredType = d.info.registeredType;
-      Add(info, d.info.role == lh::DeviceRole::Controller ? TrackedDeviceClass_Controller
-                                                          : TrackedDeviceClass_GenericTracker);
+      info.hidden = EqualsNoCase(d.info.deviceClass, "null");
+      Add(info, info.hidden ? TrackedDeviceClass_Invalid
+                : d.info.role == lh::DeviceRole::Controller ? TrackedDeviceClass_Controller
+                                                            : TrackedDeviceClass_GenericTracker);
     }
     for (const auto& b : snapshot_.bases) {
       if (const auto found = devices_.find(b.serial); found != devices_.end()) {
@@ -1532,7 +1538,7 @@ class Provider : public IServerTrackedDeviceProvider {
     if (!VRServerDriverHost()->TrackedDeviceAdded(info.serial.c_str(), cls, raw->ForHost()))
       Log("host declined " + info.serial + (cls == TrackedDeviceClass_TrackingReference ? " (base station)" : ""));
     else
-      Log("registered " + info.serial);
+      Log("registered " + info.serial + (info.hidden ? " (device_class null: hidden from SteamVR's device list)" : ""));
   }
 
   // SteamVR's base station power management asks the headset to switch the Bluetooth

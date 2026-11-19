@@ -1,6 +1,7 @@
 #include "room_publisher.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -167,9 +168,13 @@ void RoomPublisher::Publish(const SessionSnapshot& snapshot, const Eigen::Isomet
   }
 #if defined(__linux__) || defined(_WIN32)
   if (!Open()) return;
-  auto* seq = reinterpret_cast<volatile uint32_t*>(&shm_->seq);
-  __atomic_store_n(&shm_->seq, *seq + 1, __ATOMIC_RELEASE);
-  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  // Seqlock (room_shm.h): odd while a write is in progress, so a reader can tell a torn
+  // read. atomic_ref is the portable spelling of the __atomic_* builtins this used, which
+  // GCC and Clang have but MSVC does not; the field itself is a plain uint32_t in shared
+  // memory, which atomic_ref requires to be naturally aligned (it is).
+  std::atomic_ref<uint32_t> seq(shm_->seq);
+  seq.fetch_add(1, std::memory_order_release);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   shm_->beat = MonotonicSeconds();
   shm_->epoch = settle_.epoch();
   shm_->settled = settled;
@@ -190,8 +195,8 @@ void RoomPublisher::Publish(const SessionSnapshot& snapshot, const Eigen::Isomet
     out.sigma = b.sigma;
   }
   shm_->count = n;
-  __atomic_thread_fence(__ATOMIC_SEQ_CST);
-  __atomic_store_n(&shm_->seq, *seq + 1, __ATOMIC_RELEASE);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  seq.fetch_add(1, std::memory_order_release);
 #else
   (void)settled;
 #endif

@@ -93,6 +93,7 @@ class TelemetryClient {
 
   int port_;
   net::Socket socket_ = net::kInvalid;
+  bool connecting_ = false;  // connect() still pending
   double nextAttempt_ = 0;
   std::string buffer_, host_, version_;
   int pid_ = 0;

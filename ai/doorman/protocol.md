@@ -51,6 +51,9 @@ frames = repeated [len][frame]
 * Pairing target (firmware 0x0004): `pair SECS [SLOT+1]`. With a slot given, a device that was
   paired elsewhere moves there; with 0 or none given, it takes the first free slot. The target
   is saved and pairing closes.
+* A device in pairing mode only joins on a beacon with the pairing flag set. For 35 s after a
+  device is saved (firmware 0x0008), beacons assigning its slot keep the flag set: before, it
+  ignored its own assignment until its pairing timed out (~35 s, 100% loss meanwhile).
 * `forget SLOT|0xFF` removes devices from the table.
 * The device starts pairing on its own pairing gesture (Tracker 1.0: hold the power button
   2 s; Index: the stock gesture). The main MCU tells the radio over SPI exactly as it does with

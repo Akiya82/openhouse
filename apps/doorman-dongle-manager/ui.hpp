@@ -65,12 +65,13 @@ class Ui {
   uint64_t logo_ = 0;
   // firmware update (UF2 drive copy), on a thread of its own
   char firmwarePath_[512] = {};
+  double lastSave_ = 0;
   std::thread updater_;
   std::atomic<bool> updating_{false};
   std::mutex updateMutex_;
   std::string updateStatus_;
   bool updateError_ = false;
-  void StartUpdate(std::shared_ptr<Dongle> d, const std::string& file);
+  void StartUpdate(std::shared_ptr<Dongle> d, const std::string& file, bool holyiot);
 };
 
 }  // namespace openhouse::dongle

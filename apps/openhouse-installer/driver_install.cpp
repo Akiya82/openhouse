@@ -289,7 +289,9 @@ constexpr const char* kUdevRules =
     "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"0bb4\", MODE=\"0660\", TAG+=\"uaccess\"\n"
     "# Doorman Dongle.\n"
     "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"6767\", ATTRS{idProduct}==\"0727\", MODE=\"0660\", TAG+=\"uaccess\"\n"
-    "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"6767\", ATTRS{idProduct}==\"0727\", MODE=\"0660\", TAG+=\"uaccess\"\n";
+    "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"6767\", ATTRS{idProduct}==\"0727\", MODE=\"0660\", TAG+=\"uaccess\"\n"
+    "# Nordic's USB DFU bootloader (Holyiot dongles): its serial port, kept away from ModemManager.\n"
+    "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"1915\", ATTRS{idProduct}==\"521f\", MODE=\"0660\", TAG+=\"uaccess\", ENV{ID_MM_DEVICE_IGNORE}=\"1\"\n";
 
 // One root shell command through pkexec (the desktop's password prompt).
 bool AsRoot(const std::string& script, const std::vector<std::string>& args, std::string* error) {
@@ -325,7 +327,7 @@ bool InstallDeviceAccess(std::string* error) {
   const fs::path temp = DataDirectory() / "60-openhouse.rules";
   if (!WriteFileAtomic(temp, kUdevRules)) { *error = "couldn't write " + Utf8(temp); return false; }
   const bool ok = AsRoot(std::string("install -m 0644 \"$1\" ") + kUdevPath +
-                             " && udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw --subsystem-match=usb",
+                             " && udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=tty",
                          {Utf8(temp)}, error);
   RemoveFile(temp);
   return ok;

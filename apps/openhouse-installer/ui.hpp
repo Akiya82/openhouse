@@ -48,32 +48,51 @@ class Job {
   float progress_ = 0;
 };
 
-// Runs `look` every `seconds` on a thread, keeping the latest result.
+// Held by scans and jobs while they talk to devices: a scan that's still finishing never talks to a
+// device a job is using.
+inline std::mutex g_deviceMutex;
+
+// Runs `look` every `seconds` on a thread, keeping the latest result. Stop() doesn't wait for a
+// look in progress (a wireless scan can take seconds): it finishes on its own, under g_deviceMutex.
 template <class T>
 class Watcher {
  public:
   ~Watcher() { Stop(); }
   void Start(std::function<T()> look, double seconds) {
     Stop();
-    stop_ = false;
-    have_ = false;
-    thread_ = std::thread([this, look, seconds] {
-      while (!stop_) {
-        T value = look();
-        { std::lock_guard l(m_); value_ = std::move(value); have_ = true; }
-        for (int i = 0; i < int(seconds * 10) && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto state = std::make_shared<State>();
+    state_ = state;
+    std::thread([state, look, seconds] {
+      while (!state->stop) {
+        T value;
+        {
+          std::lock_guard d(g_deviceMutex);
+          if (state->stop) break;
+          value = look();
+        }
+        { std::lock_guard l(state->m); state->value = std::move(value); state->have = true; }
+        for (int i = 0; i < int(seconds * 10) && !state->stop; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
-    });
+    }).detach();
   }
-  void Stop() { stop_ = true; if (thread_.joinable()) thread_.join(); }
-  T Value() const { std::lock_guard l(m_); return value_; }
-  bool Have() const { return have_; }
+  void Stop() {
+    if (state_) state_->stop = true;
+    state_.reset();
+  }
+  T Value() const {
+    if (!state_) return T{};
+    std::lock_guard l(state_->m);
+    return state_->value;
+  }
+  bool Have() const { return state_ && state_->have; }
 
  private:
-  std::thread thread_;
-  std::atomic<bool> stop_{true}, have_{false};
-  mutable std::mutex m_;
-  T value_{};
+  struct State {
+    std::atomic<bool> stop{false}, have{false};
+    std::mutex m;
+    T value{};
+  };
+  std::shared_ptr<State> state_;
 };
 
 class Ui {
@@ -137,7 +156,8 @@ class Ui {
 
   // Dongle flow
   enum class DongleStep { Board, Detect, Flashing, Done } dongleStep_ = DongleStep::Board;
-  struct DongleSeen { std::vector<Uf2Drive> drives; std::vector<DoormanDongleInfo> dongles; };
+  bool dongleHolyiot_ = false;  // board picked: Holyiot 21017 (Nordic DFU) or a UF2 one
+  struct DongleSeen { std::vector<Uf2Drive> drives; std::vector<std::string> ports; std::vector<DoormanDongleInfo> dongles; };
   Watcher<DongleSeen> dongleSeen_;
   std::string dongleResult_;
 

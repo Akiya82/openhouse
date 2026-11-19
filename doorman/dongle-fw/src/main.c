@@ -111,6 +111,7 @@ static void handle(const uint8_t *in, uint16_t len) {
         }
         d[52] = NRF_POWER->GPREGRET2;
         put32(d + 53, *(volatile uint32_t *)0x3000 == 0x51B1E5DB);   /* SoftDevice magic still in flash? */
+        d[57] = BOARD_HOLYIOT ? 1 : 0;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017 (Nordic DFU) */
         break;
     case CMD_STATS: put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks); break;
     case CMD_ECHO: memcpy(d, in + 2, len - 2 > 61 ? 61 : len - 2); break;

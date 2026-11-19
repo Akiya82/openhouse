@@ -89,8 +89,9 @@ struct DoormanDongleInfo {
   std::string serial, path;
   uint16_t firmware = 0;
   bool softDeviceBuild = false;  // running the "_sd" build
+  bool holyiot = false;          // Holyiot 21017 build (Nordic DFU bootloader, not UF2)
 };
 std::vector<DoormanDongleInfo> FindDoormanDongles();
-bool RebootToBootloader(const DoormanDongleInfo& d);  // its UF2 drive appears
+bool RebootToBootloader(const DoormanDongleInfo& d);  // its UF2 drive appears (Holyiot: its DFU serial port)
 
 }  // namespace openhouse::installer

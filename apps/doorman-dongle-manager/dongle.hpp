@@ -55,6 +55,7 @@ struct DongleState {
   // CMD_INFO
   int firmware = 0;          // 0x0004
   bool softdeviceVariant = false, watchdog = false;
+  bool holyiot = false;  // Holyiot 21017 build: updates through Nordic's DFU bootloader, not UF2
   uint32_t uptimeMs = 0, resetReason = 0;
   uint32_t crashCount = 0, crashType = 0, crashPc = 0;
   bool linkOn = true;
@@ -157,8 +158,15 @@ class DongleManager {
   const std::vector<std::shared_ptr<Dongle>>& Dongles() const { return dongles_; }
 
  private:
+  struct Found { std::string path, serial; };
+  void Scan();  // background thread: hid_enumerate is slow on Windows (it opens every HID device)
+
   std::vector<std::shared_ptr<Dongle>> dongles_;
-  double nextScan_ = 0;
+  std::mutex foundMutex_;
+  std::vector<Found> found_;
+  bool foundFresh_ = false;
+  std::atomic<bool> stop_{false};
+  std::thread scanner_;
 };
 
 double Now();  // seconds, steady clock

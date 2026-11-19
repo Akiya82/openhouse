@@ -17,6 +17,7 @@ std::array<double, N> Array(const json& j, std::array<double, N> fallback) {
 void TelemetryClient::Disconnect() {
   net::Close(socket_);
   socket_ = net::kInvalid;
+  connecting_ = false;
   helloed_ = haveState_ = false;
   buffer_.clear();
   state_ = {};
@@ -28,6 +29,13 @@ void TelemetryClient::Poll(double now) {
     nextAttempt_ = now + 1.0;
     socket_ = net::ConnectLoopback(port_);
     if (socket_ == net::kInvalid) return;
+    connecting_ = true;
+  }
+  if (connecting_) {
+    const int done = net::ConnectDone(socket_);
+    if (done == 0) return;
+    if (done < 0) { Disconnect(); return; }
+    connecting_ = false;
   }
   char chunk[64 * 1024];
   for (int i = 0; i < 64; ++i) {  // bounded per frame; the rest waits for the next one

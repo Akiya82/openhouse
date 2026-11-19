@@ -102,9 +102,10 @@ int RunDesktop() {
     }
     const double interval = glfwGetWindowAttrib(window, GLFW_FOCUSED) ? 1.0 / 60 : 1.0 / 20;
     const double wait = next + interval - glfwGetTime();
-    if (wait > 0) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+    // Wait on the window's events, not a sleep: Windows hears a click (a drag starting) at once.
+    if (wait > 0) glfwWaitEventsTimeout(wait);
+    else glfwPollEvents();
     next = glfwGetTime();
-    glfwPollEvents();
     ui.Poll(glfwGetTime());
     ImGui_ImplOpenGL2_NewFrame();
     ImGui_ImplGlfw_NewFrame();

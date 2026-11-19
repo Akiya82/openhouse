@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "common/nordic_dfu.hpp"
 #include "lh/telemetry.hpp"
 #include "lh/version.hpp"
 #include "update_check.hpp"
@@ -308,7 +309,10 @@ void Ui::Poll(double now) {
       if (k != known_.end() && k->second.nickname != s.nickname) d->SetNickname(i, k->second.nickname);
     }
   }
-  if (knownDirty_) SaveSettings();
+  if (knownDirty_ && now - lastSave_ > 2.0) {  // a file write: not every frame
+    SaveSettings();
+    lastSave_ = now;
+  }
 }
 
 // ---- layout ----
@@ -822,7 +826,8 @@ void Ui::Firmware(const DongleState& d) {
     };
     char t[96];
     row("Dongle", d.serial);
-    std::snprintf(t, sizeof t, "%d (%s build%s)", d.firmware, d.softdeviceVariant ? "Nordic bootloader" : "bare",
+    std::snprintf(t, sizeof t, "%d (%s build%s)", d.firmware,
+                  d.holyiot ? "Holyiot 21017" : d.softdeviceVariant ? "Nordic bootloader" : "bare",
                   d.watchdog ? ", watchdog" : "");
     row("Firmware", t);
     row("Up for", Uptime(d.uptimeMs));
@@ -849,25 +854,28 @@ void Ui::Firmware(const DongleState& d) {
 
   ImGui::Spacing();
   ImGui::SeparatorText("Update");
-  ImGui::TextWrapped("Pick the .uf2 file for this dongle (%s). The dongle restarts into update mode and shows up "
-                     "as a USB drive; the file is copied onto it and the dongle starts the new firmware by itself.",
-                     d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
+  if (d.holyiot)
+    ImGui::TextWrapped("Pick doorman-holyiot.hex. The dongle restarts into its DFU bootloader and the file is sent over USB.");
+  else
+    ImGui::TextWrapped("Pick the .uf2 file for this dongle (%s). The dongle restarts into update mode and shows up "
+                       "as a USB drive; the file is copied onto it and the dongle starts the new firmware by itself.",
+                       d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
-  ImGui::InputTextWithHint("##uf2", "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
+  ImGui::InputTextWithHint("##uf2", d.holyiot ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
   ImGui::SameLine();
   const bool exists = firmwarePath_[0] && fs::exists(fs::u8path(firmwarePath_));
   ImGui::BeginDisabled(!exists || updating_);
   if (TintButton(updating_ ? "Updating..." : "Update", kAccent, -1)) ImGui::OpenPopup("Update?");
   ImGui::EndDisabled();
   if (Confirm("Update?", "Update the dongle's firmware? Every device drops until it's done (about 10 s)."))
-    StartUpdate(dongle, firmwarePath_);
+    StartUpdate(dongle, firmwarePath_, d.holyiot);
   {
     std::lock_guard lock(updateMutex_);
     if (!updateStatus_.empty()) ImGui::TextColored(updateError_ ? kBad : updating_ ? kInfo : kGood, "%s", updateStatus_.c_str());
   }
 }
 
-void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file) {
+void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bool holyiot) {
   if (updating_) return;
   if (updater_.joinable()) updater_.join();
   updating_ = true;
@@ -877,6 +885,35 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file) {
     updateError_ = error;
   };
   set("Putting the dongle in update mode...");
+  if (holyiot) {
+    updater_ = std::thread([this, dongle, file, set] {
+      lh::dfu::Image image;
+      std::string error;
+      if (!lh::dfu::LoadHex(file, 0x1000, 0xDA000, &image, &error) || image.base != 0x1000) {
+        set(error.empty() ? "This file isn't built for the Holyiot dongle." : "Can't use this file: " + error, true);
+        updating_ = false;
+        return;
+      }
+      const auto before = lh::dfu::FindBootloaderPorts();
+      dongle->EnterBootloader(nullptr);
+      std::string port;
+      for (const double until = Now() + 20; Now() < until && port.empty();) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        for (const auto& p : lh::dfu::FindBootloaderPorts())
+          if (std::find(before.begin(), before.end(), p) == before.end()) port = p;
+      }
+      if (port.empty()) { set("The DFU bootloader didn't show up. Press the dongle's RESET button and try again.", true); updating_ = false; return; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));  // let the port settle
+      const bool ok = lh::dfu::Flash(port, image, [&](float f) {
+        char text[64];
+        std::snprintf(text, sizeof text, "Sending firmware... %d%%", int(f * 100));
+        set(text);
+      }, &error);
+      set(ok ? "Done: the dongle restarts with the new firmware." : "Update failed: " + error, !ok);
+      updating_ = false;
+    });
+    return;
+  }
   updater_ = std::thread([this, dongle, file, set] {
     const auto before = Uf2Drives();
     dongle->EnterBootloader(nullptr);

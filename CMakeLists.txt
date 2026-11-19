@@ -332,11 +332,12 @@ if(LH_BUILD_VIEWER)
     # linked in (GLFW statically with LH_STATIC_GLFW), and on Linux the C++ runtime too.
     add_executable(openhouse-installer WIN32 apps/openhouse-installer/main.cpp apps/openhouse-installer/ui.cpp
                    apps/openhouse-installer/system.cpp apps/openhouse-installer/driver_install.cpp
-                   apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp)
+                   apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp
+                   src/common/nordic_dfu.cpp)
     target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
     target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
     if(WIN32)
-      target_link_libraries(openhouse-installer PRIVATE shell32 ole32)
+      target_link_libraries(openhouse-installer PRIVATE shell32 ole32 setupapi)
     else()
       target_link_options(openhouse-installer PRIVATE -static-libstdc++ -static-libgcc)
     endif()
@@ -348,12 +349,12 @@ if(LH_BUILD_VIEWER)
     # A desktop window; device names from the driver's telemetry when it runs.
     if(LH_BUILD_USB)
       add_executable(doorman-dongle-manager WIN32 apps/doorman-dongle-manager/main.cpp apps/doorman-dongle-manager/ui.cpp
-                     apps/doorman-dongle-manager/dongle.cpp apps/openhouse-overlay/telemetry_client.cpp
+                     apps/doorman-dongle-manager/dongle.cpp apps/openhouse-overlay/telemetry_client.cpp src/common/nordic_dfu.cpp
                      apps/openhouse-overlay/update_check.cpp)
       target_include_directories(doorman-dongle-manager PRIVATE src src/transport/usb apps/openhouse-overlay)
       target_link_libraries(doorman-dongle-manager PRIVATE lh_usb lh_common lh_imgui nlohmann_json::nlohmann_json)
       if(WIN32)
-        target_link_libraries(doorman-dongle-manager PRIVATE winhttp shell32)
+        target_link_libraries(doorman-dongle-manager PRIVATE winhttp shell32 setupapi)
       endif()
       if(MSVC)
         target_link_options(doorman-dongle-manager PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()

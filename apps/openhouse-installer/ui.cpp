@@ -10,6 +10,7 @@
 #include <ctime>
 #include <cstdlib>
 
+#include "common/nordic_dfu.hpp"
 #include "lh/version.hpp"
 
 namespace openhouse::installer {
@@ -181,6 +182,8 @@ float DeviceListReserve() {
          ImGui::GetFrameHeightWithSpacing() + st.ItemSpacing.y * 2;
 }
 
+fs::path HolyiotImage() { return FirmwareFolder() / "dongle" / "doorman-holyiot.hex"; }
+
 fs::path DongleImage(bool softDevice) {
   return FirmwareFolder() / "dongle" / (softDevice ? "doorman-dongle-sd.uf2" : "doorman-dongle-nosd.uf2");
 }
@@ -192,6 +195,7 @@ void Job::Start(std::function<bool(Job&)> work) {
   running_ = true;
   thread_ = std::thread([this, work] {
     bool ok = false;
+    std::lock_guard devices(g_deviceMutex);  // a stopped scan may still be finishing
     try {
       ok = work(*this);
     } catch (const std::exception& e) {
@@ -764,10 +768,20 @@ void Ui::DonglePage() {
   switch (dongleStep_) {
     case DongleStep::Board: {
       ImGui::TextUnformatted("Board:");
-      if (BigButton("ProMicro nRF52840 (Adafruit Bootloader)", ImGui::GetFontSize() * 34)) {
+      const auto watch = [this](bool holyiot) {
+        dongleHolyiot_ = holyiot;
         dongleStep_ = DongleStep::Detect;
-        dongleSeen_.Start([] { return DongleSeen{FindUf2Drives(), FindDoormanDongles()}; }, 1.0);
-      }
+        dongleSeen_.Start([holyiot] {
+          DongleSeen s;
+          if (holyiot) s.ports = lh::dfu::FindBootloaderPorts();
+          else s.drives = FindUf2Drives();
+          for (auto& d : FindDoormanDongles())
+            if (d.holyiot == holyiot) s.dongles.push_back(d);
+          return s;
+        }, 1.0);
+      };
+      if (BigButton("ProMicro nRF52840 (Adafruit Bootloader)", ImGui::GetFontSize() * 34)) watch(false);
+      if (BigButton("Holyiot 21017 (Nordic Bootloader)", ImGui::GetFontSize() * 34)) watch(true);
       Back(Page::DoormanMenu);
       return;
     }
@@ -775,77 +789,88 @@ void Ui::DonglePage() {
       const DongleSeen seen = dongleSeen_.Value();
       if (!DeviceAccess()) { Back(Page::DoormanMenu); return; }
       Step(1, "Plug the dongle in");
-      Step(2, "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
+      Step(2, dongleHolyiot_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
+                             : "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
       ImGui::Spacing();
-      if (seen.drives.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
-      auto flash = [this](const Uf2Drive& drive) {
+      if (seen.drives.empty() && seen.ports.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
+      // It restarts as a Doorman Dongle: check it answers.
+      static const auto verify = [](Job& j) {
+        for (int i = 0; i < 200; ++i) {
+          j.Status(0.8f + 0.2f * float(i) / 200.f, "Verifying");
+          for (const auto& d : FindDoormanDongles())
+            if (d.firmware) {
+              char text[96];
+              std::snprintf(text, sizeof text, "Dongle %s is working (firmware %04X)", d.serial.c_str(), d.firmware);
+              j.Log(text);
+              j.Status(1, "Done");
+              return true;
+            }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        j.Fail("the dongle didn't show up after flashing, replug it and try again");
+        return false;
+      };
+      static const auto flashUf2 = [](Job& j, const Uf2Drive& drive) {
+        const fs::path image = DongleImage(drive.softDevice);
+        j.Log("Firmware: " + Utf8(image.filename()));
+        std::string error;
+        if (!CopyUf2(drive, image, &error, [&](float f) { j.Status(f * 0.8f, "Flashing"); })) { j.Fail(error); return false; }
+        return verify(j);
+      };
+      static const auto flashDfu = [](Job& j, const std::string& port) {
+        const fs::path file = HolyiotImage();
+        j.Log("Firmware: " + Utf8(file.filename()));
+        lh::dfu::Image image;
+        std::string error;
+        // App space of Nordic's open bootloader: after the MBR, below the pairing page and the bootloader.
+        if (!lh::dfu::LoadHex(Utf8(file), 0x1000, 0xDA000, &image, &error)) { j.Fail(error); return false; }
+        if (image.base != 0x1000) { j.Fail("this firmware isn't built for this bootloader"); return false; }
+        j.Log("Bootloader on " + port);
+        if (!lh::dfu::Flash(port, image, [&](float f) { j.Status(f * 0.8f, "Flashing"); }, &error)) { j.Fail(error); return false; }
+        return verify(j);
+      };
+      const auto start = [this](std::function<bool(Job&)> work) {
         dongleSeen_.Stop();
         dongleStep_ = DongleStep::Flashing;
-        job_.Start([drive](Job& j) {
-          const fs::path image = DongleImage(drive.softDevice);
-          j.Log("Firmware: " + Utf8(image.filename()));
-          std::string error;
-          if (!CopyUf2(drive, image, &error, [&](float f) { j.Status(f * 0.8f, "Flashing"); })) { j.Fail(error); return false; }
-          // It restarts as a Doorman Dongle: check it answers.
-          for (int i = 0; i < 200; ++i) {
-            j.Status(0.8f + 0.2f * float(i) / 200.f, "Verifying");
-            for (const auto& d : FindDoormanDongles())
-              if (d.firmware) {
-                char text[96];
-                std::snprintf(text, sizeof text, "Dongle %s is working (firmware %04X)", d.serial.c_str(), d.firmware);
-                j.Log(text);
-                j.Status(1, "Done");
-                return true;
-              }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          }
-          j.Fail("the dongle didn't show up after flashing, replug it and try again");
-          return false;
-        });
+        job_.Start(std::move(work));
       };
       for (const auto& d : seen.drives) {
         const std::string label = d.name + (d.board.empty() ? "" : "  (" + d.board + ")");
-        if (BigButton(label.c_str(), ImGui::GetFontSize() * 34)) flash(d);
+        if (BigButton(label.c_str(), ImGui::GetFontSize() * 34)) start([d](Job& j) { return flashUf2(j, d); });
+      }
+      for (const auto& port : seen.ports) {
+        const std::string label = "Nordic DFU bootloader (" + port + ")";
+        if (BigButton(label.c_str(), ImGui::GetFontSize() * 34)) start([port](Job& j) { return flashDfu(j, port); });
       }
       for (const auto& d : seen.dongles) {
         char label[128];
         std::snprintf(label, sizeof label, "Doorman Dongle %s", d.serial.c_str());
-        if (BigButton(label, ImGui::GetFontSize() * 34)) {
-          // Restarts it in its update mode, then flashes the drive that appears.
-          dongleSeen_.Stop();
-          dongleStep_ = DongleStep::Flashing;
-          const DoormanDongleInfo dongle = d;
-          job_.Start([dongle](Job& j) {
-            const auto before = FindUf2Drives();
-            j.Status(0, "Rebooting into DFU mode");
-            if (!RebootToBootloader(dongle)) { j.Fail("couldn't open the dongle, close SteamVR and doorman-dongle-manager"); return false; }
-            for (int i = 0; i < 150; ++i) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(100));
-              for (const auto& drive : FindUf2Drives()) {
-                if (std::any_of(before.begin(), before.end(), [&](const Uf2Drive& b) { return b.mount == drive.mount; })) continue;
-                const fs::path image = DongleImage(drive.softDevice);
-                j.Log("Firmware: " + Utf8(image.filename()));
-                std::string error;
-                if (!CopyUf2(drive, image, &error, [&](float f) { j.Status(f * 0.8f, "Flashing"); })) { j.Fail(error); return false; }
-                for (int k = 0; k < 200; ++k) {
-                  j.Status(0.8f + 0.2f * float(k) / 200.f, "Verifying");
-                  for (const auto& d2 : FindDoormanDongles())
-                    if (d2.firmware) {
-                      char text[96];
-                      std::snprintf(text, sizeof text, "Dongle %s is working (firmware %04X)", d2.serial.c_str(), d2.firmware);
-                      j.Log(text);
-                      return true;
-                    }
-                  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!BigButton(label, ImGui::GetFontSize() * 34)) continue;
+        // Restarts it in its update mode, then flashes what appears.
+        const DoormanDongleInfo dongle = d;
+        start([dongle](Job& j) {
+          const auto drivesBefore = FindUf2Drives();
+          const auto portsBefore = lh::dfu::FindBootloaderPorts();
+          j.Status(0, "Rebooting into DFU mode");
+          if (!RebootToBootloader(dongle)) { j.Fail("couldn't open the dongle, close SteamVR and doorman-dongle-manager"); return false; }
+          for (int i = 0; i < 150; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (dongle.holyiot) {
+              for (const auto& port : lh::dfu::FindBootloaderPorts())
+                if (std::find(portsBefore.begin(), portsBefore.end(), port) == portsBefore.end()) {
+                  std::this_thread::sleep_for(std::chrono::milliseconds(500));  // let the port settle
+                  return flashDfu(j, port);
                 }
-                j.Fail("the dongle didn't show up after flashing, replug it and try again");
-                return false;
-              }
+            } else {
+              for (const auto& drive : FindUf2Drives())
+                if (std::none_of(drivesBefore.begin(), drivesBefore.end(), [&](const Uf2Drive& b) { return b.mount == drive.mount; }))
+                  return flashUf2(j, drive);
             }
-            j.Fail("the dongle didn't enter DFU mode, short RST and GND twice and try again");
-            return false;
-          });
-        }
+          }
+          j.Fail(dongle.holyiot ? "the dongle didn't enter DFU mode, press its RESET button and try again"
+                                : "the dongle didn't enter DFU mode, short RST and GND twice and try again");
+          return false;
+        });
       }
       Back(Page::DoormanMenu);
       return;

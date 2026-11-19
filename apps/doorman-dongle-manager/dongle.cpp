@@ -238,6 +238,7 @@ void Dongle::Poll(double now) {
       std::lock_guard lock(mutex_);
       state_.firmware = d[4] | d[5] << 8;
       state_.softdeviceVariant = d[6];
+      state_.holyiot = d[57] == 1;
       state_.watchdog = d[7];
       state_.resetReason = Rd32(d + 12);
       state_.uptimeMs = Rd32(d + 16);
@@ -474,29 +475,69 @@ void Dongle::ClearCrash(Done done) {
 }
 
 // ---------------------------------------------------------------------------------------------
-DongleManager::DongleManager() { hid_init(); }
-DongleManager::~DongleManager() {
-  dongles_.clear();
-  hid_exit();
+// A Dongle's destructor waits for its thread, which can sit in a USB call on a device that's going
+// away (Windows takes its time there): never on the UI thread.
+static std::atomic<int> g_dropping{0};
+static void DropLater(std::shared_ptr<Dongle> d) {
+  if (!d) return;
+  ++g_dropping;
+  std::thread([d = std::move(d)]() mutable { d.reset(); --g_dropping; }).detach();
 }
 
-void DongleManager::Poll(double now) {
-  std::erase_if(dongles_, [](const auto& d) { return !d->Alive() && d->Snapshot().error.empty(); });
-  if (now < nextScan_) return;
-  nextScan_ = now + 2.0;
-  hid_device_info* list = hid_enumerate(kVid, kPid);
-  for (hid_device_info* d = list; d; d = d->next) {
-    if (Narrow(d->product_string) != "Doorman Dongle" || d->interface_number > 0) continue;
-    const std::string serial = "OHDG-" + Narrow(d->serial_number);
+DongleManager::DongleManager() {
+  hid_init();
+  scanner_ = std::thread([this] { Scan(); });
+}
+DongleManager::~DongleManager() {
+  stop_ = true;
+  if (scanner_.joinable()) scanner_.join();
+  dongles_.clear();
+  // Dongles still closing on their own threads: hidapi must outlive them (bounded: we're exiting).
+  for (int i = 0; i < 30 && g_dropping > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  if (g_dropping == 0) hid_exit();
+}
+
+void DongleManager::Scan() {
+  while (!stop_) {
+    std::vector<Found> found;
+    hid_device_info* list = hid_enumerate(kVid, kPid);
+    for (hid_device_info* d = list; d; d = d->next)
+      if (Narrow(d->product_string) == "Doorman Dongle" && d->interface_number <= 0)
+        found.push_back({d->path, "OHDG-" + Narrow(d->serial_number)});
+    hid_free_enumeration(list);
+    {
+      std::lock_guard lock(foundMutex_);
+      found_ = std::move(found);
+      foundFresh_ = true;
+    }
+    for (int i = 0; i < 20 && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+}
+
+void DongleManager::Poll(double) {
+  for (auto it = dongles_.begin(); it != dongles_.end();) {
+    if (!(*it)->Alive() && (*it)->Snapshot().error.empty()) { DropLater(std::move(*it)); it = dongles_.erase(it); }
+    else ++it;
+  }
+  std::vector<Found> found;
+  {
+    std::lock_guard lock(foundMutex_);
+    if (!foundFresh_) return;
+    foundFresh_ = false;
+    found = found_;
+  }
+  for (const auto& f : found) {
     bool have = false;
     for (auto& x : dongles_)
-      if (x->Serial() == serial) {
+      if (x->Serial() == f.serial) {
         have = true;
-        if (!x->Alive()) x = std::make_shared<Dongle>(d->path, serial);  // retry one that failed to open
+        if (!x->Alive()) {  // retry one that failed to open
+          DropLater(std::move(x));
+          x = std::make_shared<Dongle>(f.path, f.serial);
+        }
       }
-    if (!have) dongles_.push_back(std::make_shared<Dongle>(d->path, serial));
+    if (!have) dongles_.push_back(std::make_shared<Dongle>(f.path, f.serial));
   }
-  hid_free_enumeration(list);
 }
 
 }  // namespace openhouse::dongle

@@ -69,6 +69,12 @@ static uint32_t ch_eval_ms;
 static uint32_t pairing_until_ms;
 static uint8_t pair_target = 0xFF;   /* slot the next pairing goes to (0xFF: first free) */
 static uint8_t assign_id[8], assign_slot = 0xFF, assign_left;
+/* The device paired last: its slot and until when its join beacons still say "pairing open". Pairing
+   closes here the moment the device is stored, but the device stays in pairing mode until it joins, and
+   a device in pairing mode only takes a beacon with pairing open: without this it ignored its own slot
+   assignment until its pairing timed out (~35 s), shown here as paired with 100% loss. */
+static uint8_t just_paired_slot = 0xFF;
+static uint32_t just_paired_until_ms;
 static uint32_t last_join_ms, joins_heard;
 
 static uint8_t pkt_tx[2 + OHL_MAXLEN], pkt_rx[2 + OHL_MAXLEN];
@@ -229,7 +235,8 @@ static void join_beacon(void)
 {
   uint8_t *p = pkt_tx + 1;
   p[0] = OHL_JOIN; memcpy(p + 1, &net_base, 4);
-  p[5] = ms_ticks < pairing_until_ms ? 1 : 0;
+  p[5] = ms_ticks < pairing_until_ms ||
+         (assign_left && assign_slot == just_paired_slot && (int32_t)(just_paired_until_ms - ms_ticks) > 0) ? 1 : 0;
   if (assign_left) { memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--; }
   else { memset(p + 6, 0, 8); p[14] = 0xFF; }
   p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us / 50);
@@ -257,9 +264,13 @@ static void join_beacon(void)
     if (slot >= 0) pairs.used &= ~(1u << slot);
     slot = pair_target;
     memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
+    just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
   } else if (slot < 0 && ms_ticks < pairing_until_ms && pairing) {   /* new device, pairing: first free slot */
     for (int i = 0; i < OHL_SLOTS && slot < 0; i++) if (!((pairs.used >> i) & 1)) slot = i;
-    if (slot >= 0) { memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0; }
+    if (slot >= 0) {
+      memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
+      just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
+    }
   }
   if (slot < 0) return;
   memcpy(assign_id, id, 8); assign_slot = (uint8_t)slot; assign_left = 5;

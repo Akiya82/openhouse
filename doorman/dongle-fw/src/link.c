@@ -10,7 +10,11 @@ extern volatile uint32_t ms_ticks;
 static uint32_t us_now(void) { NRF_TIMER1->TASKS_CAPTURE[0] = 1; return NRF_TIMER1->CC[0]; }
 
 /* ---------------- paired trackers (persisted in the last app flash page) ---------------- */
+#if BOARD_HOLYIOT
+#define PAIR_PAGE   0xDA000u           /* storage page; Nordic's open bootloader owns 0xE0000+ */
+#else
 #define PAIR_PAGE   0xEC000u
+#endif
 #define PAIR_MAGIC  0x5250484Fu        /* "OHPR" */
 typedef struct { uint32_t magic, used; uint8_t id[OHL_SLOTS][8]; } pair_store_t;
 static pair_store_t pairs;
@@ -76,13 +80,51 @@ static void wait_until(uint32_t t) { while ((int32_t)(us_now() - t) < 0) if (idl
 
 static uint16_t upq_used(const slot_t *s) { return (uint16_t)((s->up_tail - s->up_head) & (UPQ - 1)); }
 
+/* ---------------- front-end amplifier (Holyiot 21017: SKY66112, CTX P0.24 / CRX P0.22) ----------------
+   Both pins are GPIOTE task outputs. Software raises CTX before TXEN and CRX before RXEN; the TX->RX
+   turnaround (DISABLED_RXEN shortcut) is too fast for the CPU, so PPI swaps CTX->CRX on that DISABLED. */
+#if BOARD_HOLYIOT
+#define FEM_CTX_PIN 24
+#define FEM_CRX_PIN 22
+#define FEM_GT_CTX 6
+#define FEM_GT_CRX 7
+#define FEM_PPI 0
+static void fem_init(void)
+{
+  NRF_GPIOTE->CONFIG[FEM_GT_CTX] = 3 | (FEM_CTX_PIN << 8);   /* task mode, starts low */
+  NRF_GPIOTE->CONFIG[FEM_GT_CRX] = 3 | (FEM_CRX_PIN << 8);
+  NRF_PPI->CH[FEM_PPI].EEP = (uint32_t)&NRF_RADIO->EVENTS_DISABLED;
+  NRF_PPI->CH[FEM_PPI].TEP = (uint32_t)&NRF_GPIOTE->TASKS_CLR[FEM_GT_CTX];
+  NRF_PPI->FORK[FEM_PPI].TEP = (uint32_t)&NRF_GPIOTE->TASKS_SET[FEM_GT_CRX];
+  NRF_PPI->CHENCLR = 1u << FEM_PPI;
+}
+static void fem_tx(void)  { NRF_GPIOTE->TASKS_CLR[FEM_GT_CRX] = 1; NRF_GPIOTE->TASKS_SET[FEM_GT_CTX] = 1; }
+static void fem_rx(void)  { NRF_GPIOTE->TASKS_CLR[FEM_GT_CTX] = 1; NRF_GPIOTE->TASKS_SET[FEM_GT_CRX] = 1; }
+static void fem_off(void) { NRF_PPI->CHENCLR = 1u << FEM_PPI;
+                            NRF_GPIOTE->TASKS_CLR[FEM_GT_CTX] = 1; NRF_GPIOTE->TASKS_CLR[FEM_GT_CRX] = 1; }
+static void fem_turnaround_arm(void)    { NRF_PPI->CHENSET = 1u << FEM_PPI; }
+static void fem_turnaround_disarm(void) { NRF_PPI->CHENCLR = 1u << FEM_PPI; }
+/* SKY66112 adds ~22 dB: -4 dBm at the chip is ~+18 dBm out, under the 20 dBm EIRP limit */
+#define RADIO_TXPOWER RADIO_TXPOWER_TXPOWER_Neg4dBm
+#else
+static void fem_init(void) {}
+static void fem_tx(void) {}
+static void fem_rx(void) {}
+static void fem_off(void) {}
+static void fem_turnaround_arm(void) {}
+static void fem_turnaround_disarm(void) {}
+#define RADIO_TXPOWER RADIO_TXPOWER_TXPOWER_Pos8dBm
+#endif
+
 /* ---------------- radio primitives ---------------- */
 static void radio_off(void)
 {
   NRF_RADIO->SHORTS = 0;
+  fem_turnaround_disarm();
   NRF_RADIO->EVENTS_DISABLED = 0; NRF_RADIO->TASKS_DISABLE = 1;
   uint32_t t = us_now(); while (!NRF_RADIO->EVENTS_DISABLED && us_now() - t < 200) {}
   NRF_RADIO->EVENTS_DISABLED = 0;
+  fem_off();
 }
 /* send pkt_tx, then listen for one answer into pkt_rx. Returns answer length (payload) or -1/-2. */
 static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
@@ -93,6 +135,7 @@ static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
   NRF_RADIO->PACKETPTR = (uint32_t)pkt_tx;
   NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk | RADIO_SHORTS_DISABLED_RXEN_Msk;
   NRF_RADIO->EVENTS_DISABLED = 0; NRF_RADIO->EVENTS_ADDRESS = 0;
+  fem_tx(); fem_turnaround_arm();                           /* PPI flips to RX on the turnaround */
   NRF_RADIO->TASKS_TXEN = 1;
   uint32_t t0 = us_now();
   while (!NRF_RADIO->EVENTS_ADDRESS) if (us_now() - t0 > 1500) { radio_off(); return -2; }
@@ -100,6 +143,7 @@ static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
   NRF_RADIO->PACKETPTR = (uint32_t)pkt_rx;                  /* latched at the RX START */
   while (!NRF_RADIO->EVENTS_DISABLED) if (us_now() - t0 > 2500) { radio_off(); return -2; }
   NRF_RADIO->EVENTS_DISABLED = 0;                           /* TX done, RXEN fired by the shortcut */
+  fem_turnaround_disarm();                                  /* the RX end must not re-trigger it */
   NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk | RADIO_SHORTS_ADDRESS_RSSISTART_Msk;
   uint32_t t1 = us_now();
   for (;;) {
@@ -109,6 +153,7 @@ static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
   }
   NRF_RADIO->EVENTS_DISABLED = 0;
   NRF_RADIO->SHORTS = 0;
+  fem_off();
   if (!NRF_RADIO->CRCSTATUS) return -3;
   return pkt_rx[0];
 }
@@ -288,7 +333,7 @@ void link_init(void)
   NRF_RADIO->POWER = 1;
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit;
   NRF_RADIO->MODECNF0 = RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos;   /* 40 us ramp-up */
-  NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos8dBm;
+  NRF_RADIO->TXPOWER = RADIO_TXPOWER;
   NRF_RADIO->PCNF0 = (8 << RADIO_PCNF0_LFLEN_Pos) | (RADIO_PCNF0_PLEN_8bit << RADIO_PCNF0_PLEN_Pos);
   NRF_RADIO->PCNF1 = (OHL_MAXLEN << RADIO_PCNF1_MAXLEN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) |
                      (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos);
@@ -296,6 +341,7 @@ void link_init(void)
   NRF_RADIO->INTENCLR = 0xFFFFFFFF;
   uint32_t h = NRF_FICR->DEVICEID[0] * 2654435761u ^ NRF_FICR->DEVICEID[1];
   net_base = (h & 0x7F7F7F7Fu) | 0x01010101u;               /* per-dongle network address */
+  fem_init();
   pairs_load();
   for (int i = 0; i < OHL_SLOTS; i++) { sl[i].last_seq = 7; sl[i].dseq = 0; }
 }
@@ -438,7 +484,7 @@ void link_rssi_scan(uint8_t first, uint8_t *out, int n)    /* -dBm per channel, 
     if (ch > 100) { out[i] = 0xFF; continue; }
     NRF_RADIO->FREQUENCY = ch;
     NRF_RADIO->SHORTS = 0;
-    NRF_RADIO->EVENTS_READY = 0; NRF_RADIO->TASKS_RXEN = 1;
+    NRF_RADIO->EVENTS_READY = 0; fem_rx(); NRF_RADIO->TASKS_RXEN = 1;
     uint32_t t = us_now(); while (!NRF_RADIO->EVENTS_READY && us_now() - t < 2000) {}
     uint8_t best = 0xFF;
     for (int k = 0; k < 8; k++) {

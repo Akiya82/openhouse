@@ -584,7 +584,7 @@ void Ui::DoormanMenu() {
 void Ui::RadioMenu() {
   Title("Flash Tracker/Controller Radio Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Wired", "Wireless"}, ImGui::GetFontSize() * 7)) {
+  switch (ChoiceRow({"Wired (recommended)", "Wireless"}, ImGui::GetFontSize() * 7)) {
     case 0: Go(Page::RadioWired); break;
     case 1: Go(Page::RadioWireless); break;
   }
@@ -594,7 +594,7 @@ void Ui::RadioMenu() {
 void Ui::RestoreRadioMenu() {
   Title("Restore Tracker/Controller Radio Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Wired", "Wireless"}, ImGui::GetFontSize() * 7)) {
+  switch (ChoiceRow({"Wired (recommended)", "Wireless"}, ImGui::GetFontSize() * 7)) {
     case 0: Go(Page::RestoreRadio); break;
     case 1: Go(Page::RestoreRadioWireless); break;
   }

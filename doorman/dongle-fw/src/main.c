@@ -14,7 +14,15 @@
 #endif
 
 extern uint32_t __isr_vector[];
+#if BOARD_HOLYIOT
+#define LED_PIN 6    /* P0.06: Holyiot 21017 green LED, active low */
+#define LED_ON()  (NRF_P0->OUTCLR = 1u << LED_PIN)
+#define LED_OFF() (NRF_P0->OUTSET = 1u << LED_PIN)
+#else
 #define LED_PIN 15   /* P0.15: Pro Micro / nice!nano LED, active high */
+#define LED_ON()  (NRF_P0->OUTSET = 1u << LED_PIN)
+#define LED_OFF() (NRF_P0->OUTCLR = 1u << LED_PIN)
+#endif
 
 /* ---------- crash record (survives soft resets; outside the linker's RAM region) ---------- */
 typedef struct {
@@ -155,7 +163,7 @@ int main(void) {
     SCB->VTOR = (uint32_t)__isr_vector;     /* our own table, whatever the bootloader/MBR set */
     __DSB(); __ISB();
     __enable_irq();                         /* don't rely on the bootloader leaving PRIMASK clear */
-    NRF_P0->PIN_CNF[LED_PIN] = 1; NRF_P0->OUTSET = 1u << LED_PIN;   /* LED on: main() reached */
+    NRF_P0->PIN_CNF[LED_PIN] = 1; LED_ON();   /* LED on: main() reached */
     boot_resetreas = NRF_POWER->RESETREAS;
     NRF_POWER->RESETREAS = 0xFFFFFFFF;
     if (boot_resetreas & (POWER_RESETREAS_RESETPIN_Msk) || boot_resetreas == 0) NRF_POWER->GPREGRET2 = 0;
@@ -195,6 +203,6 @@ int main(void) {
         usb_service();
         if (pending_action && !pending_reply) { uint8_t a = pending_action; pending_action = 0; do_action(a, reply[3]); }
         uint32_t period = tud_mounted() ? 1000 : 200;
-        if (ms_ticks % period < period / 10) NRF_P0->OUTSET = 1u << LED_PIN; else NRF_P0->OUTCLR = 1u << LED_PIN;
+        if (ms_ticks % period < period / 10) LED_ON(); else LED_OFF();
     }
 }

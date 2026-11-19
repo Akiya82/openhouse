@@ -5,6 +5,7 @@ openhouse-installer looks for it:
   firmwares/basestation/lhbs-<date>-<commit>.bin       1.0 base stations
   firmwares/dongle/doorman-dongle-sd.uf2              doorman dongle, UF2 bootloader with a SoftDevice
   firmwares/dongle/doorman-dongle-nosd.uf2            ... without one
+  firmwares/dongle/doorman-holyiot.hex                Holyiot 21017 (nRF Connect Programmer)
   firmwares/radio/doorman-radio-wm3.fw      every 2.0-era device (nRF52 radio)
   firmwares/radio/doorman-radio-neo.bin  VIVE Tracker 1.0 (nRF51 radio)
 
@@ -36,6 +37,7 @@ shutil.copy2(image, out / 'basestation' / f'lhbs-{datetime.date.today():%Y%m%d}-
 make('doorman/dongle-fw')
 shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_sd.uf2', out / 'dongle/doorman-dongle-sd.uf2')
 shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_nosd.uf2', out / 'dongle/doorman-dongle-nosd.uf2')
+shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_holyiot.hex', out / 'dongle/doorman-holyiot.hex')
 
 make('doorman/radio-fw')
 make('doorman/radio-fw', 'TARGET=idx')

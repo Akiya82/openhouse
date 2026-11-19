@@ -17,5 +17,9 @@ enum {
 enum { ST_OK = 0, ST_BAD_CMD = 1, ST_BAD_ARG = 2, ST_TIMEOUT = 3 };
 
 /* Adafruit nRF52 bootloader magic values in NRF_POWER->GPREGRET */
+#if BOARD_HOLYIOT
+#define GPREGRET_UF2_DFU     0xB1   /* Nordic open USB DFU bootloader (nRF Connect / nrfutil) */
+#else
 #define GPREGRET_UF2_DFU     0x57
+#endif
 #define GPREGRET_SERIAL_DFU  0x4E

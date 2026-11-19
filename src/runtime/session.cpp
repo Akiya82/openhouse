@@ -205,7 +205,14 @@ class SessionImpl final : public Session, public InputSinkBase {
   std::vector<Receiver> Receivers() const override {
     std::vector<Receiver> out;
     if (usb_)
-      for (const auto& r : usb_->Receivers()) out.push_back({r.serial, r.connected});
+      for (const auto& r : usb_->Receivers()) {
+        Receiver o;
+        o.serial = r.serial; o.connected = r.connected; o.kind = r.kind; o.slot = r.slot; o.paired = r.paired; o.linked = r.linked;
+        o.kBytesPerSec = r.kBytesPerSec; o.framesPerSec = r.framesPerSec; o.lossPercent = r.lossPercent;
+        o.dropsPerSec = r.dropsPerSec; o.rssiDongle = r.rssiDongle; o.rssiDevice = r.rssiDevice;
+        o.devicesOnDongle = r.devicesOnDongle;
+        out.push_back(o);
+      }
     return out;
   }
   bool SetCapture(const std::string& path) override {

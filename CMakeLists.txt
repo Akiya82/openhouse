@@ -127,7 +127,8 @@ if(LH_BUILD_USB)
     src/transport/usb/device_config.cpp
     src/transport/usb/raw_capture.cpp
     src/transport/usb/wireless_decoder.cpp
-    src/transport/usb/usb_transport.cpp)
+    src/transport/usb/usb_transport.cpp
+    src/transport/usb/ohdongle.cpp)
   add_library(lh::usb ALIAS lh_usb)
   set_target_properties(lh_usb PROPERTIES EXPORT_NAME usb POSITION_INDEPENDENT_CODE ON)
   target_compile_features(lh_usb PUBLIC cxx_std_20)
@@ -323,6 +324,22 @@ if(LH_BUILD_VIEWER)
       endif()
       install(TARGETS openhouse-overlay RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
+    # openhouse-dongle: the openhouse dongle manager (slots, pairing, radio telemetry, firmware).
+    # A desktop window; device names from the driver's telemetry when it runs.
+    if(LH_BUILD_USB)
+      add_executable(openhouse-dongle WIN32 apps/openhouse-dongle/main.cpp apps/openhouse-dongle/ui.cpp
+                     apps/openhouse-dongle/dongle.cpp apps/openhouse-overlay/telemetry_client.cpp
+                     apps/openhouse-overlay/update_check.cpp)
+      target_include_directories(openhouse-dongle PRIVATE src src/transport/usb apps/openhouse-overlay)
+      target_link_libraries(openhouse-dongle PRIVATE lh_usb lh_common lh_imgui nlohmann_json::nlohmann_json)
+      if(WIN32)
+        target_link_libraries(openhouse-dongle PRIVATE winhttp shell32)
+      endif()
+      if(MSVC)
+        target_link_options(openhouse-dongle PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+      endif()
+      install(TARGETS openhouse-dongle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
     # openhouse-compare: openhouse and SteamVR's own driver tracking side by side
     if(OPENVR_INCLUDE_DIR AND LH_BUILD_USB)
       add_executable(openhouse-compare apps/openhouse-compare/main.cpp apps/openhouse-compare/stock_host.cpp)
@@ -440,6 +457,7 @@ foreach(entry
     "lhcapture|openhouse device recorder"
     "openhouse-check|openhouse update check"
     "openhouse-overlay|openhouse overlay"
+    "openhouse-dongle|openhouse dongle manager"
     "openhouse-compare|openhouse and SteamVR driver comparison"
     "lhviz|openhouse developer viewer"
     "openhouse-installer|openhouse driver installer")

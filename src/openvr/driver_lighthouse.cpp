@@ -659,7 +659,12 @@ class Device : public ITrackedDeviceServerDriver {
         if (htc && EqualsNoCase(renderModel, "{htc}vr_tracker_vive_1_0") && info_.model.rfind("VIVE Tracker 3.0", 0) == 0)
           renderModel = "{htc}vr_tracker_vive_3_0";
         const std::string profile = htc || info_.inputProfile.empty() ? "{htc}/input/vive_tracker_profile.json" : info_.inputProfile;
-        const std::string registered = htc || info_.registeredType.empty() ? "htc/vive_tracker" + info_.serial : info_.registeredType;
+        // The device's path in SteamVR ("/devices/<this>"), which saved tracker roles and
+        // TrackingOverrides go by: as the stock driver names it, HTC's "htc/vive_tracker<serial>",
+        // any other maker's its config's type or else "lighthouse/<serial>".
+        const std::string registered = htc ? "htc/vive_tracker" + info_.serial
+                                           : !info_.registeredType.empty() ? info_.registeredType
+                                                                           : "lighthouse/" + info_.serial;
         props->SetStringProperty(c, Prop_ManufacturerName_String, info_.manufacturer.empty() ? "HTC" : info_.manufacturer.c_str());
         props->SetStringProperty(c, Prop_ModelNumber_String, info_.model.empty() ? "VIVE Tracker" : info_.model.c_str());
         props->SetStringProperty(c, Prop_ResourceRoot_String, root.c_str());

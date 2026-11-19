@@ -282,7 +282,21 @@ class Session {
 
   // Wireless receivers (dongles), live USB only: serial, and the device paired and
   // connected to it now ("" if none).
-  struct Receiver { std::string serial, connected; };
+  // Link stats are live estimates over the last second; -1 / 0 where the receiver can't tell.
+  // An openhouse dongle appears once per paired slot ("OHDG-<id>/<slot>"), like a dongle each.
+  struct Receiver {
+    std::string serial, connected;
+    std::string kind;            // "watchman" (Valve/HTC dongle) or "openhouse" (one slot of ours)
+    int slot = -1;               // openhouse slot, -1 for a Watchman dongle
+    bool paired = true;          // openhouse: a device is paired to the slot (empty slots are listed too)
+    bool linked = false;         // a device is talking through it now
+    double kBytesPerSec = 0;     // payload from the device
+    double framesPerSec = 0;     // reports (Watchman) or radio frames (openhouse)
+    double lossPercent = -1;     // radio polls without a good answer (openhouse)
+    double dropsPerSec = 0;      // frames lost on the dongle (openhouse)
+    int rssiDongle = 0, rssiDevice = 0;   // dBm (openhouse), 0 unknown
+    int devicesOnDongle = 0;     // openhouse: devices joined on the whole dongle
+  };
   virtual std::vector<Receiver> Receivers() const = 0;
   // Pairing mode on a receiver for `seconds` (0 leaves it); false if not plugged in.
   virtual bool SetPairing(const std::string& receiver, double seconds) = 0;

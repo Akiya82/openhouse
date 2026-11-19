@@ -16,8 +16,19 @@ enum {
 };
 enum { ST_OK = 0, ST_BAD_CMD = 1, ST_BAD_ARG = 2, ST_TIMEOUT = 3 };
 
+/* Boards on Nordic's open USB DFU bootloader (not UF2): Holyiot 21017 (amplifier) and Nordic's own
+   nRF52840 Dongle PCA10059. Same flash layout, same update path. */
+#ifndef BOARD_HOLYIOT
+#define BOARD_HOLYIOT 0
+#endif
+#ifndef BOARD_PCA10059
+#define BOARD_PCA10059 0
+#endif
+#define BOARD_NORDIC_DFU (BOARD_HOLYIOT || BOARD_PCA10059)
+#define BOARD_ID (BOARD_HOLYIOT ? 1 : BOARD_PCA10059 ? 2 : 0)   /* cmd 0x01 byte 57 */
+
 /* Adafruit nRF52 bootloader magic values in NRF_POWER->GPREGRET */
-#if BOARD_HOLYIOT
+#if BOARD_NORDIC_DFU
 #define GPREGRET_UF2_DFU     0xB1   /* Nordic open USB DFU bootloader (nRF Connect / nrfutil) */
 #else
 #define GPREGRET_UF2_DFU     0x57

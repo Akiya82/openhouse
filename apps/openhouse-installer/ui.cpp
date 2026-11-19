@@ -182,7 +182,10 @@ float DeviceListReserve() {
          ImGui::GetFrameHeightWithSpacing() + st.ItemSpacing.y * 2;
 }
 
-fs::path HolyiotImage() { return FirmwareFolder() / "dongle" / "doorman-holyiot.hex"; }
+// The image for a board on Nordic's DFU bootloader (DoormanDongleInfo::board).
+fs::path NordicImage(int board) {
+  return FirmwareFolder() / "dongle" / (board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
+}
 
 fs::path DongleImage(bool softDevice) {
   return FirmwareFolder() / "dongle" / (softDevice ? "doorman-dongle-sd.uf2" : "doorman-dongle-nosd.uf2");
@@ -768,20 +771,21 @@ void Ui::DonglePage() {
   switch (dongleStep_) {
     case DongleStep::Board: {
       ImGui::TextUnformatted("Board:");
-      const auto watch = [this](bool holyiot) {
-        dongleHolyiot_ = holyiot;
+      const auto watch = [this](int board) {
+        dongleBoard_ = board;
         dongleStep_ = DongleStep::Detect;
-        dongleSeen_.Start([holyiot] {
+        dongleSeen_.Start([board] {
           DongleSeen s;
-          if (holyiot) s.ports = lh::dfu::FindBootloaderPorts();
+          if (board) s.ports = lh::dfu::FindBootloaderPorts();
           else s.drives = FindUf2Drives();
           for (auto& d : FindDoormanDongles())
-            if (d.holyiot == holyiot) s.dongles.push_back(d);
+            if (d.board == board) s.dongles.push_back(d);
           return s;
         }, 1.0);
       };
-      if (BigButton("ProMicro nRF52840 (Adafruit Bootloader)", ImGui::GetFontSize() * 34)) watch(false);
-      if (BigButton("Holyiot 21017 (Nordic Bootloader)", ImGui::GetFontSize() * 34)) watch(true);
+      if (BigButton("ProMicro nRF52840 (Adafruit Bootloader)", ImGui::GetFontSize() * 34)) watch(0);
+      if (BigButton("Holyiot 21017 (Nordic Bootloader)", ImGui::GetFontSize() * 34)) watch(1);
+      if (BigButton("Nordic nRF52840 Dongle PCA10059", ImGui::GetFontSize() * 34)) watch(2);
       Back(Page::DoormanMenu);
       return;
     }
@@ -789,7 +793,7 @@ void Ui::DonglePage() {
       const DongleSeen seen = dongleSeen_.Value();
       if (!DeviceAccess()) { Back(Page::DoormanMenu); return; }
       Step(1, "Plug the dongle in");
-      Step(2, dongleHolyiot_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
+      Step(2, dongleBoard_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
                              : "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
       ImGui::Spacing();
       if (seen.drives.empty() && seen.ports.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
@@ -817,8 +821,8 @@ void Ui::DonglePage() {
         if (!CopyUf2(drive, image, &error, [&](float f) { j.Status(f * 0.8f, "Flashing"); })) { j.Fail(error); return false; }
         return verify(j);
       };
-      static const auto flashDfu = [](Job& j, const std::string& port) {
-        const fs::path file = HolyiotImage();
+      static const auto flashDfu = [](Job& j, const std::string& port, int board) {
+        const fs::path file = NordicImage(board);
         j.Log("Firmware: " + Utf8(file.filename()));
         lh::dfu::Image image;
         std::string error;
@@ -840,7 +844,7 @@ void Ui::DonglePage() {
       }
       for (const auto& port : seen.ports) {
         const std::string label = "Nordic DFU bootloader (" + port + ")";
-        if (BigButton(label.c_str(), ImGui::GetFontSize() * 34)) start([port](Job& j) { return flashDfu(j, port); });
+        if (BigButton(label.c_str(), ImGui::GetFontSize() * 34)) start([port, board = dongleBoard_](Job& j) { return flashDfu(j, port, board); });
       }
       for (const auto& d : seen.dongles) {
         char label[128];
@@ -855,11 +859,11 @@ void Ui::DonglePage() {
           if (!RebootToBootloader(dongle)) { j.Fail("couldn't open the dongle, close SteamVR and doorman-dongle-manager"); return false; }
           for (int i = 0; i < 150; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (dongle.holyiot) {
+            if (dongle.NordicDfu()) {
               for (const auto& port : lh::dfu::FindBootloaderPorts())
                 if (std::find(portsBefore.begin(), portsBefore.end(), port) == portsBefore.end()) {
                   std::this_thread::sleep_for(std::chrono::milliseconds(500));  // let the port settle
-                  return flashDfu(j, port);
+                  return flashDfu(j, port, dongle.board);
                 }
             } else {
               for (const auto& drive : FindUf2Drives())
@@ -867,7 +871,7 @@ void Ui::DonglePage() {
                   return flashUf2(j, drive);
             }
           }
-          j.Fail(dongle.holyiot ? "the dongle didn't enter DFU mode, press its RESET button and try again"
+          j.Fail(dongle.NordicDfu() ? "the dongle didn't enter DFU mode, press its RESET button and try again"
                                 : "the dongle didn't enter DFU mode, short RST and GND twice and try again");
           return false;
         });

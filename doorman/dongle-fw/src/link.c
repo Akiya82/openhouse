@@ -5,12 +5,13 @@
 #include "ohlink.h"
 #include "ohcodec.h"
 #include "link.h"
+#include "dongle.h"
 
 extern volatile uint32_t ms_ticks;
 static uint32_t us_now(void) { NRF_TIMER1->TASKS_CAPTURE[0] = 1; return NRF_TIMER1->CC[0]; }
 
 /* ---------------- paired trackers (persisted in the last app flash page) ---------------- */
-#if BOARD_HOLYIOT
+#if BOARD_NORDIC_DFU
 #define PAIR_PAGE   0xDA000u           /* storage page; Nordic's open bootloader owns 0xE0000+ */
 #else
 #define PAIR_PAGE   0xEC000u

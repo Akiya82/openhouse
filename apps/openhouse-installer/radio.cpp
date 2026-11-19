@@ -595,7 +595,7 @@ std::vector<DoormanDongleInfo> FindDoormanDongles() {
     if (dev.Ok() && dev.Command(0x01, nullptr, 0, r) && std::memcmp(r + 1, "OHDG", 4) == 0) {
       o.firmware = uint16_t(r[5] | r[6] << 8);
       o.softDeviceBuild = r[7] != 0;
-      o.holyiot = r[58] == 1;
+      o.board = r[58] <= 2 ? r[58] : 0;
     }
     out.push_back(o);
   }

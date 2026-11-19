@@ -156,7 +156,7 @@ class Ui {
 
   // Dongle flow
   enum class DongleStep { Board, Detect, Flashing, Done } dongleStep_ = DongleStep::Board;
-  bool dongleHolyiot_ = false;  // board picked: Holyiot 21017 (Nordic DFU) or a UF2 one
+  int dongleBoard_ = 0;  // board picked: 0 UF2, 1 Holyiot 21017, 2 PCA10059 (DoormanDongleInfo::board)
   struct DongleSeen { std::vector<Uf2Drive> drives; std::vector<std::string> ports; std::vector<DoormanDongleInfo> dongles; };
   Watcher<DongleSeen> dongleSeen_;
   std::string dongleResult_;

@@ -6,6 +6,7 @@ openhouse-installer looks for it:
   firmwares/dongle/doorman-dongle-sd.uf2              doorman dongle, UF2 bootloader with a SoftDevice
   firmwares/dongle/doorman-dongle-nosd.uf2            ... without one
   firmwares/dongle/doorman-holyiot.hex                Holyiot 21017 (nRF Connect Programmer)
+  firmwares/dongle/doorman-pca10059.hex               Nordic nRF52840 Dongle PCA10059 (same)
   firmwares/radio/doorman-radio-wm3.fw      every 2.0-era device (nRF52 radio)
   firmwares/radio/doorman-radio-neo.bin  VIVE Tracker 1.0 (nRF51 radio)
 
@@ -38,6 +39,7 @@ make('doorman/dongle-fw')
 shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_sd.uf2', out / 'dongle/doorman-dongle-sd.uf2')
 shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_nosd.uf2', out / 'dongle/doorman-dongle-nosd.uf2')
 shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_holyiot.hex', out / 'dongle/doorman-holyiot.hex')
+shutil.copy2(repo / 'doorman/dongle-fw/build/doorman_dongle_pca10059.hex', out / 'dongle/doorman-pca10059.hex')
 
 make('doorman/radio-fw')
 make('doorman/radio-fw', 'TARGET=idx')

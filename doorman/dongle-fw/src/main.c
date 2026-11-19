@@ -14,8 +14,8 @@
 #endif
 
 extern uint32_t __isr_vector[];
-#if BOARD_HOLYIOT
-#define LED_PIN 6    /* P0.06: Holyiot 21017 green LED, active low */
+#if BOARD_NORDIC_DFU
+#define LED_PIN 6    /* P0.06: green LED, active low (Holyiot 21017 and PCA10059 alike) */
 #define LED_ON()  (NRF_P0->OUTCLR = 1u << LED_PIN)
 #define LED_OFF() (NRF_P0->OUTSET = 1u << LED_PIN)
 #else
@@ -111,7 +111,7 @@ static void handle(const uint8_t *in, uint16_t len) {
         }
         d[52] = NRF_POWER->GPREGRET2;
         put32(d + 53, *(volatile uint32_t *)0x3000 == 0x51B1E5DB);   /* SoftDevice magic still in flash? */
-        d[57] = BOARD_HOLYIOT ? 1 : 0;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017 (Nordic DFU) */
+        d[57] = BOARD_ID;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059 (both Nordic DFU) */
         break;
     case CMD_STATS: put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks); break;
     case CMD_ECHO: memcpy(d, in + 2, len - 2 > 61 ? 61 : len - 2); break;
@@ -163,6 +163,19 @@ static void usb_service(void)              /* also called while the link waits i
 int main(void) {
     SCB->VTOR = (uint32_t)__isr_vector;     /* our own table, whatever the bootloader/MBR set */
     __DSB(); __ISB();
+#if BOARD_PCA10059
+    /* The PCA10059 runs straight off USB (VDDH), and a blank chip sets its GPIO supply (REGOUT0) to
+       1.8 V: too low to light the LEDs well. Like Nordic's board code: once, 3.0 V. Only clears bits
+       of a UICR word still at its erased value, so no erase, and only when nothing set it yet. */
+    if ((NRF_POWER->MAINREGSTATUS & POWER_MAINREGSTATUS_MAINREGSTATUS_Msk) &&
+        (NRF_UICR->REGOUT0 & UICR_REGOUT0_VOUT_Msk) == (UICR_REGOUT0_VOUT_DEFAULT << UICR_REGOUT0_VOUT_Pos)) {
+        NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen; while (!NRF_NVMC->READY) {}
+        NRF_UICR->REGOUT0 = (NRF_UICR->REGOUT0 & ~UICR_REGOUT0_VOUT_Msk) | (UICR_REGOUT0_VOUT_3V0 << UICR_REGOUT0_VOUT_Pos);
+        while (!NRF_NVMC->READY) {}
+        NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren; while (!NRF_NVMC->READY) {}
+        NVIC_SystemReset();   /* takes effect at the next reset */
+    }
+#endif
     __enable_irq();                         /* don't rely on the bootloader leaving PRIMASK clear */
     NRF_P0->PIN_CNF[LED_PIN] = 1; LED_ON();   /* LED on: main() reached */
     boot_resetreas = NRF_POWER->RESETREAS;

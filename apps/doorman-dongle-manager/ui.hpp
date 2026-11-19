@@ -71,7 +71,7 @@ class Ui {
   std::mutex updateMutex_;
   std::string updateStatus_;
   bool updateError_ = false;
-  void StartUpdate(std::shared_ptr<Dongle> d, const std::string& file, bool holyiot);
+  void StartUpdate(std::shared_ptr<Dongle> d, const std::string& file, bool nordicDfu);
 };
 
 }  // namespace openhouse::dongle

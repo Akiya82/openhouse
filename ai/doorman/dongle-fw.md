@@ -13,7 +13,7 @@ VID/PID 6767:0727, command numbers).
 | `doorman_dongle_nosd.uf2` | UF2 bootloader without SoftDevice | 0x1000 (`ld/app_nosd.ld`) | from 0x20000000 |
 
 Info (cmd 0x01) reports which variant is running, whether the SoftDevice magic is still in flash and
-the board (byte 57: 0 UF2, 1 Holyiot 21017);
+the board (byte 57: 0 UF2, 1 Holyiot 21017, 2 Nordic nRF52840 Dongle PCA10059);
 doorman-dongle-manager picks the file name from that. Flash end 0xED000; the **paired table** is page 0xEC000
 (magic "OHPR", never erased if the code grows into it). RAM from 0x2003E000 holds the crash record.
 
@@ -26,6 +26,10 @@ doorman-dongle-manager picks the file name from that. Flash end 0xED000; the **p
   instead and the bootloader's serial port (1915:521F) appears; openhouse-installer and doorman-dongle-manager
   flash it with Nordic's serial DFU (`src/common/nordic_dfu.cpp`). Pairings live at 0xDA000 there (the
   bootloader owns 0xE0000+), the SKY66112 amplifier is switched by CTX P0.24 / CRX P0.22, TX power -4 dBm.
+* PCA10059 (`doorman_dongle_pca10059.hex`): the same layout, bootloader, LED (P0.06) and update path as the
+  Holyiot, no amplifier (TX +8 dBm). It runs off USB (VDDH): on first boot it sets UICR REGOUT0 to 3.0 V
+  once (an unset chip gives 1.8 V GPIO, too low for the LEDs), like Nordic's board code. The bootloader
+  looks the same on USB for both boards (1915:521F): the installer flashes the image of the board picked.
 * 0x11 enters serial DFU instead. A brand-new PCA10059 with Nordic's stock bootloader needs a UF2 bootloader
   first (not automated).
 

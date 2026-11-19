@@ -55,7 +55,8 @@ struct DongleState {
   // CMD_INFO
   int firmware = 0;          // 0x0004
   bool softdeviceVariant = false, watchdog = false;
-  bool holyiot = false;  // Holyiot 21017 build: updates through Nordic's DFU bootloader, not UF2
+  int board = 0;  // 0 UF2, 1 Holyiot 21017, 2 PCA10059: the last two update through Nordic's DFU bootloader
+  bool NordicDfu() const { return board == 1 || board == 2; }
   uint32_t uptimeMs = 0, resetReason = 0;
   uint32_t crashCount = 0, crashType = 0, crashPc = 0;
   bool linkOn = true;

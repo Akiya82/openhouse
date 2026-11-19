@@ -290,7 +290,7 @@ constexpr const char* kUdevRules =
     "# Doorman Dongle.\n"
     "KERNEL==\"hidraw*\", ATTRS{idVendor}==\"6767\", ATTRS{idProduct}==\"0727\", MODE=\"0660\", TAG+=\"uaccess\"\n"
     "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"6767\", ATTRS{idProduct}==\"0727\", MODE=\"0660\", TAG+=\"uaccess\"\n"
-    "# Nordic's USB DFU bootloader (Holyiot dongles): its serial port, kept away from ModemManager.\n"
+    "# Nordic's USB DFU bootloader (Holyiot, PCA10059): its serial port, kept away from ModemManager.\n"
     "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"1915\", ATTRS{idProduct}==\"521f\", MODE=\"0660\", TAG+=\"uaccess\", ENV{ID_MM_DEVICE_IGNORE}=\"1\"\n";
 
 // One root shell command through pkexec (the desktop's password prompt).

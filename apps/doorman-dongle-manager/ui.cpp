@@ -827,7 +827,7 @@ void Ui::Firmware(const DongleState& d) {
     char t[96];
     row("Dongle", d.serial);
     std::snprintf(t, sizeof t, "%d (%s build%s)", d.firmware,
-                  d.holyiot ? "Holyiot 21017" : d.softdeviceVariant ? "Nordic bootloader" : "bare",
+                  d.board == 1 ? "Holyiot 21017" : d.board == 2 ? "PCA10059" : d.softdeviceVariant ? "Nordic bootloader" : "bare",
                   d.watchdog ? ", watchdog" : "");
     row("Firmware", t);
     row("Up for", Uptime(d.uptimeMs));
@@ -854,28 +854,29 @@ void Ui::Firmware(const DongleState& d) {
 
   ImGui::Spacing();
   ImGui::SeparatorText("Update");
-  if (d.holyiot)
-    ImGui::TextWrapped("Pick doorman-holyiot.hex. The dongle restarts into its DFU bootloader and the file is sent over USB.");
+  if (d.NordicDfu())
+    ImGui::TextWrapped("Pick %s. The dongle restarts into its DFU bootloader and the file is sent over USB.",
+                       d.board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
   else
     ImGui::TextWrapped("Pick the .uf2 file for this dongle (%s). The dongle restarts into update mode and shows up "
                        "as a USB drive; the file is copied onto it and the dongle starts the new firmware by itself.",
                        d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
-  ImGui::InputTextWithHint("##uf2", d.holyiot ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
+  ImGui::InputTextWithHint("##uf2", d.NordicDfu() ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
   ImGui::SameLine();
   const bool exists = firmwarePath_[0] && fs::exists(fs::u8path(firmwarePath_));
   ImGui::BeginDisabled(!exists || updating_);
   if (TintButton(updating_ ? "Updating..." : "Update", kAccent, -1)) ImGui::OpenPopup("Update?");
   ImGui::EndDisabled();
   if (Confirm("Update?", "Update the dongle's firmware? Every device drops until it's done (about 10 s)."))
-    StartUpdate(dongle, firmwarePath_, d.holyiot);
+    StartUpdate(dongle, firmwarePath_, d.NordicDfu());
   {
     std::lock_guard lock(updateMutex_);
     if (!updateStatus_.empty()) ImGui::TextColored(updateError_ ? kBad : updating_ ? kInfo : kGood, "%s", updateStatus_.c_str());
   }
 }
 
-void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bool holyiot) {
+void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bool nordicDfu) {
   if (updating_) return;
   if (updater_.joinable()) updater_.join();
   updating_ = true;
@@ -885,12 +886,12 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bo
     updateError_ = error;
   };
   set("Putting the dongle in update mode...");
-  if (holyiot) {
+  if (nordicDfu) {
     updater_ = std::thread([this, dongle, file, set] {
       lh::dfu::Image image;
       std::string error;
       if (!lh::dfu::LoadHex(file, 0x1000, 0xDA000, &image, &error) || image.base != 0x1000) {
-        set(error.empty() ? "This file isn't built for the Holyiot dongle." : "Can't use this file: " + error, true);
+        set(error.empty() ? "This file isn't built for this dongle." : "Can't use this file: " + error, true);
         updating_ = false;
         return;
       }

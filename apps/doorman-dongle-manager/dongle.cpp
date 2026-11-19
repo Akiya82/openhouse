@@ -238,7 +238,7 @@ void Dongle::Poll(double now) {
       std::lock_guard lock(mutex_);
       state_.firmware = d[4] | d[5] << 8;
       state_.softdeviceVariant = d[6];
-      state_.holyiot = d[57] == 1;
+      state_.board = d[57] <= 2 ? d[57] : 0;
       state_.watchdog = d[7];
       state_.resetReason = Rd32(d + 12);
       state_.uptimeMs = Rd32(d + 16);

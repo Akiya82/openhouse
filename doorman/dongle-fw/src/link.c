@@ -202,14 +202,17 @@ static void join_beacon(void)
   if (n < OHL_JREQ_LEN || r[0] != OHL_JREQ) return;
   joins_heard++;
   const uint8_t *id = r + 1;
+  const int pairing = r[9] & 1;                             /* the device is in pairing mode */
   int slot = -1;
   for (int i = 0; i < OHL_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
-  if (ms_ticks < pairing_until_ms && pair_target < OHL_SLOTS && slot != pair_target) {
+  /* Like stock, a new pairing takes both sides: pairing open here, and the device in pairing mode
+     (its pairing buttons, or a host's pair command). Known devices just reconnect. */
+  if (ms_ticks < pairing_until_ms && pairing && pair_target < OHL_SLOTS && slot != pair_target) {
     /* pairing into a chosen slot: it replaces what was there, and leaves the device's old slot */
     if (slot >= 0) pairs.used &= ~(1u << slot);
     slot = pair_target;
     memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
-  } else if (slot < 0 && ms_ticks < pairing_until_ms) {     /* new tracker, pairing open: first free slot */
+  } else if (slot < 0 && ms_ticks < pairing_until_ms && pairing) {   /* new device, pairing: first free slot */
     for (int i = 0; i < OHL_SLOTS && slot < 0; i++) if (!((pairs.used >> i) & 1)) slot = i;
     if (slot >= 0) { memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0; }
   }
@@ -223,8 +226,22 @@ static void join_beacon(void)
  * most one channel whose time off is over, and keep repeat offenders off longer (30 s doubling to 5 min;
  * a channel that stays clean for a while is forgiven). Dropping worst-first matters when most of the band
  * is busy (Wi-Fi): dropping in frequency order kept the worst ones once the minimum was reached. */
-#define CH_MIN_ON   4
+#define CH_MIN_ON   8
 #define CH_BAD_PCT  8
+/* A channel is bad when it loses clearly more than the channels around it. Loss a device has on
+   every channel (weak signal, body in the way) is not the channel's fault: judged on absolute loss,
+   one weak device struck clean channels until only a few were left to hop on. */
+static uint8_t channels_typical_loss(uint16_t m)
+{
+  uint8_t v[OHL_NHOP]; int n = 0;
+  for (int k = 0; k < OHL_NHOP; k++)
+    if ((m >> k) & 1 && chs[k].polls >= 20) {
+      uint8_t x = chs[k].loss_pct; int i = n++;
+      while (i > 0 && v[i - 1] > x) { v[i] = v[i - 1]; i--; }
+      v[i] = x;
+    }
+  return n ? v[n / 2] : 0;
+}
 static void channels_eval(void)
 {
   if (ms_ticks - ch_eval_ms < 2000) return;
@@ -235,14 +252,15 @@ static void channels_eval(void)
     chs[k].loss_pct = chs[k].polls ? (uint8_t)(100u * chs[k].lost / chs[k].polls) : 0;
     if ((m >> k) & 1) {
       on++;
-      if (chs[k].polls >= 20 && chs[k].loss_pct <= 2 && chs[k].strikes && ms_ticks - chs[k].off_until_ms > 120000)
+      if (chs[k].polls >= 20 && chs[k].loss_pct <= 2 + channels_typical_loss(m) && chs[k].strikes && ms_ticks - chs[k].off_until_ms > 120000)
         chs[k].strikes--;                                    /* clean for 2 min since it came back */
     }
   }
+  const unsigned bad = CH_BAD_PCT + channels_typical_loss(m);
   for (;;) {                                                 /* drop the worst bad channel, again and again */
     int worst = -1;
     for (int k = 0; k < OHL_NHOP; k++)
-      if ((m >> k) & 1 && chs[k].polls >= 20 && chs[k].loss_pct > CH_BAD_PCT &&
+      if ((m >> k) & 1 && chs[k].polls >= 20 && chs[k].loss_pct > bad &&
           (worst < 0 || chs[k].loss_pct > chs[worst].loss_pct)) worst = k;
     if (worst < 0 || on <= CH_MIN_ON) break;
     m &= (uint16_t)~(1u << worst); on--;

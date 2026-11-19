@@ -1,11 +1,11 @@
 #pragma once
 #include "nrf.h"
 
-#define DONGLE_VID         0x1209   /* pid.codes test VID/PID: dev only, replace before release */
-#define DONGLE_PID         0x0001
-#define DONGLE_FW_VERSION  0x0004
+#define DONGLE_VID         0x6767
+#define DONGLE_PID         0x0727
+#define DONGLE_FW_VERSION  0x0006
 #define STREAM_KIND        0x80   /* IN report: [0x80][slot][n][n bytes of [len][frame]... stream] */
-#define DONGLE_PRODUCT     "openhouse dongle"
+#define DONGLE_PRODUCT     "Doorman Dongle"
 
 /* host <-> dongle, 64-byte HID reports (no report ID)
    OUT: [cmd][seq][args...]      IN: [cmd][seq][status][data...]   status 0 = ok */

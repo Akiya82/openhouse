@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PC-side reader for the openhouse dongle (1209:0001): per-tracker frame stream + link health.
+"""PC-side reader for the Doorman Dongle (6767:0727): per-tracker frame stream + link health.
 
     from ohlink import Dongle
     with Dongle() as d:
@@ -19,7 +19,7 @@ import struct, sys, time
 from dataclasses import dataclass
 import hid
 
-VID, PID = 0x1209, 0x0001
+VID, PID = 0x6767, 0x0727
 
 @dataclass
 class Imu:
@@ -62,7 +62,7 @@ class Dongle:
     def __init__(self, path=None):
         if path is None:
             devs = hid.enumerate(VID, PID)
-            if not devs: raise IOError("openhouse dongle (1209:0001) not found")
+            if not devs: raise IOError("Doorman Dongle (6767:0727) not found")
             path = next((d["path"] for d in devs if d.get("interface_number", 0) in (0, -1)), devs[0]["path"])
         self.h = hid.Device(path=path)
         # interface 1 (dongle fw with two HID interfaces): stream of the odd slots

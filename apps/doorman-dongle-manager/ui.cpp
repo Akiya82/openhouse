@@ -316,7 +316,7 @@ void Ui::Poll(double now) {
 void Ui::Draw(float width, float height) {
   ImGui::SetNextWindowPos(ImVec2(0, 0));
   ImGui::SetNextWindowSize(ImVec2(width, height));
-  ImGui::Begin("openhouse dongle", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+  ImGui::Begin("Doorman Dongle", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
   const float statusHeight = ImGui::GetFrameHeightWithSpacing() + 4;
   const float body = ImGui::GetContentRegionAvail().y - statusHeight;
@@ -415,8 +415,8 @@ void Ui::StatusBar() {
 }
 
 void Ui::NoDongle() {
-  Title("No openhouse dongle");
-  ImGui::TextWrapped("Plug in an openhouse dongle. It shows up here within a couple of seconds.");
+  Title("No Doorman Dongle");
+  ImGui::TextWrapped("Plug in a Doorman Dongle. It shows up here within a couple of seconds.");
 #ifndef _WIN32
   ImGui::Spacing();
   ImGui::TextDisabled("On Linux it needs access to /dev/hidraw*: the openhouse udev rule gives it (see the README).");
@@ -851,7 +851,7 @@ void Ui::Firmware(const DongleState& d) {
   ImGui::SeparatorText("Update");
   ImGui::TextWrapped("Pick the .uf2 file for this dongle (%s). The dongle restarts into update mode and shows up "
                      "as a USB drive; the file is copied onto it and the dongle starts the new firmware by itself.",
-                     d.softdeviceVariant ? "ohdongle_sd.uf2" : "ohdongle_nosd.uf2");
+                     d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
   ImGui::InputTextWithHint("##uf2", "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
   ImGui::SameLine();
@@ -907,11 +907,11 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file) {
 
 void Ui::About() {
   Title("About");
-  ImGui::TextWrapped("openhouse dongle manager: the openhouse wireless dongle's slots, pairing and radio.");
+  ImGui::TextWrapped("Doorman Dongle Manager: the openhouse wireless dongle's slots, pairing and radio.");
   ImGui::Spacing();
   ImGui::TextWrapped("A dongle has six slots, one device each. Pairing puts a device into a slot; it then "
                      "reconnects to that slot by itself whenever it's on. SteamVR's own pairing page also pairs "
-                     "into openhouse dongles while the openhouse driver runs: it picks a free slot, or one whose "
+                     "into Doorman Dongles while the openhouse driver runs: it picks a free slot, or one whose "
                      "device is off.");
   ImGui::Spacing();
   ImGui::TextWrapped("The driver doesn't need to be stopped to use this: both can talk to the dongle.");

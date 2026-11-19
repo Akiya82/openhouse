@@ -1,10 +1,10 @@
-// openhouse-check: started by SteamVR with every session (an auto-launched app the
+// update-checker: started by SteamVR with every session (an auto-launched app the
 // installer registers). If a SteamVR update replaced our driver_lighthouse with its own,
 // tells the user to run the openhouse installer again. Only while the installer's
 // driver_lighthouse.*.stock backup exists: after uninstalling (or renaming it by hand)
 // SteamVR's driver is wanted, and this stays quiet.
 //
-//   openhouse-check DRIVER_DIR     (SteamVR/drivers/lighthouse/bin/<platform>)
+//   update-checker DRIVER_DIR     (SteamVR/drivers/lighthouse/bin/<platform>)
 //
 // Then (openhouse's driver in place) asks GitHub for the latest release and, when it's
 // newer than this one, offers it: "Ok" or "Open link" to the release page. No network or
@@ -102,7 +102,7 @@ std::string TagName(const std::string& json) {
 #ifdef _WIN32
 std::string FetchLatest() {
   std::string body;
-  HINTERNET session = WinHttpOpen(L"openhouse-check", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+  HINTERNET session = WinHttpOpen(L"update-checker", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                                   WINHTTP_NO_PROXY_BYPASS, 0);
   if (!session) return body;
   WinHttpSetTimeouts(session, 5000, 5000, 5000, 5000);

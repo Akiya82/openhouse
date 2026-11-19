@@ -283,7 +283,7 @@ class Session {
   // Wireless receivers (dongles), live USB only: serial, and the device paired and
   // connected to it now ("" if none).
   // Link stats are live estimates over the last second; -1 / 0 where the receiver can't tell.
-  // An openhouse dongle appears once per paired slot ("OHDG-<id>/<slot>"), like a dongle each.
+  // A Doorman Dongle appears once per paired slot ("OHDG-<id>/<slot>"), like a dongle each.
   struct Receiver {
     std::string serial, connected;
     std::string kind;            // "watchman" (Valve/HTC dongle) or "openhouse" (one slot of ours)

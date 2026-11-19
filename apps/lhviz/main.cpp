@@ -133,7 +133,7 @@ struct Trail {
   std::deque<Eigen::Vector3d> points;
 };
 
-// Receivers panel: one row per Watchman dongle and per openhouse dongle slot, with live link stats.
+// Receivers panel: one row per Watchman dongle and per Doorman Dongle slot, with live link stats.
 struct ReceiverHistory {
   std::deque<float> kbps;   // one sample per refresh, for the sparkline
 };
@@ -551,7 +551,7 @@ int main(int argc, char** argv) {
     }
     ImGui::End();
 
-    // Receivers: Watchman dongles and each openhouse dongle slot, alike.
+    // Receivers: Watchman dongles and each Doorman Dongle slot, alike.
     if (options.replayPath.empty() && glfwGetTime() - lastReceiverPoll >= 0.5) {
       lastReceiverPoll = glfwGetTime();
       receivers = session->Receivers();

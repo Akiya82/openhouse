@@ -9,20 +9,20 @@
   dongle.py signal [SECS [SLOT]]     signal strength both ways + where polls get lost
   dongle.py slots | pair [SECS] | forget SLOT|all | channels | slotstats SLOT
   dongle.py crash-test 1             deliberate HardFault (tests the crash record)
-Only touches 1209:0001 devices and UF2 drives with INFO_UF2.TXT; never Valve dongles (28de:*).
+Only touches 6767:0727 devices and UF2 drives with INFO_UF2.TXT; never Valve dongles (28de:*).
 """
 import glob, os, shutil, struct, subprocess, sys, time
 import hid
 
-VID, PID = 0x1209, 0x0001
+VID, PID = 0x6767, 0x0727
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "..", "dongle-fw", "build")
 
 def open_dev():
     for d in hid.enumerate(VID, PID):
-        if d.get("product_string") == "openhouse dongle":
+        if d.get("product_string") == "Doorman Dongle":
             return hid.Device(path=d["path"])
-    sys.exit("dongle app not found (1209:0001 'openhouse dongle')")
+    sys.exit("dongle app not found (6767:0727 'Doorman Dongle')")
 
 _seq = 0
 def cmd(h, c, args=b"", timeout=1000):
@@ -74,7 +74,7 @@ def info():
         print(f"last crash: {names.get(typ, typ)} pc={pc:#x} lr={lr:#x} cfsr={cfsr:#x} hfsr={hfsr:#x} (total {cnt})")
 
 def flash(arg):
-    path = arg if arg.endswith(".uf2") else os.path.join(BUILD, f"ohdongle_{arg}.uf2")
+    path = arg if arg.endswith(".uf2") else os.path.join(BUILD, f"doorman_dongle_{arg}.uf2")
     if not os.path.exists(path): sys.exit(f"{path} missing: run make in doorman/dongle-fw")
     drive = (find_uf2_drives() or [None])[0]
     if not drive:
@@ -90,7 +90,7 @@ def flash(arg):
         pass   # the drive disappears when the bootloader restarts into the app
     t = time.time()
     while time.time() - t < 15:
-        if any(d.get("product_string") == "openhouse dongle" for d in hid.enumerate(VID, PID)):
+        if any(d.get("product_string") == "Doorman Dongle" for d in hid.enumerate(VID, PID)):
             time.sleep(0.3); info(); return
         time.sleep(0.3)
     sys.exit("app did not come back within 15 s (check with bootinfo / dmesg)")

@@ -17,8 +17,8 @@ short). Don't add other Markdown outside `ai/`.
   two bases (TDM time slots).
 * **doorman** (`doorman/`): openhouse's own wireless link: nRF52840 dongle firmware (6 devices per
   dongle) and radio firmware for the Vive Tracker 1.0 (nRF51) and the Index controller family (nRF52),
-  installed over USB with SteamVR's own updater; host side in `ohdongle.cpp` and
-  `apps/openhouse-dongle`. Start at `doorman/README.md`.
+  installed over USB with SteamVR's own updater; host side in `doorman_dongle.cpp` and
+  `apps/doorman-dongle-manager`. Start at `doorman/README.md`.
 
 Goals and constraints (from the owner):
 * Tracking algorithms and constants start from the original (oracle-tested), but use
@@ -55,10 +55,10 @@ Goals and constraints (from the owner):
 | `src/openvr` | the OpenVR driver (devices, inputs, skeleton, host frame, room publisher, stock HMD, pairing, telemetry server) |
 | `src/common` | small shared pieces (loopback sockets) |
 | `src/platform` | OS helpers (paths, precise sleep) |
-| `apps/` | `openhouse-overlay` (management app: SteamVR dashboard overlay or desktop window; live status, settings, bug report), `openhouse-compare` (openhouse vs the stock driver side by side; hosts the stock DLL in-process), `lhtool` (replay/session/track), `lhcapture` (recorder), `lhviz` (developer viewer), `openhouse-check` (update check), `openhouse-dongle` (doorman dongle manager; shipped as a plain binary, not installed), `example_app` (standalone CMake example for users of `lh::Session`) |
+| `apps/` | `openhouse-overlay` (management app: SteamVR dashboard overlay or desktop window; live status, settings, bug report), `openhouse-compare` (openhouse vs the stock driver side by side; hosts the stock DLL in-process), `lhtool` (replay/session/track), `lhcapture` (recorder), `lhviz` (developer viewer), `update-checker` (update check), `doorman-dongle-manager` (doorman dongle manager; shipped as a plain binary, not installed), `example_app` (standalone CMake example for users of `lh::Session`) |
 | `tests/` | unit, runtime, OpenVR component/mock-host, oracle tests (load the original binary) |
 | `tools/` | `eval_replay.sh/.py` (tracking scorer) |
-| `scripts/` | Release builds (`build-linux.sh`, `build-windows.sh`, `build-firmware.sh`, `build-doorman.sh`) and the packagers they call (`package-linux.sh`, `package-driver.py`, `package-windows.py`, `package-firmware.py`, `package-doorman.py`), the Windows installer script |
+| `scripts/` | Release builds (`build-linux.sh`, `build-windows.sh`, `build-firmware.sh`, `build-doorman.sh`) and the packagers they call (`package-linux.sh`, `package-driver.py`, `package-windows.py`), and `stage-firmwares.py` (every firmware image into a package's `firmwares/`, for openhouse-installer) |
 | `basestation_firmware` | the firmware (`src/`, `test/`, `Makefile`); `tools/lpcsum.py` (boot checksum, run by the Makefile); `installer/` the end-user installers (Linux sh, Windows ps1/bat). `fw/`, `patches/`, `re/`, `bsfirmwares/`, `backups/` are local only |
 | `doorman` | doorman wireless: `dongle-fw/`, `radio-fw/`, `common/` (shared protocol headers), `tools/` (Python: dongle CLI, air/OTA updaters, radio emulator), `third_party/` (the tinyusb/nrfx/CMSIS files the builds use) |
 | `re/ghidra_scripts` | headless Ghidra scripts. The rest of `re/` (project, decompiles) is local only |
@@ -145,7 +145,7 @@ Version 1.0.3 (`include/lh/version.hpp`; v1.0.1 shipped still saying 1.0.0). Rec
 * Bug reports: replay `recording/*.lhraw` with `lhtool session ... --room COPY_OF config/roommap.json
   --steam-db - --preinit - --trace OUT`. Mid-session recordings decode only with the Wv2
   probes (`driver/wireless_protocol.md`); older builds see almost nothing in them.
-* `openhouse-check` (SteamVR autolaunch app; Monado/WiVRn: a user service) warns when a
+* `update-checker` (SteamVR autolaunch app; Monado/WiVRn: a user service) warns when a
   SteamVR update replaced the driver, then asks GitHub's latest release and offers it
   ("Ok" / "Open link"; zenity/kdialog, MessageBox; `OPENHOUSE_NO_UPDATE_CHECK`).
 * Installers (`apps/openhouse-installer` on Windows, `packaging/*.sh`): offer to close Steam /
@@ -212,6 +212,6 @@ open issues).
 
 `doorman/` (wireless): `README.md` (overview, layout, build, safety rules, state), `protocol.md`
 (air link, dongle USB commands, device frames), `dongle-fw.md`, `radio-fw.md` (updater, every update
-route), `host.md` (transport, receivers/pairing, openhouse-dongle).
+route), `host.md` (transport, receivers/pairing, doorman-dongle-manager).
 
 `reverse_engineering.md`: the Ghidra workspace for `driver_lighthouse.so` (local only).

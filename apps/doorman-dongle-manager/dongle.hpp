@@ -1,4 +1,4 @@
-// openhouse-dongle's link to the openhouse dongles (1209:0001 "openhouse dongle"): one worker
+// doorman-dongle-manager's link to the Doorman Dongles (6767:0727 "Doorman Dongle"): one worker
 // thread per dongle polls its state and link statistics and runs the actions the UI queues.
 // The UI only reads snapshots (Snapshot()), so it never waits on USB.
 //
@@ -148,7 +148,7 @@ class Dongle {
   int statsSlot_ = 0;
 };
 
-// Every openhouse dongle plugged in, found again every two seconds.
+// Every Doorman Dongle plugged in, found again every two seconds.
 class DongleManager {
  public:
   DongleManager();

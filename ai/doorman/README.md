@@ -13,20 +13,20 @@ openhouse → doorman). It has three parts:
   * Index controller family: nRF52832, replacing Valve's app. Only the Index controller is
     tested; the Vive Tracker 2018 / 3.0, Tundra and Vive Pro controllers share the layout.
 * the **host side**, in this repo's C++:
-  * `src/transport/usb/ohdongle.cpp`
+  * `src/transport/usb/doorman_dongle.cpp`
   * `UsbTransport` receivers and pairing
   * the telemetry server
   * lhviz's Receivers panel
-  * `apps/openhouse-dongle`, the dongle manager
+  * `apps/doorman-dongle-manager`, the dongle manager
 
 The device's main MCU keeps its **stock** firmware. It talks to the radio over SPI exactly
 as it would to the stock radio app. So users only change the radio, and only over USB with
 SteamVR's own updater (`radio-fw.md`).
 
-Code names that predate the "doorman" name still say "ohlink" / "ohdongle" / "openhouse
-link": `common/ohlink.h`, `OHL_*`, `ohdongle.cpp`, `OHDG-` receiver serials, and the UF2
+Code names that predate the "doorman" name still say "ohlink" / "doorman_dongle" / "openhouse
+link": `common/ohlink.h`, `OHL_*`, `doorman_dongle.cpp`, `OHDG-` receiver serials, and the UF2
 file names. They mean doorman. The owner may rename user-facing strings later (USB product
-string "openhouse dongle", lhviz badge "OH"). Ask before renaming identifiers.
+string "Doorman Dongle", lhviz badge "OH"). Ask before renaming identifiers.
 
 ## Layout
 
@@ -38,14 +38,14 @@ string "openhouse dongle", lhviz badge "OH"). Ask before renaming identifiers.
 | `doorman/radio-fw/` | radio firmware: `src/main.c` (whole app), `src/startup.c`, `radio.ld` (nRF51), `radio_idx.ld` (nRF52) |
 | `doorman/third_party/` | **only the files the builds use** from tinyusb 0.17.0, nrfx v2.11.0 and CMSIS_5 5.9.0, plus their licenses. Commits are in `VERSIONS.txt`. To update: clone those tags, build with `-M`, copy the listed files |
 | `doorman/tools/` | Python host tools (below) |
-| `scripts/build-doorman.sh` | clean build of both firmwares, radio emulator test, then `package-doorman.py` |
-| `scripts/package-doorman.py` | `dist/openhouse-doorman/` + `.zip`: dongle UF2s, both radio images, `INSTALL.txt`, licenses |
+| `scripts/build-doorman.sh` | clean build of both firmwares and the radio emulator test |
+| `scripts/stage-firmwares.py` | puts the dongle UF2s and both radio images (with lhbs) in a package's `firmwares/`, for openhouse-installer |
 
 Tools (`doorman/tools`; Python 3, `hid` = hidapi bindings, `usb` = pyusb):
 * `dongle.py`: dongle CLI.
   * `info`, `slots`, `pair SECS`, `forget`, `channels`, `scan`, `listen`, `signal`, `slotstats`
   * `flash sd|nosd|FILE` (puts the dongle in its UF2 bootloader and copies the image)
-  * Only ever touches 1209:0001 and UF2 drives; never Valve dongles.
+  * Only ever touches 6767:0727 and UF2 drives; never Valve dongles.
 * `ohlink.py`: the Python library: `Dongle().frames()`, `slots()`, `pair()`, `send()`.
 * `air_update.py`: radio update over the doorman link (any image, ~3 s).
   * `install SLOT IMAGE`
@@ -68,11 +68,11 @@ Tools (`doorman/tools`; Python 3, `hid` = hidapi bindings, `usb` = pyusb):
 ## Build, test, package
 
 ```sh
-make -C doorman/dongle-fw                 # build/ohdongle_sd.uf2, build/ohdongle_nosd.uf2
+make -C doorman/dongle-fw                 # build/doorman_dongle_sd.uf2, build/doorman_dongle_nosd.uf2
 make -C doorman/radio-fw                  # build/radio.bin           (Tracker 1.0)
 make -C doorman/radio-fw TARGET=idx       # build-idx/radio.bin + radio_idx.fw (Index family)
 make -C doorman/radio-fw TARGET=idx DIAG=1  # dev only: staging counters + SPI trace
-scripts/build-doorman.sh                  # all of it + emulator + dist/openhouse-doorman.zip
+scripts/build-doorman.sh                  # all of it + emulator
 ```
 
 Needs `arm-none-eabi-gcc` with newlib (the dongle links newlib-nano; its `_close`/`_read`
@@ -123,10 +123,10 @@ Not tested yet:
 * pairing into a chosen slot with a real device;
 * pairing from the SteamVR pairing UI;
 * the dongle manager with live devices and with the driver running;
-* the Windows build of `openhouse-dongle`.
+* the Windows build of `doorman-dongle-manager`.
 
 Open:
-* A Linux udev rule for 1209:0001 (hidraw access).
+* A Linux udev rule for 6767:0727 (hidraw access).
 * The openhouse installer should cover dongle flashing and device radio firmware, next to
   driver install and base station firmware (planned by the owner).
 * Capacity: realistic ≈ 8 devices per dongle; 16–20 is theoretically possible with worse

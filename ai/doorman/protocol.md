@@ -23,9 +23,11 @@ Source of truth: `doorman/common/ohlink.h` (air format, constants) and
   * Each POLL carries the period (in 50 µs units) and the max RESP length.
 * Hopping: 16 channels (2404–2479 MHz, 5 MHz apart). The channel for a cycle is the
   (cycle mod n_allowed)-th allowed channel. Each POLL announces the mask for the *next* cycle.
-  * The dongle measures loss per channel over 2 s windows. A channel with more than 8 % loss
-    (and at least 20 polls) is turned off for 30 s, keeping at least 8 on. In practice this
-    removes Wi-Fi channels: loss went from 3.1 % to 0.7 %.
+  * The dongle measures loss per channel over 2 s windows. A channel losing more than 8 points
+    above the median channel (and with at least 20 polls) is turned off for 30 s, doubling for
+    repeat offenders up to 5 min, keeping at least 8 on. Judging against the median matters: a
+    device with a weak link loses on every channel, and with an absolute threshold it struck
+    clean channels until only 4 were left (firmware 0x0005 and older).
   * A device that misses polls keeps hopping on its own clock: `cycle = last + round(dt/period)`.
 * Reliability:
   * Uplink: go-back-N, window 2, 3-bit seq; the POLL carries the ack.
@@ -63,12 +65,12 @@ frames = repeated [len][frame]
 * Measured: 6.9 kB/s on air for 9.0 kB/s of frames (77 %). A device needs about 8 kB/s on air
   and 10.5 kB/s decoded.
 
-## Dongle USB interface (VID:PID 1209:0001, "openhouse dongle")
+## Dongle USB interface (VID:PID 6767:0727, "Doorman Dongle")
 
 **Two HID interfaces**, 64-byte reports, 1 ms interval (endpoints 0x01/0x81 and 0x02/0x82).
 One interrupt IN endpoint carries at most 64 B per ms (~61 kB/s), which wasn't enough for 6
 devices, so **interface 1 streams the odd slots**. Interface 0 streams the even slots and
-carries all commands. Hosts must read both (`ohdongle.cpp` drains `dev1_` in `Pump`;
+carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` in `Pump`;
 `ohlink.py` reads `h1` first).
 
 * Commands go out on interface 0 as `[cmd][seq][args]`. Replies come back as

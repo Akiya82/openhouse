@@ -1,5 +1,5 @@
 // Asks GitHub for the latest openhouse release, on a thread of its own (the same request as
-// openhouse-check: api.github.com/repos/YusufOzmen01/openhouse/releases/latest). Off with
+// update-checker: api.github.com/repos/YusufOzmen01/openhouse/releases/latest). Off with
 // OPENHOUSE_NO_UPDATE_CHECK, as there.
 #pragma once
 #include <atomic>

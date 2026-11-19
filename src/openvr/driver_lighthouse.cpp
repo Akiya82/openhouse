@@ -2129,6 +2129,10 @@ Provider g_provider;
 #else
 #define LH_DRIVER_EXPORT __attribute__((visibility("default")))
 #endif
+// The installed version, found by openhouse-installer in the file ("openhouse-version:X.Y.Z;").
+// Exported, so the linker keeps it.
+extern "C" LH_DRIVER_EXPORT const char openhouse_version[] = "openhouse-version:" LH_VERSION_STRING ";";
+
 extern "C" LH_DRIVER_EXPORT void* HmdDriverFactory(const char* interfaceName, int* returnCode) {
   if (std::strcmp(interfaceName, IServerTrackedDeviceProvider_Version) == 0) return &g_provider;
   if (std::strcmp(interfaceName, IVRWatchdogProvider_Version) == 0) return lh::openvr::WatchdogProvider();

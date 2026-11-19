@@ -30,9 +30,9 @@
 #include <stdint.h>
 
 #ifdef OHL_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
-#define OHL_VERSION        0x6A000013u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
+#define OHL_VERSION        0x6A000016u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
 #else
-#define OHL_VERSION        0x0A000008u
+#define OHL_VERSION        0x0A000009u
 #endif        /* radio fw version reported for 'X' (HTC: 0x576B0104) */
 #define OHL_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
 #define OHL_JOIN_CHANNEL   80                 /* 2480 MHz */

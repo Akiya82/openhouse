@@ -3,23 +3,23 @@
 nRF52840 Dongle (PCA10059 or compatible), tinyusb, polled main loop (no radio interrupts). Sources:
 `src/main.c` (USB commands, crash record, bootloader entry), `src/link.c` (the air link: slots,
 joining/pairing, hopping, go-back-N, codec), `src/usb_descriptors.c`, `src/dongle.h` (`DONGLE_FW_VERSION`,
-VID/PID 1209:0001, command numbers).
+VID/PID 6767:0727, command numbers).
 
 ## Two builds (same code, different flash base)
 
 | UF2 | For | App base | RAM |
 |---|---|---|---|
-| `ohdongle_sd.uf2` | dongles whose UF2 bootloader sits on Nordic's MBR/SoftDevice (the usual Adafruit-style bootloader) | 0x26000 (`ld/app_sd.ld`) | from 0x20003400 (SoftDevice RAM untouched) |
-| `ohdongle_nosd.uf2` | UF2 bootloader without SoftDevice | 0x1000 (`ld/app_nosd.ld`) | from 0x20000000 |
+| `doorman_dongle_sd.uf2` | dongles whose UF2 bootloader sits on Nordic's MBR/SoftDevice (the usual Adafruit-style bootloader) | 0x26000 (`ld/app_sd.ld`) | from 0x20003400 (SoftDevice RAM untouched) |
+| `doorman_dongle_nosd.uf2` | UF2 bootloader without SoftDevice | 0x1000 (`ld/app_nosd.ld`) | from 0x20000000 |
 
 Info (cmd 0x01) reports which variant is running and whether the SoftDevice magic is still in flash;
-openhouse-dongle picks the file name from that. Flash end 0xED000; the **paired table** is page 0xEC000
+doorman-dongle-manager picks the file name from that. Flash end 0xED000; the **paired table** is page 0xEC000
 (magic "OHPR", never erased if the code grows into it). RAM from 0x2003E000 holds the crash record.
 
 ## Install / update
 
 * `CMD_DFU_UF2` (0x10) sets GPREGRET and resets into the UF2 bootloader; the drive appears, the UF2 is
-  copied, the bootloader starts the app. `tools/dongle.py flash sd|nosd|FILE` and openhouse-dongle's
+  copied, the bootloader starts the app. `tools/dongle.py flash sd|nosd|FILE` and doorman-dongle-manager's
   Firmware page do exactly this. By hand: double-tap reset.
 * 0x11 enters serial DFU instead. A brand-new PCA10059 with Nordic's stock bootloader needs a UF2 bootloader
   first (not automated).

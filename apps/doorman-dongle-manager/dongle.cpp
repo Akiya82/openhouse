@@ -12,7 +12,7 @@
 
 namespace openhouse::dongle {
 namespace {
-constexpr uint16_t kVid = 0x1209, kPid = 0x0001;
+constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 // Commands (doorman/dongle-fw/src/dongle.h, link.c)
 constexpr uint8_t kInfo = 0x01, kBootloader = 0x10, kReset = 0x12, kClearCrash = 0x14, kLink = 0x20, kDown = 0x21,
                   kScan = 0x22, kStats = 0x23, kPair = 0x24, kSlotsCmd = 0x25, kForget = 0x26, kChannels = 0x27,
@@ -486,7 +486,7 @@ void DongleManager::Poll(double now) {
   nextScan_ = now + 2.0;
   hid_device_info* list = hid_enumerate(kVid, kPid);
   for (hid_device_info* d = list; d; d = d->next) {
-    if (Narrow(d->product_string) != "openhouse dongle" || d->interface_number > 0) continue;
+    if (Narrow(d->product_string) != "Doorman Dongle" || d->interface_number > 0) continue;
     const std::string serial = "OHDG-" + Narrow(d->serial_number);
     bool have = false;
     for (auto& x : dongles_)

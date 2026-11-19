@@ -1,7 +1,7 @@
 # doorman on the host (openhouse)
 
-## Transport: `src/transport/usb/ohdongle.cpp/.hpp`
-* `UsbTransport` opens 1209:0001 next to Watchman dongles and pumps `OhDongle` from its reader thread;
+## Transport: `src/transport/usb/doorman_dongle.cpp/.hpp`
+* `UsbTransport` opens 6767:0727 next to Watchman dongles and pumps `DoormanDongle` from its reader thread;
   both HID interfaces are drained (`dev1_` = odd slots).
 * Each slot becomes **virtual wired endpoints** (IMU, optical, buttons). Frames are wired reports with
   another first byte and are relabelled into the normal `ReportDecoder`:
@@ -18,7 +18,7 @@
 * `UsbTransport::SetPairing(receiver, ms)`: the dongle → first free slot, `/n` → that slot (dongle fw ≥
   0x0004). SteamVR's pairing UI goes through the driver's pairing mailbox to the same call (untested).
 
-## `apps/openhouse-dongle` (dongle manager)
+## `apps/doorman-dongle-manager` (dongle manager)
 ImGui desktop window in openhouse-overlay's style; pages slots / radio / channels / firmware / about.
 Pair into a slot, forget, live RSSI and loss, channel mask, dongle firmware update (UF2 copy), restart,
 crash record. Works without the driver; with it, device names come from driver telemetry. Shipped as a

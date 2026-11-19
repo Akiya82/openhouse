@@ -149,7 +149,7 @@ void TelemetryServer::PublishState(double time, const SessionSnapshot& snapshot,
   for (const auto& r : receivers) {
     json e = {{"serial", r.serial}, {"connected", r.connected}, {"kind", r.kind}, {"linked", r.linked},
               {"kBytesPerSec", r.kBytesPerSec}, {"framesPerSec", r.framesPerSec}};
-    if (r.slot >= 0) {   // an openhouse dongle slot
+    if (r.slot >= 0) {   // a Doorman Dongle slot
       e["slot"] = r.slot; e["paired"] = r.paired; e["loss"] = r.lossPercent; e["drops"] = r.dropsPerSec;
       e["rssi"] = {r.rssiDongle, r.rssiDevice};
     }

@@ -1,4 +1,4 @@
-// openhouse-dongle: the openhouse dongle manager. The dongles plugged in, what's paired to
+// doorman-dongle-manager: the Doorman Dongle Manager. The dongles plugged in, what's paired to
 // each of their six slots, pairing into a slot and unpairing, the radio's live performance,
 // its channels and the dongle firmware. A desktop window (Windows, Linux), in the look of
 // openhouse-overlay; it works with or without the openhouse driver running (with it, device
@@ -51,13 +51,13 @@ GLuint UploadRgba(const uint8_t* rgba, int w, int h) {
 }  // namespace
 
 int main() {
-  if (!glfwInit()) { std::fprintf(stderr, "openhouse-dongle: no display\n"); return 1; }
+  if (!glfwInit()) { std::fprintf(stderr, "doorman-dongle-manager: no display\n"); return 1; }
   // OPENHOUSE_DONGLE_SCALE=1|2|3: the UI size (default: 2 on screens over 1080 lines, else 1)
   int scale = 1;
   if (const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor()); mode && mode->height > 1300) scale = 2;
   if (const char* s = std::getenv("OPENHOUSE_DONGLE_SCALE"); s && std::atoi(s) >= 1) scale = std::atoi(s);
-  GLFWwindow* window = glfwCreateWindow(1180 * scale, 760 * scale, "openhouse dongle", nullptr, nullptr);
-  if (!window) { std::fprintf(stderr, "openhouse-dongle: can't open a window\n"); glfwTerminate(); return 1; }
+  GLFWwindow* window = glfwCreateWindow(1180 * scale, 760 * scale, "Doorman Dongle", nullptr, nullptr);
+  if (!window) { std::fprintf(stderr, "doorman-dongle-manager: can't open a window\n"); glfwTerminate(); return 1; }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
   GLFWimage icon{kLogoSize, kLogoSize, const_cast<unsigned char*>(kLogoRgba)};

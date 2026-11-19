@@ -5,14 +5,11 @@
       <pe-file-set>
         <include path="openhouse-windows-x64/driver_lighthouse.dll" />
         <include path="openhouse-windows-x64/openhouse-installer.exe" />
-        <include path="openhouse-windows-x64/apps/liblh.dll" />
         <include path="openhouse-windows-x64/apps/lhcapture.exe" />
         <include path="openhouse-windows-x64/apps/lhtool.exe" />
-        <include path="openhouse-windows-x64/apps/lhviz.exe" />
-        <include path="openhouse-windows-x64/apps/openhouse-check.exe" />
+        <include path="openhouse-windows-x64/apps/update-checker.exe" />
         <include path="openhouse-windows-x64/apps/openhouse-overlay.exe" />
-        <include path="openhouse-windows-x64/apps/openhouse-dongle.exe" />
-        <include path="openhouse-windows-x64/apps/openhouse-compare.exe" />
+        <include path="openhouse-windows-x64/apps/doorman-dongle-manager.exe" />
         <for-each>
           <authenticode-sign />
         </for-each>

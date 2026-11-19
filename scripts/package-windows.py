@@ -18,7 +18,7 @@ shutil.rmtree(out, ignore_errors=True)
 (out / 'apps').mkdir(parents=True)
 files = {build / 'openvr/lighthouse/bin/win64/driver_lighthouse.dll': out / 'driver_lighthouse.dll',
          build / 'openhouse-installer.exe': out / 'openhouse-installer.exe'}
-files.update({build / name: out / 'apps' / name for name in ['liblh.dll', 'openhouse-compare.exe', 'lhviz.exe', 'lhtool.exe', 'lhcapture.exe', 'openhouse-check.exe', 'openhouse-overlay.exe', 'openhouse-dongle.exe']})
+files.update({build / name: out / 'apps' / name for name in ['lhtool.exe', 'lhcapture.exe', 'update-checker.exe', 'openhouse-overlay.exe', 'doorman-dongle-manager.exe']})
 system = {'advapi32.dll', 'winhttp.dll', 'kernel32.dll', 'shlwapi.dll', 'user32.dll', 'gdi32.dll',
           'shell32.dll', 'winmm.dll', 'ole32.dll', 'comdlg32.dll', 'msvcrt.dll',
           'ucrtbase.dll', 'ntdll.dll', 'imm32.dll', 'version.dll', 'oleaut32.dll', 'setupapi.dll', 'opengl32.dll', 'hid.dll', 'ws2_32.dll'}
@@ -30,12 +30,11 @@ for source, target in files.items():
     pe = subprocess.check_output(['x86_64-w64-mingw32-objdump', '-p', str(target)], text=True)
     imports = re.findall(r'DLL Name:\s*(\S+)', pe)
     for name in imports:
-        if name.lower() not in system and not name.lower().startswith('api-ms-win-') and not (target.parent / name).is_file() and name.lower() != 'liblh.dll':
+        if name.lower() not in system and not name.lower().startswith('api-ms-win-') and not (target.parent / name).is_file():
             sys.exit(f'Unbundled Windows dependency in {target}: {name}')
-        if name.lower() == 'liblh.dll' and target.parent != out / 'apps':
-            sys.exit('Driver must not depend on liblh.dll')
     artifacts.append({'file': str(target.relative_to(out)), 'imports': imports,
                       'sha256': hashlib.sha256(target.read_bytes()).hexdigest()})
+subprocess.run([sys.executable, str(repo / 'scripts/stage-firmwares.py'), str(out)], check=True)
 licenses = out / 'licenses'
 licenses.mkdir(exist_ok=True)
 for copyright in (prefix / 'share').glob('*/copyright'):
@@ -58,6 +57,9 @@ if gpl.is_file():
     'vcpkg_baseline': json.loads((repo / 'vcpkg.json').read_text())['builtin-baseline'],
     'artifacts': artifacts,
 }, indent=2) + '\n')
+# Executable bits too, for running them under Wine straight out of the zip.
+for exe in list(out.rglob('*.exe')) + list(out.rglob('*.dll')):
+    exe.chmod(0o755)
 archive = shutil.make_archive(str(repo / 'dist/openhouse-windows-x64'), 'zip', out.parent, out.name)
 print(f'Packaged {archive}')
 for item in artifacts:

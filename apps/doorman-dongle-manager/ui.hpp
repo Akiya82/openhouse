@@ -1,4 +1,4 @@
-// openhouse-dongle's window: the openhouse dongles plugged in, their six slots (what's paired,
+// doorman-dongle-manager's window: the Doorman Dongles plugged in, their six slots (what's paired,
 // pairing into a slot, unpairing), the radio's live performance, its channels and firmware.
 // Same look as openhouse-overlay (pixel font, sidebar pages, status bar).
 #pragma once

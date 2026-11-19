@@ -1,4 +1,4 @@
-#include "ohdongle.hpp"
+#include "doorman_dongle.hpp"
 
 #include <hidapi/hidapi.h>
 
@@ -16,7 +16,7 @@
 namespace lh::usb {
 namespace {
 
-constexpr uint16_t kVid = 0x1209, kPid = 0x0001;
+constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 // Radio path latency on top of the wired 0.9 ms the IMU parser already subtracts
 // (sample -> LPC -> SPI -> air, up to one TDMA cycle -> USB). ClockSync follows the minimum.
 constexpr double kExtraLatency = 0.0015;
@@ -51,22 +51,22 @@ void AddSensorType(std::string* json, int type) {
 
 }  // namespace
 
-OhDongle::OhDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
+DoormanDongle::DoormanDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
                    std::string steamConfigDir, LogFn log)
     : sink_(sink), decoder_(decoder), capture_(capture), nextEp_(nextEp), steamConfigDir_(std::move(steamConfigDir)),
       log_(std::move(log)) {
   if (steamConfigDir_.empty()) steamConfigDir_ = platform::SteamConfigDirectory();
 }
 
-OhDongle::~OhDongle() { Close(); }
+DoormanDongle::~DoormanDongle() { Close(); }
 
-bool OhDongle::Open() {
+bool DoormanDongle::Open() {
   hid_device_info* list = hid_enumerate(kVid, kPid);
   // interface 0: commands/replies + even slots' stream; interface 1 (newer dongle firmware): odd slots'
   // stream (a second 1 ms IN endpoint; one carries ~61 kB/s, six devices need more)
   std::string path, path1, serial;
   for (hid_device_info* d = list; d; d = d->next) {
-    if (Narrow(d->product_string) != "openhouse dongle") continue;
+    if (Narrow(d->product_string) != "Doorman Dongle") continue;
     if (d->interface_number == 1) { path1 = d->path; continue; }
     if (!path.empty()) continue;
     path = d->path;
@@ -85,11 +85,11 @@ bool OhDongle::Open() {
   }
   for (auto& s : slots_) { s.used = s.active = s.noIdent = false; s.identSeq = -1; s.identTries = 0; }
   nextLive_ = 0;
-  log_(LogLevel::Info, "openhouse dongle " + serial + " opened");
+  log_(LogLevel::Info, "Doorman Dongle " + serial + " opened");
   return true;
 }
 
-void OhDongle::Drop() {
+void DoormanDongle::Drop() {
   if (!dev_) return;
   for (int i = 0; i < 6; ++i) if (slots_[i].attached) Detach(i);
   hid_close(dev_);
@@ -101,10 +101,10 @@ void OhDongle::Drop() {
     std::lock_guard lock(mutex_);
     serial.swap(serial_);
   }
-  log_(LogLevel::Info, "openhouse dongle " + serial + " closed");
+  log_(LogLevel::Info, "Doorman Dongle " + serial + " closed");
 }
 
-void OhDongle::Close() {
+void DoormanDongle::Close() {
   Drop();
   {
     std::lock_guard lock(mutex_);
@@ -115,20 +115,20 @@ void OhDongle::Close() {
   for (auto& s : slots_) if (s.worker.joinable()) s.worker.join();
 }
 
-void OhDongle::Send(uint8_t cmd, const uint8_t* args, size_t n) {
+void DoormanDongle::Send(uint8_t cmd, const uint8_t* args, size_t n) {
   if (!dev_) return;
   uint8_t buf[65] = {0, cmd, ++seq_};
   std::memcpy(buf + 3, args, std::min<size_t>(n, 62));
   if (hid_write(dev_, buf, sizeof buf) < 0) Drop();
 }
 
-void OhDongle::Downlink(int slot, const uint8_t* frame, size_t n) {
+void DoormanDongle::Downlink(int slot, const uint8_t* frame, size_t n) {
   uint8_t a[62] = {uint8_t(slot), uint8_t(n)};
   std::memcpy(a + 2, frame, std::min<size_t>(n, 60));
   Send(kCmdDown, a, 2 + std::min<size_t>(n, 60));
 }
 
-void OhDongle::Pump(double now) {
+void DoormanDongle::Pump(double now) {
   if (!dev_) {
     if (now < nextOpen_) return;
     nextOpen_ = now + 2.0;
@@ -218,7 +218,7 @@ void OhDongle::Pump(double now) {
   if (!drain(dev_)) Drop();
 }
 
-void OhDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
+void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   if (n < 3) return;
   if (r[0] == 0x80 || r[0] == 0x81) {
     const int slot = r[1], len = std::min<int>(r[2], n - 3);
@@ -285,7 +285,7 @@ void OhDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   }
 }
 
-void OhDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool last) {
+void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool last) {
   Slot& s = slots_[slot];
   switch (f[0]) {
     case 'H':
@@ -362,7 +362,7 @@ void OhDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool last) {
   }
 }
 
-void OhDongle::OnIdent(int slot, const uint8_t* f, int n) {
+void DoormanDongle::OnIdent(int slot, const uint8_t* f, int n) {
   if (n < 16 || f[1] != 1) return;
   Slot& s = slots_[slot];
   char serial[16];
@@ -379,7 +379,7 @@ void OhDongle::OnIdent(int slot, const uint8_t* f, int n) {
   else if (!s.worker.joinable()) StartConfigFetch(slot);
 }
 
-void OhDongle::StartConfigFetch(int slot) {
+void DoormanDongle::StartConfigFetch(int slot) {
   Slot& s = slots_[slot];
   s.fetchedConfig.clear();
   s.workerDone = false;
@@ -424,7 +424,7 @@ void OhDongle::StartConfigFetch(int slot) {
   });
 }
 
-int OhDongle::FeatureRead(int slot, uint8_t* data, size_t size) {
+int DoormanDongle::FeatureRead(int slot, uint8_t* data, size_t size) {
   auto w = std::make_shared<FeatureWait>();
   w->slot = slot;
   w->id = data[0];
@@ -439,7 +439,7 @@ int OhDongle::FeatureRead(int slot, uint8_t* data, size_t size) {
   return int(n);
 }
 
-void OhDongle::Attach(int slot, const std::string& configIn) {
+void DoormanDongle::Attach(int slot, const std::string& configIn) {
   Slot& s = slots_[slot];
   std::string config = configIn;
   if (s.sensorType >= 0 && !config.empty()) AddSensorType(&config, s.sensorType);
@@ -477,10 +477,10 @@ void OhDongle::Attach(int slot, const std::string& configIn) {
     eps_.push_back(opt);
     eps_.push_back(btn);
   }
-  log_(LogLevel::Info, s.serial + ": connected on openhouse dongle slot " + std::to_string(slot));
+  log_(LogLevel::Info, s.serial + ": connected on Doorman Dongle slot " + std::to_string(slot));
 }
 
-void OhDongle::Detach(int slot) {
+void DoormanDongle::Detach(int slot) {
   Slot& s = slots_[slot];
   if (!s.attached) return;
   decoder_->RemoveEndpoint(s.epImu);
@@ -493,27 +493,27 @@ void OhDongle::Detach(int slot) {
     std::lock_guard lock(mutex_);
     std::erase_if(eps_, [&](const EndpointInfo& e) { return e.serial == s.serial; });
   }
-  log_(LogLevel::Info, s.serial + ": disconnected from openhouse dongle slot " + std::to_string(slot));
+  log_(LogLevel::Info, s.serial + ": disconnected from Doorman Dongle slot " + std::to_string(slot));
 }
 
-std::vector<EndpointInfo> OhDongle::Endpoints() const {
+std::vector<EndpointInfo> DoormanDongle::Endpoints() const {
   std::lock_guard lock(mutex_);
   return eps_;
 }
 
-std::vector<DeviceId> OhDongle::Connected() const {
+std::vector<DeviceId> DoormanDongle::Connected() const {
   std::lock_guard lock(mutex_);
   std::vector<DeviceId> v;
   for (auto& e : eps_) if (e.kind == EndpointKind::Imu) v.push_back(e.serial);
   return v;
 }
 
-std::string OhDongle::Serial() const {
+std::string DoormanDongle::Serial() const {
   std::lock_guard lock(mutex_);
   return serial_;
 }
 
-bool OhDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64>& report, const char** status, size_t size) {
+bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64>& report, const char** status, size_t size) {
   int slot = -1;
   {
     std::lock_guard lock(mutex_);
@@ -537,7 +537,7 @@ bool OhDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64>& re
   return true;
 }
 
-bool OhDongle::Pair(int milliseconds, int slot) {
+bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
   if (serial_.empty()) return false;
   pairMs_ = milliseconds;
@@ -545,12 +545,12 @@ bool OhDongle::Pair(int milliseconds, int slot) {
   return true;
 }
 
-std::vector<OhDongle::SlotStat> OhDongle::SlotStats() const {
+std::vector<DoormanDongle::SlotStat> DoormanDongle::SlotStats() const {
   std::lock_guard lock(mutex_);
   return serial_.empty() ? std::vector<SlotStat>() : statsCache_;
 }
 
-void OhDongle::RefreshStatsCache() {     // reader thread: slots_ is its own
+void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its own
   std::vector<SlotStat> out;
   int joined = 0;
   for (const auto& s : slots_) joined += s.active;

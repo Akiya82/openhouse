@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the doorman firmware from scratch (dongle: nRF52840 Dongle; radio: Index-family nRF52 and
-# Vive Tracker 1.0 nRF51), runs the radio emulator test, and packages it (scripts/package-doorman.py).
-# Output: dist/openhouse-doorman/ and dist/openhouse-doorman.zip
+# Vive Tracker 1.0 nRF51) and runs the radio emulator test. The packages take the images through
+# scripts/stage-firmwares.py.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 dm="$repo/doorman"
@@ -17,4 +17,3 @@ if command -v uv >/dev/null; then
 else
   echo 'uv not found: skipping the radio emulator test (install uv to run it)' >&2
 fi
-python3 "$repo/scripts/package-doorman.py"

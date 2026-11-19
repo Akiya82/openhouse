@@ -23,7 +23,7 @@
 #include "radio_mode.hpp"
 #include "raw_capture.hpp"
 #include "report_parser.hpp"
-#include "ohdongle.hpp"
+#include "doorman_dongle.hpp"
 
 struct hid_device_;
 struct hid_device_info;
@@ -196,7 +196,7 @@ class UsbTransport {
   UsbTransportOptions opts_;
   ReportDecoder decoder_;
   RawCaptureWriter capture_;
-  std::unique_ptr<OhDongle> oh_;  // openhouse dongle, pumped by the reader thread
+  std::unique_ptr<DoormanDongle> oh_;  // Doorman Dongle, pumped by the reader thread
   std::vector<Open> open_;
   // Receivers whose wireless device is not connected yet (owned by the probe thread)
   // and endpoints the probe thread finished setting up (handed to the reader thread).

@@ -289,6 +289,98 @@ static uint32_t lpc_frames, lpc_bad;
    own nRF52 radio does ('Y' reply = const 59 00 @0x9406). Valve's main fw counts 0x59/0x5a/0x5b/0x21
    as acks (FUN_004158a4 -> 0x4159ee) and gives each step ~120 ms (FUN_004213b8). */
 
+#ifdef OHL_IDX
+/* GPIO service, like Valve's radio: some of the device's buttons (on the Index, the ones it
+   pairs with) are wired to the nRF, not the main MCU. The main MCU sets those pins up with 0x83
+   requests ([0x83][op][4 B][pin][arg][u16 debounce ms]) and asks to be told about edges; each
+   edge comes back as 84 14 00 00 00 00 [pin] [1 low / 2 high]. Without it the main MCU never
+   sees those buttons, so its pairing combination never fires. */
+#define GW_MAX 6
+static struct { uint8_t used, pin, mode, last; uint16_t deb_ms; uint8_t pend; uint32_t since; } gw[GW_MAX];
+static int gpio_ours(uint8_t pin) { return pin > 31 || (pin >= 11 && pin <= 14) || pin == ATTN_PIN; }
+static void gpio_edge(uint8_t pin, uint8_t level)
+{
+  uint8_t ev[8] = { 0x84, 0x14, 0, 0, 0, 0, pin, (uint8_t)(level ? 2 : 1) };
+  reply_push(ev, 8);
+}
+static void gpio_watch_poll(void)
+{
+  for (int i = 0; i < GW_MAX; i++) {
+    if (!gw[i].used) continue;
+    uint8_t lv = (uint8_t)((NRF_P0->IN >> gw[i].pin) & 1);
+    if (lv == gw[i].last) { gw[i].pend = 0; continue; }
+    if (!gw[i].pend || lv != (gw[i].pend & 1)) { gw[i].pend = (uint8_t)(2 | lv); gw[i].since = now_us(); }
+    if (now_us() - gw[i].since < (uint32_t)gw[i].deb_ms * 1000u) continue;
+    gw[i].last = lv; gw[i].pend = 0;
+    if (gw[i].mode == 3 || (gw[i].mode == 1 && lv) || (gw[i].mode == 2 && !lv)) gpio_edge(gw[i].pin, lv);
+  }
+}
+static void gpio_request(const uint8_t *f, uint8_t n)
+{
+  if (n < 6) { reply2(0x80, 0x04); return; }
+  const uint8_t op = f[1], pin = f[6], arg = n > 7 ? f[7] : 0;
+  uint8_t st = 2;
+  if (gpio_ours(pin)) { reply2(0x80, 2); return; }
+  volatile uint32_t *cnf = &NRF_P0->PIN_CNF[pin];
+  switch (op) {
+  case 0x00:                                               /* direction */
+    if (n < 8) break;
+    st = 0;
+    if (arg == 0) *cnf |= 2; else if (arg == 1) *cnf = 0x303; else if (arg == 2) *cnf = 0; else st = 2;
+    break;
+  case 0x01: {                                             /* get direction */
+    uint8_t v = (*cnf & 1) ? 1 : ((*cnf & 2) ? 0 : 2);
+    uint8_t b[8] = { 0x84, 2, 0, 0, 0, 0, pin, v }; reply_push(b, 8); return;
+  }
+  case 0x03:                                               /* pull: 1 up, 2 down */
+    if (n < 8) break;
+    *cnf = (*cnf & ~0xCu) | ((uint32_t)(arg == 1 ? 3 : arg == 2 ? 1 : 0) << 2); st = 0; break;
+  case 0x04: {
+    uint32_t pl = (*cnf & 0xF) >> 2;
+    uint8_t b[8] = { 0x84, 5, 0, 0, 0, 0, pin, (uint8_t)(pl == 1 ? 2 : pl == 3 ? 1 : 0) }; reply_push(b, 8); return;
+  }
+  case 0x06:                                               /* drive strength, same code */
+    if (n < 8 || arg > 7) break;
+    *cnf = (*cnf & ~0x700u) | ((uint32_t)arg << 8); st = 0; break;
+  case 0x07: {
+    uint8_t b[8] = { 0x84, 8, 0, 0, 0, 0, pin, (uint8_t)((*cnf >> 8) & 7) }; reply_push(b, 8); return;
+  }
+  case 0x09:                                               /* output level */
+    if (n < 8 || pin == 0) break;
+    if (arg == 0) { NRF_P0->OUTCLR = 1u << pin; st = 0; } else if (arg == 1) { NRF_P0->OUTSET = 1u << pin; st = 0; }
+    break;
+  case 0x0a: {                                             /* read level */
+    uint8_t b[8] = { 0x84, 0x0b, 0, 0, 0, 0, pin, (uint8_t)((NRF_P0->IN >> pin) & 1) }; reply_push(b, 8); return;
+  }
+  case 0x0c: {                                             /* watch: arg 1 falling, 2 rising, 3 both, 0 off */
+    if (n < 10) break;
+    int k = -1;
+    for (int i = 0; i < GW_MAX; i++) if (gw[i].used && gw[i].pin == pin) k = i;
+    if (k >= 0) gw[k].used = 0;
+    if (arg == 0) { st = 0; break; }
+    if ((*cnf & 3) != 0) break;                            /* must be a connected input */
+    if (k < 0) for (int i = 0; i < GW_MAX; i++) if (!gw[i].used) { k = i; break; }
+    if (k < 0) break;
+    gw[k].pin = pin; gw[k].mode = arg == 1 ? 2 : arg == 2 ? 1 : 3;   /* mode: 1 reports high, 2 low */
+    gw[k].deb_ms = (uint16_t)(f[8] | f[9] << 8); gw[k].last = 0xFF; gw[k].pend = 0; gw[k].used = 1;
+    st = 0;
+    reply2(0x80, st);
+    gpio_watch_poll();                                     /* like stock: report the level right away */
+    return;
+  }
+  case 0x0d: {
+    int k = -1;
+    for (int i = 0; i < GW_MAX; i++) if (gw[i].used && gw[i].pin == pin) k = i;
+    uint8_t m = k < 0 ? 0 : gw[k].mode == 1 ? 2 : gw[k].mode == 2 ? 1 : 3;
+    uint16_t d = k < 0 ? 0xFFFF : gw[k].deb_ms;
+    uint8_t b[10] = { 0x84, 0x0e, 0, 0, 0, 0, pin, m, (uint8_t)d, (uint8_t)(d >> 8) }; reply_push(b, 10); return;
+  }
+  default: break;
+  }
+  reply2(0x80, st);
+}
+#endif
+
 static void handle_lpc_frame(const uint8_t *f, uint32_t n)
 {
   uint8_t op = f[0];
@@ -329,7 +421,7 @@ static void handle_lpc_frame(const uint8_t *f, uint32_t n)
 #ifdef OHL_IDX
   case 'l': reply2('l', n >= 2 ? f[1] : 0); lead0 = n >= 2 && f[1] != 0; return;   /* reply, then switch */
   case 0x81: reply2(0x82, 0x01); return;                   /* stock constant (0x9434) */
-  case 0x83: if (n < 5) reply2(0x80, 0x04); return;        /* radio attributes: none settable here */
+  case 0x83: gpio_request(f, (uint8_t)n); return;
   case 0xA0: case 'o': case 'W': case '^': case 'a': case 'b': case 'e': case 'k': case '_': case '`':
   case '"': case 0x90: case 'f': case 'd': case 'm':
     return;                                                /* Valve link key / pairing store / test mode */
@@ -357,8 +449,12 @@ static void spis_poll(void)
     }
     addr_check();
 #ifdef OHL_DIAG
-    if (nrx > 0 && spi_rx[0] == 'Y' && tr.magic != 0x54524331u) { tr.magic = 0x54524331u; tr.n = 0; tr.t_last = now_us(); }
-    if (tr.magic == 0x54524331u && tr.n < TR_N) {
+    /* dev: log every unusual transfer (not the 0x70/0x71/0x83 data stream, or one where we sent more
+       than a byte), kept across resets until full: what the main MCU does around power-off */
+    if (tr.magic != 0x54524332u) { tr.magic = 0x54524332u; tr.n = 0; tr.t_last = now_us(); }
+    const uint8_t c = nrx > 0 ? spi_rx[0] : 0xff;
+    const int unusual = (c != 0x70 && c != 0x71 && c != 0x83 && c != 0x6e && c != 0xff) || ntx > 1;
+    if (unusual && tr.n < TR_N) {
       uint32_t t = now_us(), dt = (t - tr.t_last) / 100; tr.t_last = t;
       uint8_t *e = tr.e[tr.n++];
       e[0] = (uint8_t)dt; e[1] = (uint8_t)(dt > 0xFFFF ? 0xFF : dt >> 8);
@@ -417,9 +513,46 @@ static uint32_t rng = 0x12345678u;
 enum { R_RX, R_TX } rstate;
 
 static void uplink_push(const uint8_t *f, uint8_t n);
+static void go_unjoined(void);
+/* Pairing, like stock: the main MCU starts it ('T', from its pairing buttons or the host's pair
+   command) and ends it ('R', or its own timeout). While pairing, the radio leaves its dongle, says
+   so in its join requests, and only joins a dongle that has pairing open, so the dongle it was on
+   can't take it back; a dongle only takes a device it doesn't know when it asks to pair. */
+static uint8_t pair_mode;
+static uint32_t pair_since;
+static void pair_start(void)
+{
+  pair_mode = 1; pair_since = now_us();
+  if (link_enabled && (joined || link_up)) go_unjoined();  /* reports 0x53: the LED shows pairing */
+  else if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
+  jreq[10] = 1;
+}
+static void pair_end(void) { pair_mode = 0; jreq[10] = 0; }
+#ifdef OHL_IDX
+/* Holding the system button turns the device off. Valve's main firmware leaves that to the
+   radio side: it only reports the button (bit 0x2000 of the 0x6e input frame's first word), and
+   stock turns it off after ~4 s, with or without a host. We hand the main MCU the same power-off
+   command a host sends ('P' 9f 04 "off!"), once per hold. */
+static uint32_t sys_since;
+static uint8_t sys_held, sys_off_sent;
+static void sys_button(const uint8_t *f, uint8_t n)
+{
+  if (n < 5) return;
+  uint32_t b; memcpy(&b, f + 1, 4);
+  if (!(b & 0x2000u)) { sys_held = 0; sys_off_sent = 0; return; }
+  if (!sys_held) { sys_held = 1; sys_since = now_us(); }
+}
+static void sys_button_poll(void)
+{
+  if (!sys_held || sys_off_sent || now_us() - sys_since < 4000000u) return;
+  static const uint8_t off[7] = { 'P', 0x9f, 4, 'o', 'f', 'f', '!' };
+  if (reply_push(off, sizeof off)) sys_off_sent = 1;
+}
+#endif
 static void link_from_lpc(const uint8_t *f, uint8_t n)
 {
 #ifdef OHL_IDX
+  if (f[0] == 0x6e) sys_button(f, n);
   if (f[0] == 'S') {                                       /* main MCU sleeps: radio off until 'R'/'T' */
     /* Valve's radio answers every 'S' with 0x53 (link down), connected or not, and the main
        firmware waits for it before it powers the device off: without it, holding the system
@@ -428,9 +561,12 @@ static void link_from_lpc(const uint8_t *f, uint8_t n)
     uint8_t ev[1] = { 0x53 }; reply_push(ev, 1);
     return;
   }
-  if (f[0] == 'R' || f[0] == 'T') { link_sleep = 0; return; }
+  if (f[0] == 'T') { link_sleep = 0; pair_start(); return; }
+  if (f[0] == 'R') { link_sleep = 0; pair_end(); return; }
 #else
-  if (f[0] == 'S' || f[0] == 'R' || f[0] == 'T') return;  /* HTC link control: unused (pairing is dongle-side) */
+  if (f[0] == 'T') { pair_start(); return; }               /* HTC link control: T pair, R connect */
+  if (f[0] == 'R') { pair_end(); return; }
+  if (f[0] == 'S') return;
 #endif
   if (!link_up) return;                                    /* like HTC: data only while connected */
   uplink_push(f, n);
@@ -497,7 +633,7 @@ static void go_unjoined(void)
   radio_stop();
   set_addr(OHL_JOIN_BASE, OHL_JOIN_PREFIX);
   cur_ch = OHL_JOIN_CHANNEL;
-  jreq[0] = OHL_JREQ_LEN; jreq[1] = OHL_JREQ; jreq[10] = 0;
+  jreq[0] = OHL_JREQ_LEN; jreq[1] = OHL_JREQ; jreq[10] = pair_mode;
   answer_join = 0;
   arm_rx(0);
 }
@@ -593,7 +729,7 @@ static void air_update(const uint8_t *f, uint8_t n)
 #ifdef OHL_DIAG
   case 'D': {                                              /* trace dump, 5 entries per request */
     uint8_t x[60] = { OHL_AIR_UPD, 'D' }; uint8_t i0 = n > 2 ? f[2] : 0;
-    x[2] = i0; x[3] = (uint8_t)(tr.magic == 0x54524331u ? tr.n : 0);
+    x[2] = i0; x[3] = (uint8_t)(tr.magic == 0x54524332u ? tr.n : 0);
     for (int k = 0; k < 5 && i0 + k < TR_N; k++) memcpy(x + 4 + 10 * k, tr.e[i0 + k], 10);
     air_reply(x, 54); return;
   }
@@ -684,7 +820,8 @@ static void radio_poll(void)
     }
     if (crc && len >= OHL_JOIN_LEN && p[0] == OHL_JOIN) {
       uint32_t base; memcpy(&base, p + 1, 4);
-      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < OHL_SLOTS) {
+      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < OHL_SLOTS && (!pair_mode || p[5])) {
+        pair_end();                                         /* paired (or back on its dongle) */
         if (rstate == R_TX) { while (!NRF_RADIO->EVENTS_DISABLED) {} NRF_RADIO->EVENTS_DISABLED = 0; }
         go_joined(base, p[14]);
         mask = (uint16_t)(p[15] | p[16] << 8);                 /* follow the hops from the start */
@@ -727,6 +864,11 @@ int main(void)
       if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
     }
     radio_poll();
+#ifdef OHL_IDX
+    sys_button_poll();
+    gpio_watch_poll();
+#endif
+    if (pair_mode && now_us() - pair_since > 35000000u) pair_end();   /* the main MCU gives up at 30 s */
     if (air_reset_at && (int32_t)(now_us() - air_reset_at) > 0) reset_now();
     if (boot_rec.quick_boots && now_us() - t0 > 5000000) boot_stable();
 #ifdef OHL_IDX

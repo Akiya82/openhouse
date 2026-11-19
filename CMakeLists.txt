@@ -128,7 +128,7 @@ if(LH_BUILD_USB)
     src/transport/usb/raw_capture.cpp
     src/transport/usb/wireless_decoder.cpp
     src/transport/usb/usb_transport.cpp
-    src/transport/usb/ohdongle.cpp)
+    src/transport/usb/doorman_dongle.cpp)
   add_library(lh::usb ALIAS lh_usb)
   set_target_properties(lh_usb PROPERTIES EXPORT_NAME usb POSITION_INDEPENDENT_CODE ON)
   target_compile_features(lh_usb PUBLIC cxx_std_20)
@@ -147,25 +147,21 @@ if(LH_BUILD_USB)
   install(DIRECTORY src/transport/usb/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/lh/usb FILES_MATCHING PATTERN "*.hpp")
 
   if(LH_BUILD_TOOLS)
-    add_executable(lhtool apps/lhtool/main.cpp)
-    target_link_libraries(lhtool PRIVATE lh_usb lh_tracking lh)
-    # Started by SteamVR each session: warns when an update replaced our driver.
+    # liblh's code is built in (as in the driver), so the tool runs on its own.
+    add_executable(lhtool apps/lhtool/main.cpp $<TARGET_OBJECTS:lh_runtime>)
+    target_include_directories(lhtool PRIVATE include)
+    target_link_libraries(lhtool PRIVATE lh_usb lh_tracking Ceres::ceres Eigen3::Eigen nlohmann_json::nlohmann_json)
     if(WIN32)
-      # Replaces the .bat + PowerShell installer (Defender flagged that pattern).
-      add_executable(openhouse-installer apps/openhouse-installer/main.cpp)
-      target_link_libraries(openhouse-installer PRIVATE nlohmann_json::nlohmann_json)
-      if(NOT MSVC)  # MSVC starts wmain by itself
-        target_compile_options(openhouse-installer PRIVATE -municode)
-        target_link_options(openhouse-installer PRIVATE -municode)
-      endif()
+      target_link_libraries(lhtool PRIVATE advapi32)
     endif()
-    add_executable(openhouse-check WIN32 apps/openhouse-check/main.cpp)
-    target_include_directories(openhouse-check PRIVATE include)
+    # Started by SteamVR each session: warns when an update replaced our driver.
+    add_executable(update-checker WIN32 apps/update-checker/main.cpp)
+    target_include_directories(update-checker PRIVATE include)
     if(WIN32)
-      target_link_libraries(openhouse-check PRIVATE winhttp)
+      target_link_libraries(update-checker PRIVATE winhttp)
     endif()
     if(MSVC)
-      target_link_options(openhouse-check PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+      target_link_options(update-checker PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
     endif()
     add_executable(lhcapture apps/lhcapture/main.cpp)
     target_include_directories(lhcapture PRIVATE src)
@@ -304,8 +300,15 @@ if(LH_BUILD_VIEWER)
     target_include_directories(lh_imgui PUBLIC third_party/imgui)
     target_link_libraries(lh_imgui PUBLIC glfw OpenGL::GL)
     target_compile_options(lh_imgui PRIVATE -w)
-    add_executable(lhviz apps/lhviz/main.cpp)
-    target_link_libraries(lhviz PRIVATE lh lh_imgui Eigen3::Eigen)
+    add_executable(lhviz apps/lhviz/main.cpp $<TARGET_OBJECTS:lh_runtime>)
+    target_include_directories(lhviz PRIVATE include)
+    target_link_libraries(lhviz PRIVATE lh_imgui lh_tracking Ceres::ceres Eigen3::Eigen nlohmann_json::nlohmann_json)
+    if(LH_BUILD_USB)
+      target_link_libraries(lhviz PRIVATE lh_usb)
+    endif()
+    if(WIN32)
+      target_link_libraries(lhviz PRIVATE advapi32)
+    endif()
     install(TARGETS lhviz RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # openhouse-overlay: the management app, a SteamVR dashboard overlay or a window. SteamVR's
     # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
@@ -324,21 +327,38 @@ if(LH_BUILD_VIEWER)
       endif()
       install(TARGETS openhouse-overlay RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
-    # openhouse-dongle: the openhouse dongle manager (slots, pairing, radio telemetry, firmware).
+    # openhouse-installer: installs/uninstalls the driver and flashes openhouse's firmware (base
+    # stations, dongles, device radios), as a guided window. Self-contained: GLFW and ImGui are
+    # linked in (GLFW statically with LH_STATIC_GLFW), and on Linux the C++ runtime too.
+    add_executable(openhouse-installer WIN32 apps/openhouse-installer/main.cpp apps/openhouse-installer/ui.cpp
+                   apps/openhouse-installer/system.cpp apps/openhouse-installer/driver_install.cpp
+                   apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp)
+    target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
+    target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
+    if(WIN32)
+      target_link_libraries(openhouse-installer PRIVATE shell32 ole32)
+    else()
+      target_link_options(openhouse-installer PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    if(MSVC)
+      target_link_options(openhouse-installer PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+    install(TARGETS openhouse-installer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # doorman-dongle-manager: the Doorman Dongle Manager (slots, pairing, radio telemetry, firmware).
     # A desktop window; device names from the driver's telemetry when it runs.
     if(LH_BUILD_USB)
-      add_executable(openhouse-dongle WIN32 apps/openhouse-dongle/main.cpp apps/openhouse-dongle/ui.cpp
-                     apps/openhouse-dongle/dongle.cpp apps/openhouse-overlay/telemetry_client.cpp
+      add_executable(doorman-dongle-manager WIN32 apps/doorman-dongle-manager/main.cpp apps/doorman-dongle-manager/ui.cpp
+                     apps/doorman-dongle-manager/dongle.cpp apps/openhouse-overlay/telemetry_client.cpp
                      apps/openhouse-overlay/update_check.cpp)
-      target_include_directories(openhouse-dongle PRIVATE src src/transport/usb apps/openhouse-overlay)
-      target_link_libraries(openhouse-dongle PRIVATE lh_usb lh_common lh_imgui nlohmann_json::nlohmann_json)
+      target_include_directories(doorman-dongle-manager PRIVATE src src/transport/usb apps/openhouse-overlay)
+      target_link_libraries(doorman-dongle-manager PRIVATE lh_usb lh_common lh_imgui nlohmann_json::nlohmann_json)
       if(WIN32)
-        target_link_libraries(openhouse-dongle PRIVATE winhttp shell32)
+        target_link_libraries(doorman-dongle-manager PRIVATE winhttp shell32)
       endif()
       if(MSVC)
-        target_link_options(openhouse-dongle PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+        target_link_options(doorman-dongle-manager PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
       endif()
-      install(TARGETS openhouse-dongle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+      install(TARGETS doorman-dongle-manager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
     # openhouse-compare: openhouse and SteamVR's own driver tracking side by side
     if(OPENVR_INCLUDE_DIR AND LH_BUILD_USB)
@@ -455,9 +475,9 @@ foreach(entry
     "driver_lighthouse|openhouse SteamVR lighthouse driver"
     "lhtool|openhouse replay and diagnostics tool"
     "lhcapture|openhouse device recorder"
-    "openhouse-check|openhouse update check"
+    "update-checker|openhouse update check"
     "openhouse-overlay|openhouse overlay"
-    "openhouse-dongle|openhouse dongle manager"
+    "doorman-dongle-manager|Doorman Dongle Manager"
     "openhouse-compare|openhouse and SteamVR driver comparison"
     "lhviz|openhouse developer viewer"
     "openhouse-installer|openhouse driver installer")

@@ -322,7 +322,7 @@ UsbTransport::OpenResult UsbTransport::OpenEndpoint(const hid_device_info* d, Op
 }
 
 void UsbTransport::Enumerate(bool startup) {
-  static const bool ohOnly = getenv("LH_OHDONGLE_ONLY") != nullptr;  // only the openhouse dongle (testing)
+  static const bool ohOnly = getenv("LH_DOORMAN_ONLY") != nullptr;  // only the Doorman Dongle (testing)
   if (ohOnly) return;
   hid_device_info* list = hid_enumerate(kValveVid, 0);
   std::set<std::string> present;
@@ -408,7 +408,7 @@ bool UsbTransport::Start() {
   // fail. With none plugged in at all, run and wait for one (hotplug).
   if (open_.empty() && idle_.empty() && unopenable) return false;
   if (open_.empty() && idle_.empty()) Log(LogLevel::Info, "no Lighthouse receivers yet; waiting for one to be plugged in\n");
-  oh_ = std::make_unique<OhDongle>(sink_, &decoder_, &capture_, &nextEp_, opts_.steamLighthouseConfigDir,
+  oh_ = std::make_unique<DoormanDongle>(sink_, &decoder_, &capture_, &nextEp_, opts_.steamLighthouseConfigDir,
                                    [this](LogLevel level, const std::string& text) { Log(level, "%s\n", text.c_str()); });
   thread_ = std::thread(&UsbTransport::Run, this);
   probe_ = std::thread(&UsbTransport::ProbeMain, this);
@@ -508,7 +508,7 @@ std::vector<UsbTransport::Receiver> UsbTransport::Receivers() const {
   std::lock_guard lock(receiversMutex_);
   std::vector<Receiver> out;
   for (const auto& [serial, r] : receivers_) out.push_back(r);
-  // Each slot of an openhouse dongle shows as a receiver of its own, empty ones too, so SteamVR's
+  // Each slot of a Doorman Dongle shows as a receiver of its own, empty ones too, so SteamVR's
   // pairing page sees what's free: empty slots first (pairing takes the first one offered free),
   // then paired ones, whose device may be off (pairing into one of those replaces it).
   if (oh_ && !oh_->Serial().empty()) {

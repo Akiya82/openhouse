@@ -18,7 +18,7 @@ tracking of headsets, Index controllers and trackers. It's built as:
 - **`driver_lighthouse.so` / `.dll`**, an OpenVR driver on top of `liblh`. It's a
   drop-in for SteamVR and for Monado's `steamvr_lh` (WiVRn, xrizer, VRChat).
 - **Tools:** `openhouse-overlay` (management app: live status, settings, room, bug report), `lhtool`, `lhviz`,
-  `lhcapture`, `openhouse-check`.
+  `lhcapture`, `update-checker`.
 
 Headsets are tracked by openhouse; their display comes from SteamVR's stock driver,
 loaded at runtime for the headset only (`stock_hmd.cpp`). Base stations are exposed as
@@ -229,7 +229,7 @@ ctest --test-dir build -j8          # unit, oracle (bit-exact vs stock), runtime
 scripts/build-linux.sh              # release build -> dist/openhouse-driver-linux.tar.gz
 dist/openhouse-driver/install.sh    # stops nothing: close SteamVR / Monado / WiVRn first
 scripts/build-windows.sh            # MinGW cross build -> dist/openhouse-windows-x64.zip
-scripts/build-firmware.sh           # lhbs + installers -> dist/openhouse-basestation-firmware.zip
+scripts/build-firmware.sh           # lhbs + host test (the packages carry the image)
 ```
 
 Windows installer and build details: `windows_build.md`.

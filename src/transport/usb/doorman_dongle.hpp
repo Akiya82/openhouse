@@ -1,4 +1,4 @@
-// openhouse dongle (1209:0001, nRF52840): up to 6 trackers over our own radio link
+// Doorman Dongle (6767:0727, nRF52840): up to 6 trackers over our own radio link
 // (doorman: doorman/common/ohlink.h, ai/doorman/protocol.md).
 //
 // The dongle streams each device's main-MCU frames (the radio SPI protocol shared by our
@@ -38,12 +38,12 @@ namespace lh::usb {
 
 class ReportDecoder;
 
-class OhDongle {
+class DoormanDongle {
  public:
   using LogFn = std::function<void(LogLevel, const std::string&)>;
-  OhDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
+  DoormanDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
            std::string steamConfigDir, LogFn log);
-  ~OhDongle();
+  ~DoormanDongle();
 
   void Pump(double now);   // reader thread: open/read/dispatch
   void Close();            // detaches every tracker

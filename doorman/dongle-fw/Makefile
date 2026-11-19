@@ -1,5 +1,5 @@
 # doorman dongle firmware (nRF52840 Dongle, ai/doorman/dongle-fw.md)
-# make            -> build/ohdongle_sd.uf2 and build/ohdongle_nosd.uf2
+# make            -> build/doorman_dongle_sd.uf2 and build/doorman_dongle_nosd.uf2
 CC = arm-none-eabi-gcc
 OBJCOPY = arm-none-eabi-objcopy
 TUSB = ../third_party/tinyusb
@@ -13,12 +13,12 @@ SRCS = src/main.c src/link.c src/usb_descriptors.c $(NRFX)/mdk/system_nrf52840.c
   $(TUSB)/src/class/hid/hid_device.c $(TUSB)/src/portable/nordic/nrf5x/dcd_nrf5x.c
 LDFLAGS = -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -Wl,--gc-sections -L$(NRFX)/mdk -specs=nano.specs -specs=nosys.specs
 
-all: build/ohdongle_sd.uf2 build/ohdongle_nosd.uf2
+all: build/doorman_dongle_sd.uf2 build/doorman_dongle_nosd.uf2
 
-build/ohdongle_%.elf: $(SRCS) $(NRFX)/mdk/gcc_startup_nrf52840.S src/*.h ld/app_%.ld
+build/doorman_dongle_%.elf: $(SRCS) $(NRFX)/mdk/gcc_startup_nrf52840.S src/*.h ld/app_%.ld
 	@mkdir -p build
 	$(CC) $(CFLAGS) -DVARIANT_SD=$(if $(filter sd,$*),1,0) $(SRCS) $(NRFX)/mdk/gcc_startup_nrf52840.S \
-	  $(LDFLAGS) -Tld/app_$*.ld -Wl,-Map=build/ohdongle_$*.map -o $@
+	  $(LDFLAGS) -Tld/app_$*.ld -Wl,-Map=build/doorman_dongle_$*.map -o $@
 	arm-none-eabi-size $@
 
 build/%.hex: build/%.elf

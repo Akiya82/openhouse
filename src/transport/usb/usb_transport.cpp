@@ -322,6 +322,8 @@ UsbTransport::OpenResult UsbTransport::OpenEndpoint(const hid_device_info* d, Op
 }
 
 void UsbTransport::Enumerate(bool startup) {
+  static const bool ohOnly = getenv("LH_OHDONGLE_ONLY") != nullptr;  // only the openhouse dongle (testing)
+  if (ohOnly) return;
   hid_device_info* list = hid_enumerate(kValveVid, 0);
   std::set<std::string> present;
   std::vector<hid_device_info*> fresh;
@@ -406,6 +408,8 @@ bool UsbTransport::Start() {
   // fail. With none plugged in at all, run and wait for one (hotplug).
   if (open_.empty() && idle_.empty() && unopenable) return false;
   if (open_.empty() && idle_.empty()) Log(LogLevel::Info, "no Lighthouse receivers yet; waiting for one to be plugged in\n");
+  oh_ = std::make_unique<OhDongle>(sink_, &decoder_, &capture_, &nextEp_, opts_.steamLighthouseConfigDir,
+                                   [this](LogLevel level, const std::string& text) { Log(level, "%s\n", text.c_str()); });
   thread_ = std::thread(&UsbTransport::Run, this);
   probe_ = std::thread(&UsbTransport::ProbeMain, this);
   return true;
@@ -504,6 +508,23 @@ std::vector<UsbTransport::Receiver> UsbTransport::Receivers() const {
   std::lock_guard lock(receiversMutex_);
   std::vector<Receiver> out;
   for (const auto& [serial, r] : receivers_) out.push_back(r);
+  // Each slot of an openhouse dongle shows as a receiver of its own, empty ones too, so SteamVR's
+  // pairing page sees what's free: empty slots first (pairing takes the first one offered free),
+  // then paired ones, whose device may be off (pairing into one of those replaces it).
+  if (oh_ && !oh_->Serial().empty()) {
+    auto stats = oh_->SlotStats();
+    std::stable_sort(stats.begin(), stats.end(), [](const auto& a, const auto& b) { return !a.used && b.used; });
+    for (const auto& st : stats) {
+      Receiver r;
+      r.serial = oh_->Serial() + "/" + std::to_string(st.slot);
+      r.connected = st.serial; r.pid = 0x0001; r.kind = "openhouse"; r.slot = st.slot;
+      r.linked = st.active; r.kBytesPerSec = st.kBytesPerSec; r.framesPerSec = st.framesPerSec;
+      r.lossPercent = st.lossPercent; r.dropsPerSec = st.dropsPerSec;
+      r.rssiDongle = st.rssiDongle; r.rssiDevice = st.rssiDevice; r.devicesOnDongle = st.devicesOnDongle;
+      r.paired = st.used;
+      out.push_back(r);
+    }
+  }
   return out;
 }
 
@@ -515,6 +536,11 @@ void UsbTransport::OnDeviceGone(const DeviceId& serial) {
 }
 
 bool UsbTransport::SetPairing(const std::string& receiver, int milliseconds) {
+  if (oh_ && !oh_->Serial().empty() && receiver.rfind(oh_->Serial(), 0) == 0) {   // the dongle or one of its slots
+    const std::string rest = receiver.substr(oh_->Serial().size());           // "/3": that slot
+    const int slot = rest.size() == 2 && rest[0] == '/' && rest[1] >= '0' && rest[1] <= '5' ? rest[1] - '0' : -1;
+    return oh_->Pair(milliseconds, slot);
+  }
   {
     std::lock_guard lock(receiversMutex_);
     if (!receivers_.count(receiver)) return false;
@@ -702,12 +728,14 @@ void UsbTransport::Stop() {
     failedPaths_.clear();
   }
   for (const auto& id : detached) sink_->OnDeviceDetached(id);
+  if (oh_) { oh_->Close(); oh_.reset(); }
   capture_.Close();
 }
 
 std::vector<EndpointInfo> UsbTransport::Endpoints() const {
   std::vector<EndpointInfo> v;
   for (auto& o : open_) v.push_back(o.info);
+  if (oh_) for (auto& e : oh_->Endpoints()) v.push_back(e);
   return v;
 }
 
@@ -788,6 +816,18 @@ void UsbTransport::Run() {
         result.status = result.bytes == int(command.report.size()) ? "written" : "write-failed";
         break;
       }
+      if (std::string(result.status) == "not-connected" && passStart <= command.deadline && oh_) {
+        if (command.opticalMode >= 0) {
+          // Our radio link carries the main MCU's wired host protocol: switch as on a cable.
+          const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();
+          if (oh_->Command(command.serial, mode, &result.status, 2)) {
+            oh_->Command(command.serial, verbosity, &result.status, 2);
+            result.bytes = 2;
+          }
+        } else if (oh_->Command(command.serial, command.report, &result.status)) {
+          result.bytes = int(command.report.size());
+        }
+      }
       if (opts_.onCommandResult) opts_.onCommandResult(result);
       else if (std::string(result.status) != "written")
         Log(LogLevel::Debug, "%s: %s %s (%d bytes)\n", command.serial.c_str(), command.powerOff ? "power-off" : command.opticalMode >= 0 ? "light mode" : "haptic", result.status, result.bytes);
@@ -818,6 +858,23 @@ void UsbTransport::Run() {
         if (reps[count].n <= 0) {
           if (reps[count].n < 0) o.disconnected = true;
           break;
+        }
+        o.rxBytes += uint64_t(reps[count].n); o.rxReports++;
+      }
+      if (passStart - o.rateT >= 1.0) {          // receiver link stats (Receivers())
+        const double dt = o.rateT > 0 ? passStart - o.rateT : 0;
+        if (dt > 0) {
+          o.kBytesPerSec = double(o.rxBytes - o.rateBytes) / dt / 1000;
+          o.reportsPerSec = double(o.rxReports - o.rateReports) / dt;
+        }
+        o.rateT = passStart; o.rateBytes = o.rxBytes; o.rateReports = o.rxReports;
+        if (!o.receiver.empty() && o.info.kind == EndpointKind::Wireless) {
+          std::lock_guard lock(receiversMutex_);
+          auto it = receivers_.find(o.receiver);
+          if (it != receivers_.end()) {
+            it->second.kBytesPerSec = o.kBytesPerSec; it->second.framesPerSec = o.reportsPerSec;
+            it->second.linked = !it->second.connected.empty() && o.reportsPerSec > 50;
+          }
         }
       }
       for (int i = 0; i < count; i++) {
@@ -880,6 +937,7 @@ void UsbTransport::Run() {
       }
       if (o.disconnected) sink_->OnDeviceDetached(o.info.serial);
     }
+    if (oh_) oh_->Pump(HostNow());
     // Unplugged: close it and forget its path, so the probe thread reopens it when it
     // comes back (as a new endpoint; the device keeps its id).
     for (auto it = open_.begin(); it != open_.end();) {

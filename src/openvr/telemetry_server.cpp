@@ -146,7 +146,15 @@ void TelemetryServer::PublishState(double time, const SessionSnapshot& snapshot,
                        {"coverage", coverage}, {"basesSeen", seeing}, {"result", ResultName(pose.result)}});
   }
   json rx = json::array();
-  for (const auto& r : receivers) rx.push_back({{"serial", r.serial}, {"connected", r.connected}});
+  for (const auto& r : receivers) {
+    json e = {{"serial", r.serial}, {"connected", r.connected}, {"kind", r.kind}, {"linked", r.linked},
+              {"kBytesPerSec", r.kBytesPerSec}, {"framesPerSec", r.framesPerSec}};
+    if (r.slot >= 0) {   // an openhouse dongle slot
+      e["slot"] = r.slot; e["paired"] = r.paired; e["loss"] = r.lossPercent; e["drops"] = r.dropsPerSec;
+      e["rssi"] = {r.rssiDongle, r.rssiDevice};
+    }
+    rx.push_back(std::move(e));
+  }
   const std::string line =
       json{{"type", "state"}, {"t", time},
            {"room", {{"id", snapshot.roomId}, {"settled", room.settled}, {"epoch", room.epoch}, {"settleSigma", room.settleSigma},

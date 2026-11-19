@@ -1,0 +1,137 @@
+// openhouse dongle (1209:0001, nRF52840): up to 6 trackers over our own radio link
+// (doorman: doorman/common/ohlink.h, ai/doorman/protocol.md).
+//
+// The dongle streams each device's main-MCU frames (the radio SPI protocol shared by our
+// Tracker 1.0 firmware and Valve's main firmwares on our radio). They are the wired reports with
+// another first byte, so each is re-labelled and fed to the wired parsers:
+//   'p' -> 0x20 IMU slot     'q' -> 0x21 LH1 light records   's' -> 0x28 LH2 stream
+//   'Q' -> buttons 0x0100    'n' -> buttons 0x0700 (Index: input + 0xa1 record)
+//   'V' -> other buttons-interface reports (0x0400 battery, ...)   'B' -> battery (ours)
+//   'P' -> feature report replies (config read etc.; requests go down as 'P' frames)
+// Identity: our tracker firmware sends 'H' (serial, IMU ranges, hw id); any other device is
+// identified from itself: feature 0x01 (IMU ranges) and the config's device_serial_number.
+// Each device becomes virtual wired endpoints (Imu + Optical + Buttons).
+//
+// Runs on the UsbTransport reader thread (Pump); config reads run on a worker thread.
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "lh/input_sink.hpp"
+#include "lh/log_level.hpp"
+#include "raw_capture.hpp"
+
+struct hid_device_;
+
+namespace lh::usb {
+
+class ReportDecoder;
+
+class OhDongle {
+ public:
+  using LogFn = std::function<void(LogLevel, const std::string&)>;
+  OhDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
+           std::string steamConfigDir, LogFn log);
+  ~OhDongle();
+
+  void Pump(double now);   // reader thread: open/read/dispatch
+  void Close();            // detaches every tracker
+  std::vector<EndpointInfo> Endpoints() const;
+  // A feature report (SET) for a device on this dongle, report id first. [0xff][cmd][len]...
+  // reports are sized by their len byte, others by `size`. False: not ours.
+  bool Command(const DeviceId& serial, const std::array<uint8_t, 64>& report, const char** status, size_t size = 0);
+  // Pairing mode; slot >= 0: into that slot (replacing what's paired there; dongle fw >= 4),
+  // -1: the dongle's first free slot.
+  bool Pair(int milliseconds, int slot = -1);
+  std::string Serial() const;                  // "" when no dongle is open
+  std::vector<DeviceId> Connected() const;
+  // Link stats of each paired slot (dongle command 0x23, polled each second). Any thread.
+  struct SlotStat {
+    int slot = 0; bool used = false, active = false; DeviceId serial;
+    double kBytesPerSec = 0, framesPerSec = 0, lossPercent = -1, dropsPerSec = 0;
+    int rssiDongle = 0, rssiDevice = 0, devicesOnDongle = 0;
+  };
+  std::vector<SlotStat> SlotStats() const;
+
+ private:
+  struct Slot {
+    bool used = false, active = false;
+    int identSeq = -1;     // seq of the pending ident request
+    double identAskT = 0;
+    int identTries = 0;
+    bool noIdent = false;  // no 'H' identity: identify from feature 0x01 + config
+    bool attached = false;
+    DeviceId serial;
+    int8_t gyro = -1, accel = -1;
+    int sensorType = -1;
+    uint16_t epImu = 0, epOpt = 0, epBtn = 0;
+    std::array<std::array<uint8_t, 17>, 3> ring{};
+    int ringN = 0, ringPos = 0;
+    // config read over the radio
+    std::thread worker;
+    std::atomic<bool> workerDone{false};
+    std::string fetchedConfig, fetchedSerial;
+    int8_t fetchedGyro = -1, fetchedAccel = -1;
+    int fetchedSensorType = -1;
+    // link stats: last raw 0x23 counters and the rates derived from them
+    bool haveStats = false; double statsT = 0;
+    uint32_t polls = 0, respOk = 0, framesUp = 0, bytesUp = 0, drops = 0;
+    double kBps = 0, fps = 0, loss = -1, dps = 0; int rssiD = 0, rssiT = 0;   // from feature 0x05 (devices without 'H', e.g. stock main firmware)
+  };
+  struct FeatureWait {
+    int slot = -1;
+    uint8_t id = 0;
+    bool sent = false, done = false;
+    std::vector<uint8_t> reply;
+  };
+
+  bool Open();
+  void Drop();
+  void Send(uint8_t cmd, const uint8_t* args, size_t n);
+  void OnReport(double t, const uint8_t* r, int n, bool last);
+  void OnFrame(int slot, double t, const uint8_t* f, int n, bool last);
+  void OnIdent(int slot, const uint8_t* f, int n);
+  void Attach(int slot, const std::string& config);
+  void Detach(int slot);
+  void StartConfigFetch(int slot);
+  int FeatureRead(int slot, uint8_t* data, size_t size);  // worker thread
+  void Downlink(int slot, const uint8_t* frame, size_t n);
+  void RefreshStatsCache();
+
+  IInputSink* sink_;
+  ReportDecoder* decoder_;
+  RawCaptureWriter* capture_;
+  std::atomic<uint16_t>* nextEp_;
+  std::string steamConfigDir_;
+  LogFn log_;
+
+  hid_device_* dev_ = nullptr;
+  hid_device_* dev1_ = nullptr;   // interface 1: odd slots' stream (newer dongle firmware)
+  std::string serial_;
+  double nextOpen_ = 0, nextLive_ = 0, nextStats_ = 0;
+  int statsSlot_ = 0, statsSeq_ = -1;
+  uint8_t seq_ = 0;
+  Slot slots_[6];
+
+  mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, serial_, slot serials
+  std::condition_variable cv_;
+  std::deque<std::shared_ptr<FeatureWait>> featureWaits_;
+  std::deque<std::pair<int, std::vector<uint8_t>>> downlinks_;
+  std::optional<int> pairMs_;
+  int pairSlot_ = -1;
+  std::vector<EndpointInfo> eps_;
+  std::vector<SlotStat> statsCache_;   // under mutex_
+};
+
+}  // namespace lh::usb

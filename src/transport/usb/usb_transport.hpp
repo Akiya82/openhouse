@@ -23,6 +23,7 @@
 #include "radio_mode.hpp"
 #include "raw_capture.hpp"
 #include "report_parser.hpp"
+#include "ohdongle.hpp"
 
 struct hid_device_;
 struct hid_device_info;
@@ -107,7 +108,12 @@ class UsbTransport {
 
   // Wireless receivers (dongles) plugged in now, and the device connected to each
   // ("" if none). Any thread.
-  struct Receiver { std::string serial, connected; uint16_t pid = 0; };
+  struct Receiver {
+    std::string serial, connected; uint16_t pid = 0;
+    std::string kind = "watchman"; int slot = -1; bool paired = true, linked = false;
+    double kBytesPerSec = 0, framesPerSec = 0, lossPercent = -1, dropsPerSec = 0;
+    int rssiDongle = 0, rssiDevice = 0, devicesOnDongle = 0;
+  };
   std::vector<Receiver> Receivers() const;
   // The device a receiver was carrying has gone (wireless dropout, powered off). Until this
   // existed, `receivers_[dongle].connected` kept the old serial: SteamVR kept showing the
@@ -157,6 +163,9 @@ class UsbTransport {
     bool checkDevice = false;
     bool checkPending = false;  // a DeviceCheck is queued or running
     double lastData = 0;
+    uint64_t rxBytes = 0, rxReports = 0;      // link stats for Receivers(), rated each second
+    double rateT = 0; uint64_t rateBytes = 0, rateReports = 0;
+    double kBytesPerSec = 0, reportsPerSec = 0;
     // A receiver that doesn't answer the check is asked again until checkUntil, from nextCheck.
     double checkUntil = 0, nextCheck = 0;
   };
@@ -187,6 +196,7 @@ class UsbTransport {
   UsbTransportOptions opts_;
   ReportDecoder decoder_;
   RawCaptureWriter capture_;
+  std::unique_ptr<OhDongle> oh_;  // openhouse dongle, pumped by the reader thread
   std::vector<Open> open_;
   // Receivers whose wireless device is not connected yet (owned by the probe thread)
   // and endpoints the probe thread finished setting up (handed to the reader thread).

@@ -11,6 +11,7 @@
         <include path="openhouse-windows-x64/apps/lhviz.exe" />
         <include path="openhouse-windows-x64/apps/openhouse-check.exe" />
         <include path="openhouse-windows-x64/apps/openhouse-overlay.exe" />
+        <include path="openhouse-windows-x64/apps/openhouse-dongle.exe" />
         <include path="openhouse-windows-x64/apps/openhouse-compare.exe" />
         <for-each>
           <authenticode-sign />

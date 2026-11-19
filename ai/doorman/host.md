@@ -1,0 +1,29 @@
+# doorman on the host (openhouse)
+
+## Transport: `src/transport/usb/ohdongle.cpp/.hpp`
+* `UsbTransport` opens 1209:0001 next to Watchman dongles and pumps `OhDongle` from its reader thread;
+  both HID interfaces are drained (`dev1_` = odd slots).
+* Each slot becomes **virtual wired endpoints** (IMU, optical, buttons). Frames are wired reports with
+  another first byte and are relabelled into the normal `ReportDecoder`:
+  `p`→0x20 IMU, `q`→0x21 LH1 light, `s`→0x28 LH2, `Q`→buttons 0x0100, `n`→0x0700 (Index input),
+  `V`→other button-interface reports, `B`→battery, `P`→feature replies.
+* Identity: our Tracker 1.0 path sends `H`; otherwise read from the device (feature 0x01 IMU ranges,
+  config `device_serial_number`). Config: SteamVR's lighthouse config cache first, else read over the radio
+  (0x10/0x11, ~0.3 s) on a worker thread. Sensor type from feature 0x05 byte 41 when the config lacks it.
+* Haptics, power off go down as `P` frames. Captures (`.lhraw`) replay like wired devices.
+
+## Receivers and pairing
+* The dongle is receiver `OHDG-<usb serial>`, each slot `OHDG-<serial>/<n>` (n 0–5); they show in
+  `Receivers()` (lhviz Receivers panel, badge "OH"; telemetry server per-slot stats).
+* `UsbTransport::SetPairing(receiver, ms)`: the dongle → first free slot, `/n` → that slot (dongle fw ≥
+  0x0004). SteamVR's pairing UI goes through the driver's pairing mailbox to the same call (untested).
+
+## `apps/openhouse-dongle` (dongle manager)
+ImGui desktop window in openhouse-overlay's style; pages slots / radio / channels / firmware / about.
+Pair into a slot, forget, live RSSI and loss, channel mask, dongle firmware update (UF2 copy), restart,
+crash record. Works without the driver; with it, device names come from driver telemetry. Shipped as a
+plain binary: `tools/` in the Linux package, `apps/` in the Windows zip; **not installed or registered**.
+Test hooks: `OPENHOUSE_DONGLE_SNAPSHOT=FILE.ppm`, `OPENHOUSE_DONGLE_PAGE=...`.
+
+## Python
+`doorman/tools/ohlink.py` mirrors the transport for scripts; `dongle.py` is the CLI (`README.md`).

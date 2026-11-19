@@ -29,7 +29,7 @@ find "$out/lh-licenses" -xtype l -delete  # a link whose target wasn't there
 # directory as its RUNPATH.
 cp -L "$build/liblh.so.1" "$out/tools/"
 strip --strip-unneeded "$out/tools/liblh.so.1"
-for tool in lhtool lhcapture openhouse-check openhouse-overlay openhouse-compare; do
+for tool in lhtool lhcapture openhouse-check openhouse-overlay openhouse-dongle openhouse-compare; do
   cp "$build/$tool" "$out/tools/"
   strip "$out/tools/$tool"
   if readelf -d "$out/tools/$tool" | grep -q 'liblh\.so'; then

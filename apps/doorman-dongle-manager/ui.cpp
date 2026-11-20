@@ -449,14 +449,24 @@ void Ui::PairBar(const DongleState& d) {
                   d.pairTarget >= 0 ? ("slot " + std::to_string(d.pairTarget)).c_str() : "the first free slot",
                   left >= 0 ? ("  -  " + std::to_string(int(left)) + " s left").c_str() : "");
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.18f, 0.28f, 1));
-    ImGui::BeginChild("pairing", ImVec2(0, ImGui::GetFrameHeight() * 2.6f), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-    Dot(kInfo, 6);
+    // One row: the title and the button, centred on each other; the height fits it at any scale.
     ImGui::PushFont(g_title);
+    const float titleH = ImGui::GetTextLineHeight();
+    ImGui::PopFont();
+    const float rowH = std::max(titleH, ImGui::GetFrameHeight());
+    const float padY = ImGui::GetStyle().WindowPadding.y;
+    ImGui::BeginChild("pairing", ImVec2(0, rowH + 2 * padY), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const float y0 = ImGui::GetCursorPosY();
+    ImGui::SetCursorPosY(y0 + (rowH - titleH) * 0.5f);
+    ImGui::PushFont(g_title);   // first: the dot centres on the title's line
+    Dot(kInfo, 6);
     ImGui::TextColored(kInfo, "%s", text);
     ImGui::PopFont();
-    ImGui::TextDisabled("Hold the device's power button until its light blinks: it joins by itself.");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFontSize() * 9);
-    if (ImGui::Button("Stop pairing", ImVec2(ImGui::GetFontSize() * 9, 0))) dongle->StopPairing(Report("Stop pairing"));
+    const float bw = ImGui::GetFontSize() * 9;
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - bw);
+    ImGui::SetCursorPosY(y0 + (rowH - ImGui::GetFrameHeight()) * 0.5f);
+    if (ImGui::Button("Stop pairing", ImVec2(bw, 0))) dongle->StopPairing(Report("Stop pairing"));
     ImGui::EndChild();
     ImGui::PopStyleColor();
     return;

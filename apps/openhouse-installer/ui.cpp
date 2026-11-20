@@ -637,22 +637,23 @@ void Ui::Home() {
   std::vector<TileSpec> tiles;
   int install = -1, uninstall = -1;
   static std::string sub;
-  sub = std::string("openhouse v") + lh::kVersion + " for SteamVR";
   if (status_.openhouse) {
     const bool older = CompareVersions(status_.version, lh::kVersion) < 0;
+    sub = std::string(older ? "Updates openhouse to v" : "Installs openhouse v") + lh::kVersion + (older ? "" : " again");
     install = int(tiles.size());
     tiles.push_back({older ? Icon::Download : Icon::Refresh, older ? "Update Driver" : "Reinstall Driver", sub.c_str(),
                      older ? Tint::Green : Tint::Yellow});
     uninstall = int(tiles.size());
-    tiles.push_back({Icon::Trash, "Uninstall Driver", "Restore SteamVR's Lighthouse driver back", Tint::Red});
+    tiles.push_back({Icon::Trash, "Uninstall Driver", "Puts the SteamVR Lighthouse driver back", Tint::Red});
   } else {
+    sub = std::string("Installs openhouse v") + lh::kVersion + " to SteamVR";
     install = int(tiles.size());
     tiles.push_back({Icon::Download, "Install Driver", sub.c_str(), Tint::Green});
   }
   const int flash = int(tiles.size());
-  tiles.push_back({Icon::Chip, "Install or Update Firmware", "Base stations, dongles, trackers and controllers"});
+  tiles.push_back({Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"});
   const int restore = int(tiles.size());
-  tiles.push_back({Icon::Restore, "Restore Firmware", "Put the original firmware back"});
+  tiles.push_back({Icon::Restore, "Restore Firmware", "Puts the original firmware back"});
   const int pressed = TileGrid(tiles, 2);
   if (pressed == install) Go(Page::Install);
   else if (pressed == uninstall && uninstall >= 0) Go(Page::Uninstall);
@@ -762,8 +763,8 @@ void Ui::FlashMenu() {
   Title("Install or Update Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("What do you want to flash?");
-  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "lhbs firmware for Lighthouse 1.0 base stations"},
-                 {Icon::Wireless, "Doorman", "Dongle and tracker/controller radio firmware"}})) {
+  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Flashes lhbs to your 1.0 base stations"},
+                 {Icon::Wireless, "Doorman", "Flashes your dongle or your devices"}})) {
     case 0: Go(Page::BaseStation); break;
     case 1: Go(Page::DoormanMenu); break;
   }
@@ -776,8 +777,8 @@ void Ui::DoormanMenu() {
   Note("No Doorman dongle yet? Flash the dongle first, then come back here and flash your trackers and controllers.");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.8f));
   Prompt("What do you want to flash?");
-  switch (Tiles({{Icon::Dongle, "Dongle", "ProMicro nRF52840, Holyiot 21017 or Nordic PCA10059"},
-                 {Icon::Tracker, "Trackers & Controllers", "VIVE Trackers, VIVE Controllers and Index Controllers"}})) {
+  switch (Tiles({{Icon::Dongle, "Dongle", "Flashes the Doorman firmware to your dongle"},
+                 {Icon::Tracker, "Trackers & Controllers", "Flashes the Doorman radio firmware to your devices"}})) {
     case 0: Go(Page::Dongle); break;
     case 1: Go(Page::RadioMenu); break;
   }
@@ -788,7 +789,7 @@ void Ui::RadioMenu() {
   Title("Trackers & Controllers");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("How are your devices connected?");
-  switch (Tiles({{Icon::Wire, "Wired", "Plug your devices in with a USB cable", Tint::None, "Recommended"},
+  switch (Tiles({{Icon::Wire, "Wired", "Plug the device in with a USB cable", Tint::None, "Recommended"},
                  {Icon::Wireless, "Wireless", kWirelessHint}})) {
     case 0: Go(Page::RadioWired); break;
     case 1: Go(Page::RadioWireless); break;
@@ -800,7 +801,7 @@ void Ui::RestoreRadioMenu() {
   Title("Restore Tracker/Controller Radio Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("How are your devices connected?");
-  switch (Tiles({{Icon::Wire, "Wired", "Plug your devices in with a USB cable", Tint::None, "Recommended"},
+  switch (Tiles({{Icon::Wire, "Wired", "Plug the device in with a USB cable", Tint::None, "Recommended"},
                  {Icon::Wireless, "Wireless", kWirelessHint}})) {
     case 0: Go(Page::RestoreRadio); break;
     case 1: Go(Page::RestoreRadioWireless); break;
@@ -812,8 +813,8 @@ void Ui::RestoreMenu() {
   Title("Restore Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("What do you want to restore?");
-  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Valve's original base station firmware"},
-                 {Icon::Tracker, "Trackers & Controllers", "Valve's or HTC's original radio firmware"}})) {
+  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Puts Valve's base station firmware back"},
+                 {Icon::Tracker, "Trackers & Controllers", "Puts the original radio firmware back"}})) {
     case 0: Go(Page::RestoreBase); break;
     case 1: Go(Page::RestoreRadioMenu); break;
   }

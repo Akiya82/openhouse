@@ -538,7 +538,7 @@ void UsbTransport::OnDeviceGone(const DeviceId& serial) {
 bool UsbTransport::SetPairing(const std::string& receiver, int milliseconds) {
   if (oh_ && !oh_->Serial().empty() && receiver.rfind(oh_->Serial(), 0) == 0) {   // the dongle or one of its slots
     const std::string rest = receiver.substr(oh_->Serial().size());           // "/3": that slot
-    const int slot = rest.size() == 2 && rest[0] == '/' && rest[1] >= '0' && rest[1] <= '5' ? rest[1] - '0' : -1;
+    const int slot = rest.size() == 2 && rest[0] == '/' && rest[1] >= '0' && rest[1] < '0' + DoormanDongle::kSlots ? rest[1] - '0' : -1;
     return oh_->Pair(milliseconds, slot);
   }
   {

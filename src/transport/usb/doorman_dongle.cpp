@@ -94,7 +94,7 @@ void DoormanDongle::Drop() {
   // Each slot is forgotten as when its device turns off: plugged back in, the dongle's devices are
   // identified and attached again. Keeping the serial meant nothing re-attached them (listed in
   // SteamVR, never tracked).
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < kSlots; ++i) {
     Slot& s = slots_[i];
     if (s.attached) Detach(i);
     s.serial.clear();
@@ -148,14 +148,18 @@ void DoormanDongle::Pump(double now) {
   }
   if (now >= nextLive_) {
     nextLive_ = now + 0.25;
-    Send(kCmdLive, nullptr, 0);
+    for (int page = 0; page < 2; ++page) {   // 6 slots per reply
+      const uint8_t first = uint8_t(page * 6);
+      Send(kCmdLive, &first, 1);
+      liveSeq_[page] = seq_;
+    }
   }
-  if (now >= nextStats_) {             // one paired slot's counters every ~1/6 s: each slot once a second
-    nextStats_ = now + 1.0 / 6;
-    for (int k = 0; k < 6; ++k) {
-      const int i = (statsSlot_ + k) % 6;
+  if (now >= nextStats_) {             // one paired slot's counters every 1/kSlots s: each slot once a second
+    nextStats_ = now + 1.0 / kSlots;
+    for (int k = 0; k < kSlots; ++k) {
+      const int i = (statsSlot_ + k) % kSlots;
       if (!slots_[i].used) continue;
-      statsSlot_ = (i + 1) % 6;
+      statsSlot_ = (i + 1) % kSlots;
       const uint8_t a = uint8_t(i);
       Send(kCmdStats, &a, 1);
       statsSeq_ = seq_ | (i << 8);
@@ -175,17 +179,17 @@ void DoormanDongle::Pump(double now) {
     // The main MCU's answers carry no id and the radio tags them in order, so an answer to a write
     // must not land while a read waits: writes to a device wait for its read's answer, and a read
     // waits 50 ms after a write (time for the write's answer, if there is one).
-    std::array<bool, 6> reading{};
+    std::array<bool, kSlots> reading{};
     for (auto& w : featureWaits_)
-      if (w->sent && !w->done && w->slot >= 0 && w->slot < 6) reading[w->slot] = true;
+      if (w->sent && !w->done && w->slot >= 0 && w->slot < kSlots) reading[w->slot] = true;
     for (auto it = downlinks_.begin(); it != downlinks_.end();) {
-      if (it->first >= 0 && it->first < 6 && reading[it->first]) { ++it; continue; }
-      if (it->first >= 0 && it->first < 6) readsAfter_[it->first] = now + 0.05;
+      if (it->first >= 0 && it->first < kSlots && reading[it->first]) { ++it; continue; }
+      if (it->first >= 0 && it->first < kSlots) readsAfter_[it->first] = now + 0.05;
       downs.push_back(std::move(*it));
       it = downlinks_.erase(it);
     }
     for (auto& w : featureWaits_)
-      if (!w->sent && !(w->slot >= 0 && w->slot < 6 && now < readsAfter_[w->slot])) {
+      if (!w->sent && !(w->slot >= 0 && w->slot < kSlots && now < readsAfter_[w->slot])) {
         w->sent = true;
         w->tag = nextTag_++;
         requests.push_back({w->slot, w->id, w->tag});
@@ -201,7 +205,7 @@ void DoormanDongle::Pump(double now) {
     const uint8_t f[3] = {0xC5, r.tag, r.id};   // the radio answers [0xC4][tag][reply]
     Downlink(r.slot, f, 3);
   }
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < kSlots; ++i) {
     Slot& s = slots_[i];
     if (s.workerDone) {
       s.worker.join();
@@ -250,8 +254,8 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   if (n < 3) return;
   if (r[0] == 0x80 || r[0] == 0x81) {
     const int slot = r[1], len = std::min<int>(r[2], n - 3);
-    if (slot >= 6) return;
-    static thread_local std::vector<uint8_t> frag[6];
+    if (slot >= kSlots) return;
+    static thread_local std::vector<uint8_t> frag[kSlots];
     const uint8_t* body = r + 3;
     if (r[0] == 0x81) {
       frag[slot].insert(frag[slot].end(), body, body + len);
@@ -271,9 +275,11 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
     return;
   }
   const uint8_t* d = r + 3;
-  if (r[0] == kCmdLive && r[2] == 0 && n >= 63) {
-    for (int i = 0; i < 6; ++i) {
-      const uint8_t* e = d + i * 10;
+  const int livePage = r[1] == liveSeq_[0] ? 0 : r[1] == liveSeq_[1] ? 1 : -1;
+  if (r[0] == kCmdLive && r[2] == 0 && n >= 63 && livePage >= 0) {
+    liveSeq_[livePage] = -1;
+    for (int i = livePage * 6; i < kSlots && i < livePage * 6 + 6; ++i) {
+      const uint8_t* e = d + (i - livePage * 6) * 10;
       Slot& s = slots_[i];
       s.used = e[0] & 1;
       const bool active = (e[0] & 2) != 0;
@@ -302,7 +308,7 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
     s.polls = v[0]; s.respOk = v[1]; s.framesUp = v[5]; s.bytesUp = v[6]; s.drops = v[7];
     s.rssiD = -std::abs(int32_t(v[10])); s.rssiT = -std::abs(int32_t(v[11]));   // dongle keeps magnitudes
   } else if (r[0] == kCmdIdent && n >= 19) {
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < kSlots; ++i) {
       Slot& s = slots_[i];
       if (s.identSeq != r[1]) continue;
       s.identSeq = -1;
@@ -573,7 +579,7 @@ bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
   if (serial_.empty()) return false;
   pairMs_ = milliseconds;
-  pairSlot_ = slot >= 0 && slot < 6 ? slot : -1;
+  pairSlot_ = slot >= 0 && slot < kSlots ? slot : -1;
   return true;
 }
 
@@ -586,7 +592,7 @@ void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its ow
   std::vector<SlotStat> out;
   int joined = 0;
   for (const auto& s : slots_) joined += s.active;
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < kSlots; ++i) {
     const Slot& s = slots_[i];
     SlotStat st;
     st.slot = i; st.used = s.used; st.active = s.active; st.serial = s.attached ? s.serial : DeviceId();

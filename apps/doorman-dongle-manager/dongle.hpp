@@ -20,7 +20,7 @@
 
 namespace openhouse::dongle {
 
-constexpr int kSlots = 6;
+constexpr int kSlots = 8;
 constexpr int kHops = 16;
 constexpr int kHistory = 120;  // samples kept for the graphs (one a second: two minutes)
 

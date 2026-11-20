@@ -318,6 +318,7 @@ RadioModel ModelFor(uint32_t hwid) {
       {0x110f0009, "Valve Index Controller", RadioFamily::Newer},
       {0x110b0209, "Valve Index Controller", RadioFamily::Newer},
       {0x84020006, "VIVE Tracker (2018)", RadioFamily::Newer},
+      {0x84020109, "VIVE Tracker 3.0", RadioFamily::Newer},
       {0x81020006, "VIVE Pro Controller", RadioFamily::Newer},
       {0xf0000109, "Tundra Tracker", RadioFamily::Newer},
       {0x84010004, "VIVE Tracker 1.0", RadioFamily::Tracker10},
@@ -355,6 +356,9 @@ fs::path StockRadioImage(const fs::path& steamvr, uint32_t hwid) {
   fs::path f = StockRadioImageExact(steamvr, hwid);
   // An Index controller revision SteamVR has no radio file for: the Index controller's.
   if (f.empty() && (hwid >> 24) == 0x11 && (hwid & 0xff) == 0x09) f = StockRadioImageExact(steamvr, 0x110f0009);
+  // HTC's 3.0 tracker (0x84020109) isn't in SteamVR's manifests, but it runs the Index controller's
+  // radio build (1562882729), so it gets that file.
+  if (f.empty() && (hwid >> 24) == 0x84 && ((hwid >> 16) & 0xff) >= 0x02) f = StockRadioImageExact(steamvr, 0x110f0009);
   return f;
 }
 
@@ -411,6 +415,8 @@ std::vector<StockModel> StockModels(const fs::path& steamvr) {
       if (!m.image.empty()) out.push_back(m);
     }
   }
+  // Not in SteamVR's manifests: the 3.0 tracker (the Index controller's radio file).
+  if (const fs::path f = StockRadioImage(steamvr, 0x84020109); !f.empty()) out.push_back({0x84020109, "VIVE Tracker 3.0", RadioFamily::Newer, f});
   std::sort(out.begin(), out.end(), [](const StockModel& a, const StockModel& b) { return a.name < b.name; });
   return out;
 }
@@ -543,9 +549,10 @@ std::vector<WirelessDevice> FindWirelessDevices() {
     DoormanDongle d(dongle.path);
     if (!d.Ok()) continue;
     uint8_t r[62];
-    if (!d.Command(0x25, nullptr, 0, r)) continue;
-    for (int slot = 0; slot < 6; ++slot) {
-      const uint8_t* e = r + 1 + slot * 10;  // [used][active][8-byte id]
+    for (int slot = 0; slot < 8; ++slot) {
+      const uint8_t first = uint8_t(slot / 6 * 6);   // 6 slots per reply
+      if (slot == first && !d.Command(0x25, &first, 1, r)) { slot = first + 5; continue; }
+      const uint8_t* e = r + 1 + (slot - first) * 10;  // [used][active][8-byte id]
       if (!e[0] || !e[1]) continue;
       const std::string info = AirRequest(d, slot, 'X', "");
       if (info.size() < 6) continue;

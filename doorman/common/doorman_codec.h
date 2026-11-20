@@ -21,6 +21,11 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+/* Called between coded fields: the radio checks for a POLL's address there (it has no interrupts,
+   and a coded frame took ~400 us on the Tracker 1.0's nRF51 before the bit writer was sped up). */
+#ifndef DMC_YIELD
+#define DMC_YIELD() do { } while (0)
+#endif
 
 enum { DMC_IMU = 0xC1, DMC_LH1 = 0xC2, DMC_LH2 = 0xC3 };
 enum { DMC_AX = 0, DMC_IMU_T = 6, DMC_W = 7, DMC_LT = 8, DMC_L2 = 9, DMC_NCTX = 10 };
@@ -43,14 +48,14 @@ static inline void dmc_reset(dmc_state_t *s)
 /* ---- bits ---- */
 typedef struct { uint8_t *b; int cap, pos, over; } dmc_w_t;
 typedef struct { const uint8_t *b; int len, pos, bad; } dmc_r_t;
-static inline void dmc_put(dmc_w_t *w, uint32_t v, int n)
+static inline void dmc_put(dmc_w_t *w, uint32_t v, int n)   /* n <= 32 bits, MSB first, a byte at a time */
 {
-  for (int i = n - 1; i >= 0; i--) {
-    int byte = w->pos >> 3;
+  while (n > 0) {
+    int byte = w->pos >> 3, off = w->pos & 7, room = 8 - off, take = n < room ? n : room;
     if (byte >= w->cap) { w->over = 1; return; }
-    if ((w->pos & 7) == 0) w->b[byte] = 0;
-    if ((v >> i) & 1) w->b[byte] |= (uint8_t)(0x80 >> (w->pos & 7));
-    w->pos++;
+    if (!off) w->b[byte] = 0;
+    w->b[byte] |= (uint8_t)(((v >> (n - take)) & ((1u << take) - 1)) << (room - take));
+    w->pos += take; n -= take;
   }
 }
 static inline uint32_t dmc_get(dmc_r_t *r, int n)
@@ -63,22 +68,30 @@ static inline uint32_t dmc_get(dmc_r_t *r, int n)
   }
   return v;
 }
-static inline int dmc_bits(uint64_t v) { int n = 0; while (v) { n++; v >>= 1; } return n; }
+static inline int dmc_bits32(uint32_t v) { return v ? 32 - __builtin_clz(v) : 0; }
+static inline int dmc_bits(uint64_t v) { uint32_t h = (uint32_t)(v >> 32); return h ? 32 + dmc_bits32(h) : dmc_bits32((uint32_t)v); }
 static inline uint32_t dmc_zz(int32_t v) { return ((uint32_t)v << 1) ^ (uint32_t)(v >> 31); }
 static inline int32_t dmc_unzz(uint32_t v) { return (int32_t)(v >> 1) ^ -(int32_t)(v & 1); }
 static inline int dmc_k(const dmc_state_t *s, int c) { int k = (s->m[c] >> 4) - 2; return k < 0 ? 0 : k > 28 ? 28 : k; }
 static inline void dmc_learn(dmc_state_t *s, int c, uint32_t u)
 {
-  s->m[c] = (int16_t)(s->m[c] + (((dmc_bits(u) << 4) - s->m[c]) >> 3));
+  s->m[c] = (int16_t)(s->m[c] + (((dmc_bits32(u) << 4) - s->m[c]) >> 3));
 }
 static inline void dmc_eg(dmc_w_t *w, dmc_state_t *s, int c, uint32_t u)
 {
+  DMC_YIELD();
   int k = dmc_k(s, c);
-  uint64_t x = ((uint64_t)u >> k) + 1;
-  int L = dmc_bits(x);
-  dmc_put(w, 0, L - 1);
-  dmc_put(w, (uint32_t)(x >> 32), L > 32 ? L - 32 : 0);
-  dmc_put(w, (uint32_t)x, L > 32 ? 32 : L);
+  const uint32_t q = u >> k;
+  if (q != 0xFFFFFFFFu) {                                   /* x = q + 1 fits 32 bits: no 64-bit maths */
+    const uint32_t x = q + 1;
+    const int L = dmc_bits32(x);
+    dmc_put(w, 0, L - 1);
+    dmc_put(w, x, L);
+  } else {                                                  /* x = 2^32: 32 zeros, then 1 and 32 zeros */
+    dmc_put(w, 0, 32);
+    dmc_put(w, 1, 1);
+    dmc_put(w, 0, 32);
+  }
   dmc_put(w, u & ((1u << k) - 1), k);
   dmc_learn(s, c, u);
 }

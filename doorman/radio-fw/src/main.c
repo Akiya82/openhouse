@@ -15,6 +15,8 @@
 #include <string.h>
 #include "nrf.h"
 #include "doorman_link.h"
+static void addr_check(void);
+#define DMC_YIELD() addr_check()                           /* the codec checks for POLLs between fields */
 #include "doorman_codec.h"
 
 #define STAGE_BASE   0x10000u
@@ -625,13 +627,21 @@ static uint8_t got_addr, heard, poll_ok, poll_ack, answer_join;   /* got_addr: a
    vector table), so addr_check() is also called from inside the main loop's longer steps. */
 static uint32_t ans_ptr, isr_t;
 static uint8_t isr_heard;
+/* Link timing (air 'T'): how late ADDRESS was seen (the hardware captures its time through PPI
+   channel 26 into TIMER0 CC[1]), answers lost to that, and the codec's cost. Running totals. */
+static struct { uint32_t addr_n, late100, late200, no_answer, enc_n, enc_us; uint16_t lat_max, enc_max; } lt;
 static void addr_check(void)
 {
   if (!NRF_RADIO->EVENTS_ADDRESS) return;
   NRF_RADIO->EVENTS_ADDRESS = 0;
   if (ans_ptr) NRF_RADIO->PACKETPTR = ans_ptr;
-  NRF_TIMER0->TASKS_CAPTURE[1] = 1; isr_t = NRF_TIMER0->CC[1];
+  isr_t = NRF_TIMER0->CC[1];                                 /* the ADDRESS time itself (PPI) */
   isr_heard = 1;
+  uint32_t lat = now_us() - isr_t;
+  lt.addr_n++;
+  if (lat > 100) lt.late100++;
+  if (lat > 200) lt.late200++;
+  if (lat > lt.lat_max) lt.lat_max = (uint16_t)(lat > 0xFFFF ? 0xFFFF : lat);
 }
 static uint32_t period_us = 2000, t_addr, t_last_poll;    /* cycle period (from POLLs), poll timing */
 static uint8_t max_resp = DML_MAXLEN;
@@ -723,7 +733,9 @@ static void uplink_push(const uint8_t *f, uint8_t n)
   if (uq_used() + n + 1 >= UQ_BYTES) { uq_drops++; return; }   /* drop BEFORE the codec sees it */
   static uint8_t enc[80];
   addr_check();
+  uint32_t te = now_us();
   int m = dmc_encode(&codec, f, n, enc);
+  te = now_us() - te; lt.enc_n++; lt.enc_us += te; if (te > lt.enc_max) lt.enc_max = (uint16_t)(te > 0xFFFF ? 0xFFFF : te);
   addr_check();
   if (m) { f = enc; n = (uint8_t)m; }
   uq[uq_tail] = n; uq_tail = (uq_tail + 1) & (UQ_BYTES - 1);
@@ -754,6 +766,7 @@ static void radio_setup(void)
   uint32_t t = now_us();
   while (!NRF_CLOCK->EVENTS_HFCLKSTARTED && now_us() - t < 5000) {}
   NRF_RADIO->POWER = 1;
+  NRF_PPI->CHENSET = 1u << 26;                               /* pre-set: RADIO ADDRESS -> TIMER0 CAPTURE[1] */
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit;
   NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos4dBm;
   NRF_RADIO->PCNF0 = 8 << RADIO_PCNF0_LFLEN_Pos;
@@ -893,6 +906,11 @@ static void air_update(const uint8_t *f, uint8_t n)
     air_reply(x, 36); return;
 #endif
   }
+  case 'T': {                                              /* link timing (lt) */
+    uint8_t x[40] = { DML_AIR_UPD, 'T' };
+    memcpy(x + 2, &lt, sizeof lt);
+    air_reply(x, (uint8_t)(2 + sizeof lt)); return;
+  }
 #ifdef DML_DIAG
   case 'D': {                                              /* trace dump, 5 entries per request */
     uint8_t x[60] = { DML_AIR_UPD, 'D' }; uint8_t i0 = n > 2 ? f[2] : 0;
@@ -980,7 +998,7 @@ static void radio_poll(void)
     if (joined) {
       /* TXEN already fired through the shortcut: stop it from firing again after the TX */
       NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk;
-      if (!got_addr) { radio_stop(); arm_next(); return; } /* never answer with the wrong buffer */
+      if (!got_addr) { lt.no_answer++; radio_stop(); arm_next(); return; } /* never answer with the wrong buffer */
       poll_ok = crc && len >= DML_POLL_HDR && p[0] == DML_POLL && p[1] == my_slot;
       if (!crc) poll_crc_err++;
       if (poll_ok) handle_poll(p, len);

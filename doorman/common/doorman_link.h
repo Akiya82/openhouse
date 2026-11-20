@@ -30,9 +30,9 @@
 #include <stdint.h>
 
 #ifdef DML_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
-#define DML_VERSION        0x6A00001Bu        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
+#define DML_VERSION        0x6A00001Fu        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
 #else
-#define DML_VERSION        0x0A00000Cu
+#define DML_VERSION        0x0A000010u
 #endif        /* radio fw version reported for 'X' (HTC: 0x576B0104) */
 #define DML_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
 #define DML_JOIN_CHANNEL   80                 /* 2480 MHz */
@@ -40,7 +40,7 @@
 #define DML_JOIN_PREFIX    0x5Au
 #define DML_SLOT_PREFIX    0xA0u
 #define DML_MAXLEN         250
-#define DML_SLOTS          6
+#define DML_SLOTS          8
 #define DML_NHOP           16
 static const uint8_t dml_hop_ch[DML_NHOP] = { 4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59, 64, 69, 74, 79 };
 

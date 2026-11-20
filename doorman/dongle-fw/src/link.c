@@ -236,6 +236,9 @@ static void slot_reset(uint8_t i)
   s->active = 1; s->last_resp_ms = ms_ticks;               /* poll it right away */
 }
 static uint32_t t_c;                                       /* current cycle start */
+/* The slots polled this cycle: paired and connected. A paired device that's off costs no airtime;
+   when it comes back it rejoins through the join beacons (its slot_reset puts it back in). */
+static uint32_t plan;
 static void join_beacon(void)
 {
   uint8_t *p = pkt_tx + 1;
@@ -248,7 +251,8 @@ static void join_beacon(void)
   uint32_t since = 0;
   if (p[14] < DML_SLOTS) {                                  /* the assigned slot's place in this cycle */
     int k = 0;
-    for (int i = 0; i < p[14]; i++) k += (pairs.used >> i) & 1;
+    const uint32_t in = plan | 1u << p[14];               /* it's in the next cycle's plan */
+    for (int i = 0; i < p[14]; i++) k += (in >> i) & 1;
     since = us_now() - (t_c + (uint32_t)k * slot_us);
     if (since > 0xFFFF) since = 0xFFFF;
   }
@@ -370,12 +374,17 @@ void link_init(void)
 void link_poll(void)
 {
   if (!link_on) { radio_off(); return; }
+  /* TDMA plan, rebuilt each cycle from the connected slots: the k-th polled at t_c + k*slot_us, then the
+     join window. Radios don't need their place in it: they listen for their own address and take the
+     period from each POLL, so the plan can change from one cycle to the next. */
+  plan = 0;
   int n = 0;
-  for (int i = 0; i < DML_SLOTS; i++) n += (pairs.used >> i) & 1;
-  /* fixed TDMA plan: slot k polled at t_c + k*slot_us, then the join window */
+  for (int i = 0; i < DML_SLOTS; i++)
+    if ((pairs.used >> i) & 1 && sl[i].active) { plan |= 1u << i; n++; }
   /* bigger responses amortise the ~450 us per-slot overhead: 6 x 120 B = 6.3 ms cycle, ~18 kB/s per device
-     (72 B gave 12.9 kB/s, too little headroom for resends; queues overflowed) */
-  max_resp = n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : 120;
+     (72 B gave 12.9 kB/s, too little headroom for resends; queues overflowed). 7-8 devices: 176 B, 9.9 ms
+     and ~17.7 kB/s each at 8, over the ~13 kB/s a device sends at its worst (LH1, two bases) */
+  max_resp = n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : n <= 6 ? 120 : 176;
   slot_us = 450u + 4u * max_resp;
   period_us = n * slot_us + 700u;
   t_c += period_us;
@@ -388,10 +397,9 @@ void link_poll(void)
   channels_eval();                                          /* sets next_mask (announced in this cycle) */
   int k = 0;
   for (uint8_t i = 0; i < DML_SLOTS; i++) {
-    if (!((pairs.used >> i) & 1)) continue;
+    if (!((plan >> i) & 1)) continue;
     wait_until(t_c + (uint32_t)k * slot_us);
     k++;
-    if (!sl[i].active && (cycle & 15) != (i & 15)) continue; /* absent trackers: every 16th cycle */
     poll_slot(i);
   }
   if (ms_ticks - last_join_ms >= 20) {
@@ -460,9 +468,10 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
     memcpy(d, v, sizeof v);
     return 1;
   }
-  case 0x29:                                                /* live: per slot 10 B, all slots */
-    for (int k = 0; k < DML_SLOTS; k++) {
-      uint8_t *e = d + k * 10; slot_t *q = &sl[k];
+  case 0x29: {                                              /* live: per slot 10 B, slots [first..first+5] */
+    const int first = in[2] < DML_SLOTS ? in[2] : 0;
+    for (int k = first; k < DML_SLOTS && k < first + 6; k++) {
+      uint8_t *e = d + (k - first) * 10; slot_t *q = &sl[k];
       e[0] = (uint8_t)(((pairs.used >> k) & 1) | (q->active << 1));
       e[1] = q->rssi_last_d; e[2] = q->rssi_last_t; e[3] = q->rssi_min_d; e[4] = q->rssi_max_d;
       e[5] = cur_ch;
@@ -470,6 +479,7 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
       q->rssi_min_d = 0; q->rssi_max_d = 0;
     }
     return 1;
+  }
   case 0x2A: memcpy(d, s->ident, 16); return 1;            /* identity ('H' frame) of a slot */
   case 0x28:                                                /* codec, and the radio's own drops */
     put32(d, s->air_bytes); put32(d + 4, s->bytes_up); put32(d + 8, s->bad_frames);
@@ -478,13 +488,16 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;
     pair_target = in[3] >= 1 && in[3] <= DML_SLOTS ? (uint8_t)(in[3] - 1) : 0xFF;
     d[0] = in[2]; d[1] = pair_target; return 1;
-  case 0x25:                                                /* slots: used, active, id x8 per slot */
-    for (int k = 0; k < DML_SLOTS; k++) {
-      d[k * 10] = (pairs.used >> k) & 1; d[k * 10 + 1] = sl[k].active;
-      memcpy(d + k * 10 + 2, pairs.id[k], 8);
+  case 0x25: {                                              /* slots [first..first+5]: used, active, id x8 */
+    const int first = in[2] < DML_SLOTS ? in[2] : 0;
+    for (int k = first; k < DML_SLOTS && k < first + 6; k++) {
+      uint8_t *e = d + (k - first) * 10;
+      e[0] = (pairs.used >> k) & 1; e[1] = sl[k].active;
+      memcpy(e + 2, pairs.id[k], 8);
     }
     d[60] = ms_ticks < pairing_until_ms ? (uint8_t)(1 | (pair_target < DML_SLOTS ? (pair_target + 1) << 1 : 0)) : 0;
     return 1;
+  }
   case 0x26:                                                /* forget slot (0xFF = all) */
     if (in[2] == 0xFF) pairs.used = 0; else if (in[2] < DML_SLOTS) pairs.used &= ~(1u << in[2]);
     pairs_save();

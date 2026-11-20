@@ -143,10 +143,12 @@ def signal(secs, slot=0):
         time.sleep(1)
 
 def slots():
-    st, d = cmd(open_dev(), 0x25)
-    for k in range(6):
-        used, act, tid = d[k*10], d[k*10+1], d[k*10+2:k*10+10]
-        if used: print(f"slot {k}: tracker {tid[::-1].hex()}  {'ACTIVE' if act else 'absent'}")
+    h = open_dev()
+    for first in (0, 6):                                   # 6 slots per reply
+        st, d = cmd(h, 0x25, bytes([first]))
+        for k in range(first, min(first + 6, 8)):
+            e = d[(k - first) * 10:(k - first) * 10 + 10]
+            if e[0]: print(f"slot {k}: tracker {e[2:10][::-1].hex()}  {'ACTIVE' if e[1] else 'absent'}")
     print("pairing open" if d[60] else "pairing closed")
 
 def channels():

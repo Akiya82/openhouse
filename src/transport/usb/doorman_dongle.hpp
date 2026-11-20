@@ -40,6 +40,7 @@ class ReportDecoder;
 
 class DoormanDongle {
  public:
+  static constexpr int kSlots = 8;   // slots per dongle (DML_SLOTS)
   using LogFn = std::function<void(LogLevel, const std::string&)>;
   DoormanDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
            std::string steamConfigDir, LogFn log);
@@ -121,14 +122,15 @@ class DoormanDongle {
   std::string serial_;
   double nextOpen_ = 0, nextLive_ = 0, nextStats_ = 0;
   int statsSlot_ = 0, statsSeq_ = -1;
+  int liveSeq_[2] = {-1, -1};   // the live (0x29) requests in flight: slots 0-5 and 6-7
   uint8_t seq_ = 0;
-  Slot slots_[6];
+  Slot slots_[kSlots];
 
   mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, serial_, slot serials
   std::condition_variable cv_;
   std::deque<std::shared_ptr<FeatureWait>> featureWaits_;
   uint8_t nextTag_ = 0;
-  std::array<double, 6> readsAfter_{};   // Pump thread
+  std::array<double, kSlots> readsAfter_{};   // Pump thread
   std::deque<std::pair<int, std::vector<uint8_t>>> downlinks_;
   std::optional<int> pairMs_;
   int pairSlot_ = -1;

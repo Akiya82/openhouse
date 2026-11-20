@@ -971,7 +971,7 @@ void Ui::About() {
   Title("About", lh::ui::Icon::About);
   ImGui::TextWrapped("Doorman Dongle Manager: the openhouse wireless dongle's slots, pairing and radio.");
   ImGui::Spacing();
-  ImGui::TextWrapped("A dongle has six slots, one device each. Pairing puts a device into a slot; it then "
+  ImGui::TextWrapped("A dongle has eight slots, one device each. Pairing puts a device into a slot; it then "
                      "reconnects to that slot by itself whenever it's on. SteamVR's own pairing page also pairs "
                      "into Doorman Dongles while the openhouse driver runs: it picks a free slot, or one whose "
                      "device is off.");

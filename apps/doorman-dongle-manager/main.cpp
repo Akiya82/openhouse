@@ -1,5 +1,5 @@
 // doorman-dongle-manager: the Doorman Dongle Manager. The dongles plugged in, what's paired to
-// each of their six slots, pairing into a slot and unpairing, the radio's live performance,
+// each of their eight slots, pairing into a slot and unpairing, the radio's live performance,
 // its channels and the dongle firmware. A desktop window (Windows, Linux), in the look of
 // openhouse-overlay; it works with or without the openhouse driver running (with it, device
 // names come from the driver's telemetry).

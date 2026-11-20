@@ -42,7 +42,9 @@ acks (all to one handler) and gives each step ~120 ms; HTC's LPC bootloader want
 radio replies `Y 0` from a constant, so echo matches stock on both. An earlier 0x21-ack attempt broke USB
 updates.
 
-Over the air (downlink op `0xF0`, handled by the radio itself): `X` info, `Y` open, `Z [off u32][block]`,
+Over the air (downlink op `0xF0`, handled by the radio itself): `T` link timing (running totals: ADDRESS events,
+seen >100 / >200 us late, answers skipped, codec frames and us, max lateness, max encode; the ADDRESS time is
+captured by PPI channel 26 into TIMER0 CC[1]), `X` info, `Y` open, `Z [off u32][block]`,
 `[ sig`, `R` radio reset, `D` trace (DIAG). Used by `tools/air_update.py`.
 
 ## Safety design (why it can't lock itself out)
@@ -86,3 +88,10 @@ USB details:
   diag boot hook broke the quick-boot counter. Keep `DIAG` additions passive.
 * A failed USB update with our radio as the receiver once looked like "the USB route doesn't work"; it was
   our ack bytes. Always test the stock radio as receiver too.
+
+### Answer timing (no interrupts)
+The answer buffer must be swapped into PACKETPTR between a POLL's ADDRESS and the auto-TX start (~180 us
+later). It's polled (`addr_check`), so nothing may block longer than that: the codec calls `DMC_YIELD()`
+(= `addr_check`) before every coded field. Before that, a coded frame took ~400 us (max 1.15 ms) on the
+Tracker 1.0's nRF51 and its loss was 16-25 % (83 % alone on a 2.15 ms cycle); after, 1.5-9 % and the
+worst lateness is ~70 us. The bit writer also writes a byte at a time (output unchanged, checked bit for bit).

@@ -8,8 +8,13 @@ Source of truth: `doorman/common/doorman_link.h` (air format, constants) and
 
 * Nordic proprietary **2 Mbit**: 8-bit preamble, 4+1 byte address, 8-bit length, CRC16
   (0x11021, init 0xFFFF), no whitening.
-* **The dongle leads.** Each cycle polls every paired, active slot once, all on one channel.
-  Slot k is polled at `cycle_start + k * slot_us`.
+* **The dongle leads.** 8 slots per dongle (firmware 0x000C; 6 before). Each cycle polls every
+  paired, connected slot once, all on one channel: the k-th at `cycle_start + k * slot_us`. The
+  plan is rebuilt every cycle from the connected slots, so a paired device that's off costs no
+  airtime (it comes back through the JOIN beacons). Radios don't need their place in the plan:
+  they listen for their own address and take the period from each POLL.
+* Reply size by connected devices: 1: 250 B, 2: 160, 3-4: 96, 5-6: 120, 7-8: 176. Poll interval
+  `n * (450 + 4 * size) + 700` us: 3.2 ms for 3, 6.3 ms for 6, 9.9 ms for 8.
 * Every 20 ms there is also a JOIN beacon on channel 80 (2480 MHz), address "OHJN" / prefix
   0x5A.
 * Slot address: BASE = a per-dongle network base (from the dongle's FICR), prefix
@@ -116,11 +121,11 @@ carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` 
 | 0x22 | RSSI scan of 2400–2500 MHz (pauses the link) |
 | 0x23 | per-slot stats (15 u32) |
 | 0x24 | pair `[secs][slot+1]` |
-| 0x25 | slots: per slot used, active, id x8. `d[60] = pairing \| (target+1) << 1` |
+| 0x25 | slots `[first]`: 10 B per slot for slots first..first+5 (0 and 6): used, active, id x8. `d[60] = pairing \| (target+1) << 1` |
 | 0x26 | forget slot (0xFF = all) |
 | 0x27 | channels: mask, loss % per hop channel, joins, net base |
 | 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each) |
-| 0x29 | live: per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
+| 0x29 | live `[first]` (6 slots per reply, as 0x25): per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 
 ## Device frames (uplink, inside RESP)

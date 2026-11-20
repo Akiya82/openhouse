@@ -217,10 +217,12 @@ void Dongle::Poll(double now) {
   Reply r;
   if (now >= nextLive_) {
     nextLive_ = now + 0.25;
-    if (Command(kLive, nullptr, 0, &r)) {
+    for (int first = 0; first < kSlots; first += 6) {   // 6 slots per reply
+      const uint8_t arg = uint8_t(first);
+      if (!Command(kLive, &arg, 1, &r)) continue;
       std::lock_guard lock(mutex_);
-      for (int i = 0; i < kSlots; ++i) {
-        const uint8_t* e = r.data.data() + i * 10;
+      for (int i = first; i < kSlots && i < first + 6; ++i) {
+        const uint8_t* e = r.data.data() + (i - first) * 10;
         auto& s = state_.slots[i];
         s.used = e[0] & 1;
         s.active = (e[0] & 2) != 0;
@@ -260,11 +262,14 @@ void Dongle::Poll(double now) {
       state_.crashType = Rd32(d + 32);
       state_.crashPc = Rd32(d + 36);
     }
-    if (Command(kSlotsCmd, nullptr, 0, &r)) {
+    for (int first = 0; first < kSlots; first += 6) {   // 6 slots per reply
+      const uint8_t arg = uint8_t(first);
+      if (!Command(kSlotsCmd, &arg, 1, &r)) continue;
       std::lock_guard lock(mutex_);
-      for (int i = 0; i < kSlots; ++i) {
+      for (int i = first; i < kSlots && i < first + 6; ++i) {
         auto& s = state_.slots[i];
-        const std::string id = r.data[i * 10] ? Hex(r.data.data() + i * 10 + 2, 8) : std::string();
+        const uint8_t* e = r.data.data() + (i - first) * 10;
+        const std::string id = e[0] ? Hex(e + 2, 8) : std::string();
         if (id != s.pairId) { s.pairId = id; s.id = {}; s.nickname.clear(); identTried_[i] = 0; configTried_[i] = 0; configNext_[i] = 0; }
         if (!id.empty() && s.id.serial.empty())
           for (const auto& [k, v] : known_)

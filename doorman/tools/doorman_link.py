@@ -120,9 +120,13 @@ class Dongle:
             if not got: return
 
     def slots(self):
-        _, d = self.cmd(0x25)
-        return {k: dict(id=d[k*10+2:k*10+10][::-1].hex(), active=bool(d[k*10+1]))
-                for k in range(6) if d[k*10]}
+        out = {}
+        for first in (0, 6):                               # 6 slots per reply
+            _, d = self.cmd(0x25, bytes([first]))
+            for k in range(first, min(first + 6, 8)):
+                e = d[(k - first) * 10:(k - first) * 10 + 10]
+                if e[0]: out[k] = dict(id=e[2:10][::-1].hex(), active=bool(e[1]))
+        return out
 
     STATS = "polls resp_ok crc_err timeouts dup frames_up bytes_up drops down_frames down_resends rssi_dongle rssi_tracker tracker_missed tracker_crc ms_since_resp".split()
     def slot_stats(self, slot):

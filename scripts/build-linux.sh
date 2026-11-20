@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Release build for the Linux package, with static vcpkg dependencies (the same Ceres
+# Build for the Linux package, with static vcpkg dependencies (the same Ceres
 # as the Windows build: no SuiteSparse), then packages it (scripts/package-linux.sh).
 # Does not install or change the running driver.
 set -euo pipefail
+# --release: the plain version (a signed release). Without it the version gets the commit,
+# and -dirty with uncommitted changes (cmake/build_id.cmake).
+unset OPENHOUSE_RELEASE   # only --release makes a release build
+for arg in "$@"; do
+  case "$arg" in
+    --release) export OPENHOUSE_RELEASE=1 ;;
+    *) echo "usage: $0 [--release]" >&2; exit 2 ;;
+  esac
+done
 repo=$(cd "$(dirname "$0")/.." && pwd)
 root=${LH_VCPKG_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/openhouse/vcpkg}
 if [[ ! -f "$root/scripts/buildsystems/vcpkg.cmake" ]]; then

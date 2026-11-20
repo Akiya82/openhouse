@@ -11,6 +11,7 @@ extern char** environ;
 #include <cstdio>
 #include <cstdlib>
 
+#include "lh/github.hpp"
 #include "lh/version.hpp"
 
 #ifdef _WIN32
@@ -21,22 +22,6 @@ extern char** environ;
 
 namespace openhouse::overlay {
 namespace {
-// "v1.0.1", "1.0" -> {1, 0, 1}, {1, 0, 0}; missing parts are 0.
-std::array<int, 3> ParseVersion(std::string v) {
-  std::array<int, 3> out{0, 0, 0};
-  if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(0, 1);
-  int part = 0;
-  for (size_t i = 0; i < v.size() && part < 3;) {
-    if (!std::isdigit(static_cast<unsigned char>(v[i]))) break;
-    size_t end = i;
-    while (end < v.size() && std::isdigit(static_cast<unsigned char>(v[end]))) ++end;
-    out[part++] = std::atoi(v.substr(i, end - i).c_str());
-    if (end >= v.size() || v[end] != '.') break;
-    i = end + 1;
-  }
-  return out;
-}
-
 std::string TagName(const std::string& json) {
   const auto key = json.find("\"tag_name\"");
   if (key == std::string::npos) return {};
@@ -46,45 +31,6 @@ std::string TagName(const std::string& json) {
   return close == std::string::npos ? std::string() : json.substr(open + 1, close - open - 1);
 }
 
-std::string FetchLatest() {
-  std::string body;
-#ifdef _WIN32
-  HINTERNET session = WinHttpOpen(L"openhouse-overlay", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
-                                  WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session) return body;
-  WinHttpSetTimeouts(session, 5000, 5000, 5000, 5000);
-  HINTERNET connect = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-  HINTERNET request = connect ? WinHttpOpenRequest(connect, L"GET", L"/repos/YusufOzmen01/openhouse/releases/latest",
-                                                   nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                                   WINHTTP_FLAG_SECURE)
-                              : nullptr;
-  if (request && WinHttpSendRequest(request, L"Accept: application/vnd.github+json\r\n", DWORD(-1), WINHTTP_NO_REQUEST_DATA,
-                                    0, 0, 0) &&
-      WinHttpReceiveResponse(request, nullptr)) {
-    DWORD status = 0, size = sizeof status;
-    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-                        &status, &size, WINHTTP_NO_HEADER_INDEX);
-    for (DWORD available = 0; status == 200 && WinHttpQueryDataAvailable(request, &available) && available;) {
-      std::string chunk(available, '\0');
-      DWORD read = 0;
-      if (!WinHttpReadData(request, chunk.data(), available, &read) || !read) break;
-      body.append(chunk.data(), read);
-    }
-  }
-  if (request) WinHttpCloseHandle(request);
-  if (connect) WinHttpCloseHandle(connect);
-  WinHttpCloseHandle(session);
-#else
-  if (std::system("command -v curl >/dev/null 2>&1") != 0) return body;
-  FILE* pipe = popen("curl -fsSL --max-time 5 -H 'Accept: application/vnd.github+json' "
-                     "https://api.github.com/repos/YusufOzmen01/openhouse/releases/latest 2>/dev/null", "r");
-  if (!pipe) return body;
-  char buffer[4096];
-  for (size_t n; (n = std::fread(buffer, 1, sizeof buffer, pipe)) > 0;) body.append(buffer, n);
-  pclose(pipe);
-#endif
-  return body;
-}
 }  // namespace
 
 UpdateCheck::~UpdateCheck() {
@@ -99,12 +45,14 @@ void UpdateCheck::Start() {
   busy_ = true;
   done_ = false;
   thread_ = std::thread([this] {
-    const std::string tag = TagName(FetchLatest());
+    const std::string tag = TagName(lh::GithubGet("/repos/YusufOzmen01/openhouse/releases/latest"));
     {
       std::lock_guard lock(mutex_);
       latest_ = tag;
     }
-    newer_ = !tag.empty() && ParseVersion(tag) > ParseVersion(lh::kVersion);
+    const lh::UpdateState state = tag.empty() ? lh::UpdateState::Current : lh::CheckRelease(tag, lh::GithubGet);
+    newer_ = state == lh::UpdateState::Newer;
+    unknown_ = state == lh::UpdateState::Unknown;
     done_ = true;
     busy_ = false;
   });

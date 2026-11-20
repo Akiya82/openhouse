@@ -822,11 +822,16 @@ void Ui::About() {
   else if (update_.Busy()) ImGui::TextDisabled("Checking...");
   else if (update_.Done() && update_.Latest().empty()) ImGui::TextColored(kWarn, "Couldn't check");
   else if (update_.Done() && update_.Newer()) ImGui::TextColored(kAccent, "Update available: %s", update_.Latest().c_str());
+  else if (update_.Done() && update_.Unknown()) ImGui::TextColored(kWarn, "Can't compare this build with %s", update_.Latest().c_str());
   else if (update_.Done()) ImGui::TextColored(kGood, "Up to date");
   if (!update_.Disabled()) {
     ImGui::BeginDisabled(update_.Busy());
     if (BigButton("Check")) update_.Start();
     ImGui::EndDisabled();
+    ImGui::SameLine();
+  }
+  if (update_.Done() && update_.Unknown()) {
+    if (BigButton("Reinstall")) update_.OpenLatestRelease();
     ImGui::SameLine();
   }
   if (BigButton("Open GitHub Releases")) UpdateCheck::OpenReleasesPage();

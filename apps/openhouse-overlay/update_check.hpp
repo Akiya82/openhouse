@@ -19,6 +19,8 @@ class UpdateCheck {
   // After Done(): the latest tag ("v1.0.4"; "" if GitHub didn't answer), and whether it's newer.
   std::string Latest() const;
   bool Newer() const { return newer_; }
+  // Same version, and GitHub couldn't say whether this build's commit is older (a local commit).
+  bool Unknown() const { return unknown_; }
 
   static constexpr const char* kReleasesPage = "https://github.com/YusufOzmen01/openhouse/releases/latest";
   static void OpenReleasesPage();
@@ -29,7 +31,7 @@ class UpdateCheck {
 
  private:
   std::thread thread_;
-  std::atomic<bool> busy_{false}, done_{false}, newer_{false};
+  std::atomic<bool> busy_{false}, done_{false}, newer_{false}, unknown_{false};
   mutable std::mutex mutex_;
   std::string latest_;
 };

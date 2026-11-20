@@ -143,6 +143,11 @@ class Ui {
   bool monadoCheck_ = true;
   bool statusFresh_ = true;
   int installAction_ = 0;  // 0 install, 1 update, 2 reinstall
+  // Whether this package is newer than the installed driver (lh::CompareBuilds: a GitHub
+  // compare for two builds of one version, on a thread). Only a confirmed newer one is an update.
+  bool PackageNewer();
+  std::string orderFor_;                                  // the installed version it's for
+  std::shared_ptr<std::atomic<int>> order_;               // lh::BuildOrder, -1 while asking
 
   // Base station flow
   enum class BaseStep { Warning, Waiting, Ready, Writing, Replug, Verifying, Done } baseStep_ = BaseStep::Warning;

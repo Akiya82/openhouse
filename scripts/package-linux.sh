@@ -16,6 +16,7 @@ patchelf --remove-rpath "$out/openhouse-installer"
 python3 "$repo/scripts/stage-firmwares.py" "$out"
 # Notices: openhouse's own, the vcpkg libraries built in, and what the tools link or embed.
 cp "$repo/LICENSE" "$out/LICENSE.txt"
+cp "$build/VERSION.txt" "$out/VERSION.txt"   # the build's version (cmake/build_id.cmake)
 prefix=$(sed -n 's/^VCPKG_INSTALLED_DIR:[A-Z]*=//p' "$build/CMakeCache.txt")/$(sed -n 's/^VCPKG_TARGET_TRIPLET:[A-Z]*=//p' "$build/CMakeCache.txt")
 for copyright in "$prefix"/share/*/copyright; do
   [[ -f "$copyright" ]] && cp "$copyright" "$out/lh-licenses/$(basename "$(dirname "$copyright")").txt"

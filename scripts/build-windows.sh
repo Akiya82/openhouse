@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Cross-build on Linux. Does not install or change the running Linux driver.
 set -euo pipefail
+# --release: the plain version (a signed release). Without it the version gets the commit,
+# and -dirty with uncommitted changes (cmake/build_id.cmake).
+unset OPENHOUSE_RELEASE   # only --release makes a release build
+for arg in "$@"; do
+  case "$arg" in
+    --release) export OPENHOUSE_RELEASE=1 ;;
+    *) echo "usage: $0 [--release]" >&2; exit 2 ;;
+  esac
+done
 repo=$(cd "$(dirname "$0")/.." && pwd)
 # Dedicated checkout; deliberately not $VCPKG_ROOT (a system vcpkg checkout may lack
 # the pinned baseline). Override with LH_VCPKG_ROOT.

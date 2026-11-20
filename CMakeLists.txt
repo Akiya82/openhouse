@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(liblighthouse VERSION 1.0.3 LANGUAGES CXX)
+project(liblighthouse VERSION 1.0.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,14 @@ option(LH_BUILD_TESTS "Build tests" ON)
 option(LH_BUILD_ORACLE_TESTS "Build tests that dlopen the original driver_lighthouse.so" ON)
 
 include(GNUInstallDirs)
+
+# The build's version stamp (cmake/build_id.cmake), redone on every build: lh/build_id.h for
+# LH_VERSION_STRING, VERSION.txt for the packages. Every target waits for it (end of file).
+add_custom_target(lh_build_id ALL
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_id.cmake
+  BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/lh/build_id.h ${CMAKE_CURRENT_BINARY_DIR}/VERSION.txt
+  COMMENT "Version stamp")
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 if(WIN32)
   enable_language(RC)
 endif()
@@ -337,7 +345,7 @@ if(LH_BUILD_VIEWER)
     target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
     target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
     if(WIN32)
-      target_link_libraries(openhouse-installer PRIVATE shell32 ole32 setupapi)
+      target_link_libraries(openhouse-installer PRIVATE shell32 ole32 setupapi winhttp)
     else()
       target_link_options(openhouse-installer PRIVATE -static-libstdc++ -static-libgcc)
     endif()
@@ -380,6 +388,7 @@ if(LH_BUILD_TESTS)
   find_package(GTest REQUIRED)
   add_executable(lh_unit_tests
     tests/unit/test_platform.cpp
+    tests/unit/test_version.cpp
     tests/unit/test_tracking_source.cpp
     tests/unit/test_pose_solver.cpp
     tests/unit/test_tracker.cpp
@@ -393,7 +402,7 @@ if(LH_BUILD_TESTS)
   target_include_directories(lh_unit_tests PRIVATE src)
   target_link_libraries(lh_unit_tests PRIVATE lh_tracking GTest::gtest_main)
   if(WIN32)
-    target_link_libraries(lh_unit_tests PRIVATE advapi32)
+    target_link_libraries(lh_unit_tests PRIVATE advapi32 winhttp)
   endif()
   if(LH_BUILD_USB)
     target_sources(lh_unit_tests PRIVATE tests/unit/test_report_parser.cpp tests/unit/test_device_config.cpp
@@ -509,3 +518,12 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT lighthouseTargets NAMESPACE lh:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/lighthouse)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/lighthouseConfig.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/lighthouseConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/lighthouse)
+
+# Everything built here waits for the version stamp (lh/build_id.h).
+get_property(lh_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS lh_targets)
+  get_target_property(type ${t} TYPE)
+  if(NOT t STREQUAL "lh_build_id" AND NOT type STREQUAL "INTERFACE_LIBRARY" AND NOT type STREQUAL "UTILITY")
+    add_dependencies(${t} lh_build_id)
+  endif()
+endforeach()

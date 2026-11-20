@@ -41,6 +41,9 @@ for copyright in (prefix / 'share').glob('*/copyright'):
     shutil.copy2(copyright, licenses / (copyright.parent.name + '.txt'))
 shutil.copy2(repo / 'third_party/imgui/LICENSE.txt', licenses / 'imgui.txt')
 shutil.copy2(repo / 'LICENSE', out / 'LICENSE.txt')
+if not (build / 'VERSION.txt').is_file():
+    sys.exit(f'Missing build artifact: {build / "VERSION.txt"}')
+shutil.copy2(build / 'VERSION.txt', out / 'VERSION.txt')   # the build's version (cmake/build_id.cmake)
 if Path('/usr/share/licenses/openvr').is_dir():
     shutil.copytree('/usr/share/licenses/openvr', licenses / 'openvr', dirs_exist_ok=True)
 for package in ['mingw-w64-crt', 'mingw-w64-headers', 'mingw-w64-winpthreads', 'gcc']:
@@ -51,6 +54,7 @@ gpl = Path('/usr/share/licenses/spdx/GPL-3.0-only.txt')
 if gpl.is_file():
     shutil.copy2(gpl, licenses / 'GCC-GPL-3.0.txt')
 (out / 'BUILD.json').write_text(json.dumps({
+    'version': (build / 'VERSION.txt').read_text().strip(),
     'source_commit': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
     'source_dirty': bool(subprocess.check_output(['git', '-C', str(repo), 'diff', '--name-only'], text=True).strip()),
     'compiler': subprocess.check_output(['x86_64-w64-mingw32-g++', '-dumpfullversion'], text=True).strip(),

@@ -8,10 +8,12 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <cstdio>
 #include <cstdlib>
 
 #include "common/nordic_dfu.hpp"
 #include "common/ui_theme.hpp"
+#include "lh/github.hpp"
 #include "lh/version.hpp"
 
 namespace openhouse::installer {
@@ -296,19 +298,6 @@ bool UnknownDevice(uint32_t hwid, RadioFamily family, const std::string& key, st
   return ok;
 }
 
-// "1.0.10" > "1.0.9"; an empty version (before the marker existed) is older than any.
-int CompareVersions(const std::string& a, const std::string& b) {
-  if (a.empty() || b.empty()) return a.empty() == b.empty() ? 0 : a.empty() ? -1 : 1;
-  size_t i = 0, j = 0;
-  while (i < a.size() || j < b.size()) {
-    const long x = i < a.size() ? std::strtol(a.c_str() + i, nullptr, 10) : 0;
-    const long y = j < b.size() ? std::strtol(b.c_str() + j, nullptr, 10) : 0;
-    if (x != y) return x < y ? -1 : 1;
-    i = a.find('.', i); i = i == std::string::npos ? a.size() : i + 1;
-    j = b.find('.', j); j = j == std::string::npos ? b.size() : j + 1;
-  }
-  return 0;
-}
 
 // SteamVR's own 1.0 base station firmware: the newest numbered lighthouse_tx_htc_2_0 image
 // (436), never the rescue ones.
@@ -419,6 +408,32 @@ Ui::Ui() {
   RefreshStatus();
 }
 
+bool Ui::PackageNewer() {
+  if (!status_.openhouse) return false;
+  // Installed before the version marker (1.0.3 or older): anything here is newer.
+  if (status_.version.empty()) return true;
+  if (!order_ || orderFor_ != status_.version) {
+    orderFor_ = status_.version;
+    order_ = std::make_shared<std::atomic<int>>(-1);
+    const std::string installed = status_.version;
+    // Numbers alone answer at once; a GitHub compare (two builds of one version) on a thread.
+    // Anything that isn't a clear "newer" (older, the same, no answer) stays a reinstall.
+    static const char* const kOrder[] = {"older", "the same", "newer", "unknown"};
+    const auto decided = [installed](lh::BuildOrder o, const char* how) {
+      std::fprintf(stderr, "openhouse-installer: installed v%s, this package v%s is %s (%s): %s\n", installed.c_str(),
+                   lh::kVersion, kOrder[int(o)], how, o == lh::BuildOrder::Newer ? "update" : "reinstall");
+    };
+    const lh::BuildOrder quick = lh::CompareBuilds(installed, lh::kVersion, [](const std::string&) { return std::string(); });
+    if (quick != lh::BuildOrder::Unknown) { order_->store(int(quick)); decided(quick, "by version"); }
+    else std::thread([order = order_, installed, decided] {
+      const lh::BuildOrder o = lh::CompareBuilds(installed, lh::kVersion, lh::GithubGet);
+      order->store(int(o));
+      decided(o, "GitHub compare");
+    }).detach();
+  }
+  return order_->load() == int(lh::BuildOrder::Newer);
+}
+
 void Ui::RefreshStatus() { status_ = steamvr_.root.empty() ? DriverStatus{} : ReadStatus(steamvr_.root); }
 
 void Ui::Go(Page page) {
@@ -430,7 +445,7 @@ void Ui::Go(Page page) {
   page_ = page;
   checked_.clear();
   RefreshStatus();
-  installAction_ = !status_.openhouse ? 0 : CompareVersions(status_.version, lh::kVersion) < 0 ? 1 : 2;
+  installAction_ = !status_.openhouse ? 0 : PackageNewer() ? 1 : 2;
   switch (page) {
     case Page::BaseStation:
     case Page::RestoreBase:
@@ -638,7 +653,7 @@ void Ui::Home() {
   int install = -1, uninstall = -1;
   static std::string sub;
   if (status_.openhouse) {
-    const bool older = CompareVersions(status_.version, lh::kVersion) < 0;
+    const bool older = PackageNewer();
     sub = std::string(older ? "Updates openhouse to v" : "Installs openhouse v") + lh::kVersion + (older ? "" : " again");
     install = int(tiles.size());
     tiles.push_back({older ? Icon::Download : Icon::Refresh, older ? "Update Driver" : "Reinstall Driver", sub.c_str(),
@@ -668,6 +683,8 @@ void Ui::InstallPage(bool install) {
   static const char* const kActions[] = {"Install", "Update", "Reinstall"};
   static const char* const kDoing[] = {"Installing", "Updating", "Reinstalling"};
   static const char* const kDone[] = {"installed", "updated", "reinstalled"};
+  // Until it starts, a GitHub compare still going may turn a reinstall into an update.
+  if (install && !job_.Running() && !job_.Finished()) installAction_ = !status_.openhouse ? 0 : PackageNewer() ? 1 : 2;
   const int a = install ? installAction_ : 0;
   Title(install ? (std::string(kActions[a]) + " Driver").c_str() : "Uninstall Driver");
   if (job_.Finished() && !statusFresh_) {

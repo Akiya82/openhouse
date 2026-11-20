@@ -118,7 +118,7 @@ Install it into SteamVR's folder like above, and start Monado with its `steamvr_
 Settings are in `~/.config/lh/` on Linux and `%APPDATA%\lh\` on Windows.
 - `roommap.json` is the learned room. Delete it if you want to learn the room from scratch. You can delete it while openhouse is running too, it notices and starts learning the room again right away (same as **Reset room** in openhouse-overlay).
 - `hostframe.json` is where your play area is anchored. Delete it if you want to re-anchor.
-- `settings.json` has openhouse's settings. openhouse-overlay's Settings page changes it for you, but you can also edit it by hand (smoothing, prediction, hiding lost devices and the mixed options apply within a second, the rest after a restart). You can also use it to disable/enable devices, set manual device roles etc.
+- `settings.json` has openhouse's settings. openhouse-overlay's Settings page changes it for you, but you can also edit it by hand (smoothing, prediction and the mixed options apply within a second, the rest after a restart). You can also use it to disable/enable devices, set manual device roles etc.
 ```json
 {
   "roles": { "LHR-180D3882": "generic_tracker" },
@@ -127,13 +127,11 @@ Settings are in `~/.config/lh/` on Linux and `%APPDATA%\lh\` on Windows.
   "positionSmoothingMs": 60,
   "rotationSmoothingMs": 60,
   "predictWithAcceleration": true,
-  "hideLostDevices": false,
   "useSteamVRRooms": true,
   "mixedLight": { "enabled": true, "controllers": true, "trackers": true, "scout": true, "rotorReference": true, "preferLh2": false }
 }
 ```
 `roles` changes a device's role (`left_hand`, `right_hand` or `generic_tracker`, for example a Vive controller on your hip as a tracker), `controllers` picks which controller is left and right, and `disabledDevices` makes openhouse ignore a device completely.
-`hideLostDevices` makes controllers and trackers disappear while they've lost tracking, kinda like the stock driver, instead of staying where they were last seen (off by default). The headset is always kept where it was. It's **Hide lost devices** in openhouse-overlay.
 `positionSmoothingMs` and `rotationSmoothingMs` are how long a tracking correction takes to show up, 60 ms by default. Lower means less delay, but small corrections can show up as tiny jumps. 0 turns it off.
 `predictWithAcceleration` helps SteamVR predict where your controllers will be during fast motion, like in Beat Saber. On by default.
 `useSteamVRRooms` (**Use SteamVR's rooms** in openhouse-overlay, SteamVR only, on by default) keeps openhouse in step with SteamVR's own room files, so Room Setup isn't asked for on every start. If you already did Room Setup with SteamVR's driver for the same basestations, openhouse uses that room (its play area and standing height). Otherwise openhouse adds its room to SteamVR's `lighthousedb.json` (a backup of the original is kept as `lighthousedb.json.openhouse-backup`), so Room Setup is done once and remembered, and other apps that read SteamVR's room see where the basestations are. SteamVR's own rooms are never changed. Turn it off (and restart SteamVR) to keep openhouse's room completely separate from SteamVR's, as in 1.0.2.

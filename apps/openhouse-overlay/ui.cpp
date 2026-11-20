@@ -770,7 +770,6 @@ void Ui::SettingsPage() {
   slider("positionSmoothingMs", "Position smoothing", "Higher is steadier, lower reacts faster");
   slider("rotationSmoothingMs", "Rotation smoothing", "Higher is steadier, lower reacts faster");
   toggle("predictWithAcceleration", "Acceleration prediction", "Uses acceleration to predict motion. Less lag on fast moves");
-  toggle("hideLostDevices", "Hide lost devices", "Hides devices no base station sees instead of freezing them in place");
   ImGui::SeparatorText("Mixed basestations (experimental)");
   toggle("mixedLight", "Enabled", "Track with 1.0 and 2.0 base stations at the same time");
   ImGui::BeginDisabled(!st.value("mixedLight", false));

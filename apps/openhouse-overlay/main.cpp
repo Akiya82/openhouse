@@ -3,10 +3,9 @@
 // driver's local telemetry (lh/telemetry.hpp), so it works under any runtime the driver
 // runs in (SteamVR, Monado, WiVRn).
 //
-//   openhouse-overlay              SteamVR running: a SteamVR dashboard overlay; else a window
-//   openhouse-overlay --desktop    always a desktop window
-//   openhouse-overlay --overlay    the dashboard overlay, or exit if SteamVR isn't running
-//                                  (what SteamVR starts with each session)
+//   openhouse-overlay              a desktop window
+//   openhouse-overlay --overlay    the SteamVR dashboard overlay, or exit if SteamVR isn't running
+//                                  (what SteamVR starts with each session, from its manifest)
 //
 // The dashboard overlay renders the same ImGui UI into an OpenGL texture of a hidden
 // window and hands SteamVR the texture; the laser pointer comes back as mouse events.
@@ -274,17 +273,14 @@ int RunOverlay() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  bool desktop = false, overlayOnly = false;
-  for (int i = 1; i < argc; ++i) {
-    if (!std::strcmp(argv[i], "--desktop")) desktop = true;
-    else if (!std::strcmp(argv[i], "--overlay")) overlayOnly = true;
-  }
+  bool overlay = false;
+  for (int i = 1; i < argc; ++i)
+    if (!std::strcmp(argv[i], "--overlay")) overlay = true;
   if (!glfwInit()) { std::fprintf(stderr, "openhouse-overlay: no display\n"); return 1; }
   int rc = 0;
-  const bool steamvr = !desktop && SteamVRRunning();
-  if (steamvr) rc = RunOverlay();
-  else if (overlayOnly) rc = 0;  // SteamVR isn't up: nothing to do
-  else rc = RunDesktop();
+  if (!overlay) rc = RunDesktop();
+  else if (SteamVRRunning()) rc = RunOverlay();
+  // --overlay without SteamVR: nothing to do
   glfwTerminate();
   return rc;
 }

@@ -80,9 +80,6 @@ namespace {
 
 using namespace vr;
 
-// "Hide lost devices" (settings.json "hideLostDevices", set from openhouse-overlay):
-// set by ApplyTuning, read by Device::Update.
-std::atomic<bool> g_hideLost{false};
 
 double SteadyNow() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -281,6 +278,7 @@ class Device : public ITrackedDeviceServerDriver {
   EVRInitError Activate(uint32_t objectId) override {
     active_ = false;
     lastInputTime_ = lastPoseTime_ = -1;
+    basePublished_ = false;
     skeletonInput_ = {};
     lastSkeletonSent_ = -1e300;
     battery_ = -1; universe_ = 0; hadInput_ = false;
@@ -416,17 +414,16 @@ class Device : public ITrackedDeviceServerDriver {
     if (pose.valid) {
       held_ = p;
       haveHeld_ = true;
-    } else if (p.deviceIsConnected && g_hideLost && !IsHmd()) {
-      // "Hide lost devices" (off by default): reported lost, as SteamVR's own driver does, so
-      // the host hides it until light finds it again. The headset is still held: a lost
-      // headset would show SteamVR's grey tracking-lost screen.
+    } else if (p.deviceIsConnected && !IsHmd()) {
+      // Lost: reported lost, as SteamVR's own driver does, so the host hides it until light
+      // finds it again (a held pose reported valid looked tracked to apps). The headset is
+      // still held: a lost headset would show SteamVR's grey tracking-lost screen.
       p.result = TrackingResult_Running_OutOfRange;
       p.poseIsValid = false;
       p.poseTimeOffset = 0;
     } else if (haveHeld_ && p.deviceIsConnected) {
-      // Lost while on: held where it was last seen, as the stock driver does, until
-      // light finds it again. liblh's lost record is an identity pose, which a host
-      // shows at the origin (Monado: any invalid pose is the identity).
+      // Lost headset: held where it was last seen until light finds it again. liblh's lost
+      // record is an identity pose, which a host shows at the origin.
       p = held_;
       for (int i = 0; i < 3; ++i) p.vecVelocity[i] = p.vecAngularVelocity[i] = p.vecAcceleration[i] = p.vecAngularAcceleration[i] = 0;
       p.qWorldFromDriverRotation = {rawRotation.w(), rawRotation.x(), rawRotation.y(), rawRotation.z()};
@@ -485,7 +482,18 @@ class Device : public ITrackedDeviceServerDriver {
                                                                  : TrackingResult_Calibrating_InProgress;
     p.poseIsValid = settled && b.seen;
     p.deviceIsConnected = b.seen;
-    // Room orientation/alignment can change even when the base position doesn't.
+    // Only when something changed (its place, the room frame, its state): apps that watch base
+    // stations count every update as a move.
+    const auto same = [](const DriverPose_t& x, const DriverPose_t& y) {
+      return x.result == y.result && x.poseIsValid == y.poseIsValid && x.deviceIsConnected == y.deviceIsConnected &&
+             !std::memcmp(&x.qRotation, &y.qRotation, sizeof x.qRotation) &&
+             !std::memcmp(x.vecPosition, y.vecPosition, sizeof x.vecPosition) &&
+             !std::memcmp(&x.qWorldFromDriverRotation, &y.qWorldFromDriverRotation, sizeof x.qWorldFromDriverRotation) &&
+             !std::memcmp(x.vecWorldFromDriverTranslation, y.vecWorldFromDriverTranslation, sizeof x.vecWorldFromDriverTranslation);
+    };
+    if (basePublished_ && same(p, lastBase_)) return;
+    basePublished_ = true;
+    lastBase_ = p;
     {
       std::lock_guard lock(poseMutex_);
       pose_ = p;
@@ -522,6 +530,8 @@ class Device : public ITrackedDeviceServerDriver {
     const PropertyContainerHandle_t c = container_;
     props->SetStringProperty(c, Prop_TrackingSystemName_String, "lighthouse");
     props->SetStringProperty(c, Prop_SerialNumber_String, info_.serial.c_str());
+    // Tells apps it's openhouse, not SteamVR's own driver (same tracking system name).
+    props->SetStringProperty(c, Prop_DriverVersion_String, (std::string("openhouse ") + lh::kVersion).c_str());
     props->SetBoolProperty(c, Prop_WillDriftInYaw_Bool, false);
     props->SetBoolProperty(c, Prop_DeviceIsWireless_Bool, info_.role != lh::DeviceRole::BaseStation);
     props->SetBoolProperty(c, Prop_HasDisplayComponent_Bool, false);
@@ -978,6 +988,8 @@ class Device : public ITrackedDeviceServerDriver {
 
   Eigen::Isometry3d rawFromWorld_ = Eigen::Isometry3d::Identity();
   Eigen::Isometry3d publishedRaw_ = Eigen::Isometry3d::Identity();
+  DriverPose_t lastBase_{};      // base stations: the pose last published
+  bool basePublished_ = false;
   bool hadInput_ = false;
   DeviceStatic info_;
   std::atomic<bool> active_{false};
@@ -1426,6 +1438,7 @@ class Provider : public IServerTrackedDeviceProvider {
           }
           universe = UniverseId(aligned && steamFrame_ ? alignment_.RoomId() : snapshot_.roomId);
         }
+        rawFromWorld = BlendFrame(rawFromWorld, universe, now);
         roomPublisher_.Publish(snapshot_, rawFromWorld, now, session_->RoomResets());
         if (const std::string line = roomPublisher_.TakeLog(); !line.empty()) Log(line);
         for (auto& [serial, d] : devices_) {
@@ -1582,6 +1595,33 @@ class Provider : public IServerTrackedDeviceProvider {
   lh::SessionSnapshot snapshot_;
   lh::openvr::RawAlignment alignment_;
   bool steamFrame_ = false;
+  // The host frame eases into a changed room frame (a base re-solved moves it a few mm or cm)
+  // over ~0.3 s instead of every device and base jumping with it. A new room (universe) or a
+  // jump too big to be a correction (over 0.5 m or 20 deg) is taken at once.
+  Eigen::Isometry3d BlendFrame(const Eigen::Isometry3d& target, uint64_t universe, double now) {
+    const Eigen::Quaterniond qt(target.rotation()), qs(blendedRaw_.rotation());
+    const double move = (target.translation() - blendedRaw_.translation()).norm(), turn = qs.angularDistance(qt);
+    if (!haveBlended_ || universe != blendedUniverse_ || move > 0.5 || turn > 20 * M_PI / 180) {
+      blendedRaw_ = target;
+    } else if (move > 1e-5 || turn > 1e-5) {
+      const double a = 1 - std::exp(-std::clamp(now - blendT_, 0.0, 0.1) / 0.1);   // time constant 0.1 s: ~0.3 s to settle
+      Eigen::Isometry3d b = Eigen::Isometry3d::Identity();
+      b.linear() = qs.slerp(a, qt).normalized().toRotationMatrix();
+      b.translation() = blendedRaw_.translation() + a * (target.translation() - blendedRaw_.translation());
+      blendedRaw_ = b;
+    } else {
+      blendedRaw_ = target;
+    }
+    haveBlended_ = true;
+    blendedUniverse_ = universe;
+    blendT_ = now;
+    return blendedRaw_;
+  }
+  Eigen::Isometry3d blendedRaw_ = Eigen::Isometry3d::Identity();
+  bool haveBlended_ = false;
+  uint64_t blendedUniverse_ = 0;
+  double blendT_ = 0;
+
   // SteamVR's rooms (steam_rooms.hpp): the frame and universe of the active room.
   bool steamRooms_ = false;
   bool replay_ = false;
@@ -1721,7 +1761,7 @@ class Provider : public IServerTrackedDeviceProvider {
   static std::optional<SettingType> OverlaySetting(const std::string& key) {
     static const std::map<std::string, SettingType> keys = {
         {"positionSmoothingMs", SettingType::Number}, {"rotationSmoothingMs", SettingType::Number},
-        {"predictWithAcceleration", SettingType::Bool}, {"hideLostDevices", SettingType::Bool},
+        {"predictWithAcceleration", SettingType::Bool},
         {"mixedLight", SettingType::Bool}, {"mixedLightControllers", SettingType::Bool},
         {"mixedLightTrackers", SettingType::Bool}, {"mixedLightScout", SettingType::Bool},
         {"mixedLightPreferLh2", SettingType::Bool}, {"mixedLightRotorReference", SettingType::Bool},
@@ -2091,8 +2131,6 @@ class Provider : public IServerTrackedDeviceProvider {
     if (mixed.enabled != now.enabled || mixed.controllers != now.controllers || mixed.trackers != now.trackers ||
         mixed.scout != now.scout || mixed.preferLh2 != now.preferLh2 || mixed.rotorReference != now.rotorReference)
       session_->SetMixedLight(mixed);
-    g_hideLost = flag(f, "hideLostDevices", false);
-    applied_["hideLostDevices"] = bool(g_hideLost);
     applied_["mixedLight"] = mixed.enabled;
     applied_["mixedLightControllers"] = mixed.controllers;
     applied_["mixedLightTrackers"] = mixed.trackers;

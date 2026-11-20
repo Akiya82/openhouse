@@ -207,7 +207,7 @@ void DoormanDongle::Pump(double now) {
       StartConfigFetch(i);   // retried every 5 s until the device answers
     } else if (s.active && s.serial.empty() && !s.noIdent && !s.worker.joinable() && now - s.identAskT > 0.5) {
       s.identAskT = now;
-      if (++s.identTries > 4) { s.noIdent = true; continue; }   // no 'H': identify it from its config
+      if (++s.identTries > 4) { s.noIdent = true; s.identAskT = -1e9; continue; }   // no 'H': identify it from its config
       const uint8_t a = uint8_t(i);
       Send(kCmdIdent, &a, 1);
       s.identSeq = seq_;
@@ -291,7 +291,10 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
       if (s.identSeq != r[1]) continue;
       s.identSeq = -1;
       if (r[2] == 0 && d[0] == 'H') { if (s.active) OnIdent(i, d, 16); }
-      else if (r[2] == 0 && d[0] == 0) s.noIdent = true;   // the device sent no 'H': not our firmware
+      else if (r[2] == 0 && d[0] == 0) {   // the device sent no 'H': not our firmware
+        s.noIdent = true;
+        s.identAskT = -1e9;                 // read its config now: the 5 s is only between retries
+      }
       break;
     }
   }

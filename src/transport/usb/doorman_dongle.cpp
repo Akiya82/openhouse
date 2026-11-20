@@ -51,42 +51,83 @@ void AddSensorType(std::string* json, int type) {
 
 }  // namespace
 
-DoormanDongle::DoormanDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
-                   std::string steamConfigDir, LogFn log)
-    : sink_(sink), decoder_(decoder), capture_(capture), nextEp_(nextEp), steamConfigDir_(std::move(steamConfigDir)),
-      log_(std::move(log)) {
+std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list, std::map<std::string, int>* shared) {
+  // interface 0: commands/replies + even slots' stream; interface 1 (newer dongle firmware): odd slots'
+  // stream (a second 1 ms IN endpoint; one carries ~61 kB/s, six devices need more). Both carry the
+  // dongle's USB serial: that pairs them, whatever order hidapi lists them in.
+  struct Interfaces { std::vector<std::string> if0, if1; };
+  std::map<std::string, Interfaces> bySerial;
+  for (const hid_device_info* d = list; d; d = d->next) {
+    if (d->vendor_id != kVid || d->product_id != kPid || !d->path) continue;
+    if (Narrow(d->product_string) != "Doorman Dongle") continue;
+    auto& found = bySerial[Narrow(d->serial_number)];
+    (d->interface_number == 1 ? found.if1 : found.if0).push_back(d->path);
+  }
+  std::vector<DoormanDongleFound> out;
+  for (const auto& [usbSerial, found] : bySerial) {
+    const std::string serial = "OHDG-" + usbSerial;
+    if (found.if0.size() > 1 || found.if1.size() > 1) {   // several dongles: whose interface 1 is whose?
+      if (shared) (*shared)[serial] = int(std::max(found.if0.size(), found.if1.size()));
+      continue;
+    }
+    if (found.if0.empty()) continue;   // interface 1 only: interface 0 isn't listed yet
+    out.push_back({serial, found.if0.front(), found.if1.empty() ? std::string() : found.if1.front()});
+  }
+  return out;
+}
+
+std::vector<DoormanDongleFound> ScanDoormanDongles(std::map<std::string, int>* shared) {
+  hid_device_info* list = hid_enumerate(kVid, kPid);
+  auto found = FindDoormanDongles(list, shared);
+  hid_free_enumeration(list);
+  return found;
+}
+
+std::optional<DoormanCarriers::Carrier> DoormanCarriers::Take(const DeviceId& device, const std::string& dongle, int slot) {
+  const auto [it, fresh] = carriers_.try_emplace(device, Carrier{dongle, slot});
+  if (fresh || (it->second.dongle == dongle && it->second.slot == slot)) return std::nullopt;
+  return it->second;
+}
+
+void DoormanCarriers::Release(const DeviceId& device, const std::string& dongle, int slot) {
+  const auto it = carriers_.find(device);
+  if (it != carriers_.end() && it->second.dongle == dongle && it->second.slot == slot) carriers_.erase(it);
+}
+
+DoormanDongle::DoormanDongle(std::string serial, IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture,
+                             std::atomic<uint16_t>* nextEp, std::string steamConfigDir, LogFn log, DoormanCarriers* carriers)
+    : serial_(std::move(serial)), sink_(sink), decoder_(decoder), capture_(capture), nextEp_(nextEp),
+      steamConfigDir_(std::move(steamConfigDir)), log_(std::move(log)), carriers_(carriers) {
   if (steamConfigDir_.empty()) steamConfigDir_ = platform::SteamConfigDirectory();
 }
 
 DoormanDongle::~DoormanDongle() { Close(); }
 
-bool DoormanDongle::Open() {
-  hid_device_info* list = hid_enumerate(kVid, kPid);
-  // interface 0: commands/replies + even slots' stream; interface 1 (newer dongle firmware): odd slots'
-  // stream (a second 1 ms IN endpoint; one carries ~61 kB/s, six devices need more)
-  std::string path, path1, serial;
-  for (hid_device_info* d = list; d; d = d->next) {
-    if (Narrow(d->product_string) != "Doorman Dongle") continue;
-    if (d->interface_number == 1) { path1 = d->path; continue; }
-    if (!path.empty()) continue;
-    path = d->path;
-    serial = "OHDG-" + Narrow(d->serial_number);
-  }
-  hid_free_enumeration(list);
-  if (path.empty()) return false;
-  dev_ = hid_open_path(path.c_str());
+bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
+  if (dev_) return true;
+  if (now < nextOpen_) return false;
+  nextOpen_ = now + 2.0;
+  dev_ = hid_open_path(found.path.c_str());
   if (!dev_) return false;
   hid_set_nonblocking(dev_, 1);
-  dev1_ = path1.empty() ? nullptr : hid_open_path(path1.c_str());
+  dev1_ = found.path1.empty() ? nullptr : hid_open_path(found.path1.c_str());
   if (dev1_) hid_set_nonblocking(dev1_, 1);
   {
     std::lock_guard lock(mutex_);
-    serial_ = serial;
+    opened_ = true;
   }
   for (auto& s : slots_) { s.used = s.active = s.noIdent = false; s.identSeq = -1; s.identTries = 0; }
   nextLive_ = 0;
-  log_(LogLevel::Info, "Doorman Dongle " + serial + " opened");
+  log_(LogLevel::Info, "Doorman Dongle " + serial_ + " opened");
   return true;
+}
+
+void DoormanDongle::OpenInterface1(const std::string& path1) {
+  if (!dev_ || dev1_ || path1.empty()) return;
+  dev1_ = hid_open_path(path1.c_str());
+  if (!dev1_) return;
+  hid_set_nonblocking(dev1_, 1);
+  log_(LogLevel::Info, "Doorman Dongle " + serial_ + ": interface 1 opened");
 }
 
 void DoormanDongle::Drop() {
@@ -103,17 +144,19 @@ void DoormanDongle::Drop() {
     s.identSeq = -1;
     s.sensorType = -1;
     s.ringN = s.ringPos = 0;
+    s.waiting = false;   // its wait for another dongle ends with this one
+    s.waitConfig.clear();
+    frag_[i].clear();
   }
   hid_close(dev_);
   dev_ = nullptr;
   if (dev1_) hid_close(dev1_);
   dev1_ = nullptr;
-  std::string serial;
   {
     std::lock_guard lock(mutex_);
-    serial.swap(serial_);
+    opened_ = false;
   }
-  log_(LogLevel::Info, "Doorman Dongle " + serial + " closed");
+  log_(LogLevel::Info, "Doorman Dongle " + serial_ + " closed");
 }
 
 void DoormanDongle::Close() {
@@ -141,11 +184,7 @@ void DoormanDongle::Downlink(int slot, const uint8_t* frame, size_t n) {
 }
 
 void DoormanDongle::Pump(double now) {
-  if (!dev_) {
-    if (now < nextOpen_) return;
-    nextOpen_ = now + 2.0;
-    if (!Open()) return;
-  }
+  if (!dev_) return;   // the transport opens it again when it's listed again
   if (now >= nextLive_) {
     nextLive_ = now + 0.25;
     Send(kCmdLive, nullptr, 0);
@@ -218,6 +257,7 @@ void DoormanDongle::Pump(double now) {
         Attach(i, config);
       }
     }
+    if (s.waiting && s.active && !s.attached) Attach(i, s.waitConfig);   // has the other carrier let go?
     if (s.active && s.serial.empty() && s.noIdent && !s.worker.joinable() && now - s.identAskT > 5.0) {
       s.identAskT = now;
       StartConfigFetch(i);   // retried every 5 s until the device answers
@@ -251,7 +291,7 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   if (r[0] == 0x80 || r[0] == 0x81) {
     const int slot = r[1], len = std::min<int>(r[2], n - 3);
     if (slot >= 6) return;
-    static thread_local std::vector<uint8_t> frag[6];
+    auto& frag = frag_;   // this dongle's own: another dongle's reports come in between
     const uint8_t* body = r + 3;
     if (r[0] == 0x81) {
       frag[slot].insert(frag[slot].end(), body, body + len);
@@ -282,6 +322,8 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
         s.serial.clear();
         s.noIdent = false;
         s.identTries = 0;
+        s.waiting = false;
+        s.waitConfig.clear();
       }
       s.active = active;
     }
@@ -399,8 +441,10 @@ void DoormanDongle::OnIdent(int slot, const uint8_t* f, int n) {
   Slot& s = slots_[slot];
   char serial[16];
   std::snprintf(serial, sizeof serial, "LHR-%08X", unsigned(Rd32(f + 2)));
-  if (s.serial == serial && s.attached) return;
+  if (s.serial == serial && (s.attached || s.waiting)) return;   // waiting: on another dongle for now
   if (s.attached) Detach(slot);
+  s.waiting = false;
+  s.waitConfig.clear();
   s.serial = serial;
   s.gyro = int8_t(f[6]);
   s.accel = int8_t(f[7]);
@@ -417,7 +461,7 @@ void DoormanDongle::StartConfigFetch(int slot) {
   s.workerDone = false;
   s.fetchedSerial.clear();
   const std::string serial = s.serial;
-  const std::string who = serial.empty() ? "slot " + std::to_string(slot) : serial;
+  const std::string who = serial.empty() ? serial_ + " slot " + std::to_string(slot) : serial;
   log_(LogLevel::Info, who + ": reading device config over the radio");
   s.worker = std::thread([this, slot, serial, who] {
     Slot& w = slots_[slot];
@@ -461,7 +505,7 @@ int DoormanDongle::FeatureRead(int slot, uint8_t* data, size_t size) {
   w->slot = slot;
   w->id = data[0];
   std::unique_lock lock(mutex_);
-  if (serial_.empty()) return -1;
+  if (!opened_) return -1;
   featureWaits_.push_back(w);
   cv_.wait_for(lock, std::chrono::duration<double>(kFeatureTimeout), [&] { return w->done; });
   std::erase(featureWaits_, w);
@@ -473,7 +517,19 @@ int DoormanDongle::FeatureRead(int slot, uint8_t* data, size_t size) {
 
 void DoormanDongle::Attach(int slot, const std::string& configIn) {
   Slot& s = slots_[slot];
-  std::string config = configIn;
+  if (carriers_) {
+    if (const auto other = carriers_->Take(s.serial, serial_, slot)) {
+      if (!s.waiting)   // once per episode: it waits until the other lets go or this slot goes quiet
+        log_(LogLevel::Info, s.serial + ": also on Doorman Dongle " + serial_ + " slot " + std::to_string(slot) +
+                                 "; kept on Doorman Dongle " + other->dongle + " slot " + std::to_string(other->slot));
+      s.waiting = true;
+      s.waitConfig = configIn;
+      return;
+    }
+  }
+  std::string config = configIn;   // before the clear below: configIn may be s.waitConfig
+  s.waiting = false;
+  s.waitConfig.clear();
   if (s.sensorType >= 0 && !config.empty()) AddSensorType(&config, s.sensorType);
   if (config.empty()) log_(LogLevel::Warn, s.serial + ": no config (plug it in by USB once, or check the radio link)");
   EndpointInfo imu;
@@ -509,7 +565,7 @@ void DoormanDongle::Attach(int slot, const std::string& configIn) {
     eps_.push_back(opt);
     eps_.push_back(btn);
   }
-  log_(LogLevel::Info, s.serial + ": connected on Doorman Dongle slot " + std::to_string(slot));
+  log_(LogLevel::Info, s.serial + ": connected on Doorman Dongle " + serial_ + " slot " + std::to_string(slot));
 }
 
 void DoormanDongle::Detach(int slot) {
@@ -518,6 +574,7 @@ void DoormanDongle::Detach(int slot) {
   decoder_->RemoveEndpoint(s.epImu);
   decoder_->RemoveEndpoint(s.epOpt);
   decoder_->RemoveEndpoint(s.epBtn);
+  if (carriers_) carriers_->Release(s.serial, serial_, slot);
   sink_->OnDeviceDetached(s.serial);
   s.attached = false;
   s.ringN = 0;
@@ -525,7 +582,7 @@ void DoormanDongle::Detach(int slot) {
     std::lock_guard lock(mutex_);
     std::erase_if(eps_, [&](const EndpointInfo& e) { return e.serial == s.serial; });
   }
-  log_(LogLevel::Info, s.serial + ": disconnected from Doorman Dongle slot " + std::to_string(slot));
+  log_(LogLevel::Info, s.serial + ": disconnected from Doorman Dongle " + serial_ + " slot " + std::to_string(slot));
 }
 
 std::vector<EndpointInfo> DoormanDongle::Endpoints() const {
@@ -540,9 +597,10 @@ std::vector<DeviceId> DoormanDongle::Connected() const {
   return v;
 }
 
-std::string DoormanDongle::Serial() const {
+void DoormanDongle::DeviceGone(const DeviceId& serial) {
   std::lock_guard lock(mutex_);
-  return serial_;
+  for (auto& st : statsCache_)
+    if (st.serial == serial) st.serial.clear();
 }
 
 bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64>& report, const char** status, size_t size) {
@@ -571,7 +629,7 @@ bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64
 
 bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
-  if (serial_.empty()) return false;
+  if (!opened_) return false;
   pairMs_ = milliseconds;
   pairSlot_ = slot >= 0 && slot < 6 ? slot : -1;
   return true;
@@ -579,7 +637,7 @@ bool DoormanDongle::Pair(int milliseconds, int slot) {
 
 std::vector<DoormanDongle::SlotStat> DoormanDongle::SlotStats() const {
   std::lock_guard lock(mutex_);
-  return serial_.empty() ? std::vector<SlotStat>() : statsCache_;
+  return opened_ ? statsCache_ : std::vector<SlotStat>();
 }
 
 void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its own

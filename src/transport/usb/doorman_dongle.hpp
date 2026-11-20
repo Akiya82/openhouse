@@ -13,6 +13,7 @@
 // Each device becomes virtual wired endpoints (Imu + Optical + Buttons).
 //
 // Runs on the UsbTransport reader thread (Pump); config reads run on a worker thread.
+// Several dongles can run side by side: one DoormanDongle each, keyed by USB serial.
 #pragma once
 
 #include <array>
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,29 +35,71 @@
 #include "raw_capture.hpp"
 
 struct hid_device_;
+struct hid_device_info;
 
 namespace lh::usb {
 
 class ReportDecoder;
 
+// One Doorman Dongle as hidapi lists it: interface 0 (commands, replies, even slots' stream)
+// and, with newer dongle firmware, interface 1 (odd slots' stream) with the same USB serial.
+struct DoormanDongleFound {
+  std::string serial;  // "OHDG-" + USB serial: the dongle's receiver name
+  std::string path;    // interface 0
+  std::string path1;   // interface 1; "" if it has none (older firmware: every slot on interface 0)
+};
+// The Doorman Dongles in an enumeration, by serial. Interface 1 goes with the interface 0 of
+// the same USB serial, wherever each is in the list. A serial carried by more than one
+// interface 0 or interface 1 (an empty serial counts as one) can't be matched: it is left
+// out, and *shared gets it with how many dongles share it.
+std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list,
+                                                   std::map<std::string, int>* shared = nullptr);
+// hid_enumerate for the dongle's USB id, then FindDoormanDongles.
+std::vector<DoormanDongleFound> ScanDoormanDongles(std::map<std::string, int>* shared = nullptr);
+
+// Which dongle carries each device. A device paired to several dongles can show up on two at
+// once (it moves between them): the first keeps it, the others wait until it lets go, so a
+// device is never set up twice. Reader thread only (and Stop, after the reader has ended).
+class DoormanCarriers {
+ public:
+  struct Carrier { std::string dongle; int slot = -1; };
+  // Takes `device` for dongle/slot; if another dongle or slot has it, that one (nothing taken).
+  std::optional<Carrier> Take(const DeviceId& device, const std::string& dongle, int slot);
+  void Release(const DeviceId& device, const std::string& dongle, int slot);
+
+ private:
+  std::map<DeviceId, Carrier> carriers_;
+};
+
 class DoormanDongle {
  public:
   using LogFn = std::function<void(LogLevel, const std::string&)>;
-  DoormanDongle(IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture, std::atomic<uint16_t>* nextEp,
-           std::string steamConfigDir, LogFn log);
+  // serial: "OHDG-..." (DoormanDongleFound::serial). carriers: shared by every dongle of one
+  // transport (nullptr: no check).
+  DoormanDongle(std::string serial, IInputSink* sink, ReportDecoder* decoder, RawCaptureWriter* capture,
+                std::atomic<uint16_t>* nextEp, std::string steamConfigDir, LogFn log, DoormanCarriers* carriers = nullptr);
   ~DoormanDongle();
 
-  void Pump(double now);   // reader thread: open/read/dispatch
+  // Reader thread. Opens the dongle's interfaces (at most one attempt every 2 s); true if open.
+  bool Open(const DoormanDongleFound& found, double now);
+  // Reader thread. Interface 1 listed after interface 0 was opened without it (plugged in
+  // between two enumerations): opened now.
+  void OpenInterface1(const std::string& path1);
+  bool IsOpen() const { return dev_ != nullptr; }   // reader thread
+  bool HasInterface1() const { return dev1_ != nullptr; }   // reader thread
+  void Pump(double now);   // reader thread: read/dispatch; closes the dongle on a read or write error
   void Close();            // detaches every tracker
   std::vector<EndpointInfo> Endpoints() const;
   // A feature report (SET) for a device on this dongle, report id first. [0xff][cmd][len]...
   // reports are sized by their len byte, others by `size`. False: not ours.
   bool Command(const DeviceId& serial, const std::array<uint8_t, 64>& report, const char** status, size_t size = 0);
   // Pairing mode; slot >= 0: into that slot (replacing what's paired there; dongle fw >= 4),
-  // -1: the dongle's first free slot.
+  // -1: the dongle's first free slot. False while the dongle isn't open.
   bool Pair(int milliseconds, int slot = -1);
-  std::string Serial() const;                  // "" when no dongle is open
+  const std::string& Serial() const { return serial_; }   // any thread; also while it isn't open
   std::vector<DeviceId> Connected() const;
+  // The device was reported gone: its slot shows none until the next stats refresh says otherwise.
+  void DeviceGone(const DeviceId& serial);
   // Link stats of each paired slot (dongle command 0x23, polled each second). Any thread.
   struct SlotStat {
     int slot = 0; bool used = false, active = false; DeviceId serial;
@@ -72,6 +116,10 @@ class DoormanDongle {
     int identTries = 0;
     bool noIdent = false;  // no 'H' identity: identify from feature 0x01 + config
     bool attached = false;
+    // Its device is on another dongle or slot (DoormanCarriers): set up here once that one
+    // lets go, with this config.
+    bool waiting = false;
+    std::string waitConfig;
     DeviceId serial;
     int8_t gyro = -1, accel = -1;
     int sensorType = -1;
@@ -96,7 +144,6 @@ class DoormanDongle {
     std::vector<uint8_t> reply;
   };
 
-  bool Open();
   void Drop();
   void Send(uint8_t cmd, const uint8_t* args, size_t n);
   void OnReport(double t, const uint8_t* r, int n, bool last);
@@ -109,22 +156,25 @@ class DoormanDongle {
   void Downlink(int slot, const uint8_t* frame, size_t n);
   void RefreshStatsCache();
 
+  const std::string serial_;
   IInputSink* sink_;
   ReportDecoder* decoder_;
   RawCaptureWriter* capture_;
   std::atomic<uint16_t>* nextEp_;
   std::string steamConfigDir_;
   LogFn log_;
+  DoormanCarriers* carriers_;
 
   hid_device_* dev_ = nullptr;
   hid_device_* dev1_ = nullptr;   // interface 1: odd slots' stream (newer dongle firmware)
-  std::string serial_;
   double nextOpen_ = 0, nextLive_ = 0, nextStats_ = 0;
   int statsSlot_ = 0, statsSeq_ = -1;
   uint8_t seq_ = 0;
   Slot slots_[6];
+  std::vector<uint8_t> frag_[6];      // a frame split over several stream reports, per slot
 
-  mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, serial_, slot serials
+  mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, opened_, slot serials
+  bool opened_ = false;
   std::condition_variable cv_;
   std::deque<std::shared_ptr<FeatureWait>> featureWaits_;
   uint8_t nextTag_ = 0;

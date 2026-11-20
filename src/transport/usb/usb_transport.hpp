@@ -144,6 +144,7 @@ class UsbTransport {
   static std::string LoadSteamConfig(const std::string& dir, const std::string& serial);
 
  private:
+  friend struct UsbTransportTestAccess;  // tests/unit/test_doorman_dongles.cpp
   struct Open {
     EndpointInfo info;
     hid_device_* dev = nullptr;
@@ -196,7 +197,18 @@ class UsbTransport {
   UsbTransportOptions opts_;
   ReportDecoder decoder_;
   RawCaptureWriter capture_;
-  std::unique_ptr<DoormanDongle> oh_;  // Doorman Dongle, pumped by the reader thread
+  // Doorman Dongles, one per USB serial, sorted by serial. The probe thread lists them
+  // (ScanDoorman); the reader thread opens and pumps them (PumpDoorman). Each stays until
+  // Stop(): an unplugged one closes (its devices detach) and reopens in place when it's back.
+  // The mutex guards the list and doormanFound_ only (each dongle locks itself): copy, then call.
+  mutable std::mutex doormanMutex_;
+  std::vector<std::shared_ptr<DoormanDongle>> doorman_;
+  std::optional<std::vector<DoormanDongleFound>> doormanFound_;  // the probe's last scan, not taken yet
+  std::set<std::string> doormanShared_;  // probe thread: USB serials several dongles share (warned once)
+  DoormanCarriers doormanCarriers_;      // reader thread: which dongle carries each device
+  std::vector<std::shared_ptr<DoormanDongle>> DoormanDongles() const;  // any thread
+  void ScanDoorman();            // probe thread
+  void PumpDoorman(double now);  // reader thread
   std::vector<Open> open_;
   // Receivers whose wireless device is not connected yet (owned by the probe thread)
   // and endpoints the probe thread finished setting up (handed to the reader thread).

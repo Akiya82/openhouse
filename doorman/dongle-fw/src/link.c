@@ -74,7 +74,8 @@ static uint8_t assign_id[8], assign_slot = 0xFF, assign_left;
 /* The device paired last: its slot and until when its join beacons still say "pairing open". Pairing
    closes here the moment the device is stored, but the device stays in pairing mode until it joins, and
    a device in pairing mode only takes a beacon with pairing open: without this it ignored its own slot
-   assignment until its pairing timed out (~35 s), shown here as paired with 100% loss. */
+   assignment until its pairing timed out (~35 s), shown here as paired with 100% loss. Ends when it
+   answers a poll: a pairing started after that needs pairing open again. */
 static uint8_t just_paired_slot = 0xFF;
 static uint32_t just_paired_until_ms;
 static uint32_t last_join_ms, joins_heard;
@@ -192,6 +193,7 @@ static void poll_slot(uint8_t i)
   }
   s->resp_ok++;
   s->active = 1; s->last_resp_ms = ms_ticks;
+  if (i == just_paired_slot) just_paired_slot = 0xFF;     /* it joined: its pairing is over, the next one needs pairing open */
   uint8_t rd = (uint8_t)NRF_RADIO->RSSISAMPLE;
   s->rssi_last_d = rd; s->rssi_last_t = r[3];
   if (!s->rssi_min_d || rd < s->rssi_min_d) s->rssi_min_d = rd;   /* strongest (smallest -dBm) */
@@ -262,18 +264,23 @@ static void join_beacon(void)
   for (int i = 0; i < DML_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
   /* Like stock, a new pairing takes both sides: pairing open here, and the device in pairing mode
      (its pairing buttons, or a host's pair command). Known devices just reconnect. */
-  if (ms_ticks < pairing_until_ms && pairing && pair_target < DML_SLOTS && slot != pair_target) {
-    /* pairing into a chosen slot: it replaces what was there, and leaves the device's old slot */
-    if (slot >= 0) pairs.used &= ~(1u << slot);
-    slot = pair_target;
-    memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
-    just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
-  } else if (slot < 0 && ms_ticks < pairing_until_ms && pairing) {   /* new device, pairing: first free slot */
-    for (int i = 0; i < DML_SLOTS && slot < 0; i++) if (!((pairs.used >> i) & 1)) slot = i;
-    if (slot >= 0) {
-      memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
-      just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
+  if (pairing && ms_ticks < pairing_until_ms) {
+    /* paired here: a new device, one already paired here (re-paired), or one moving to the chosen slot */
+    int to = slot;
+    if (pair_target < DML_SLOTS) to = pair_target;          /* the chosen slot: replaces what was there */
+    else if (to < 0) for (int i = 0; i < DML_SLOTS && to < 0; i++) if (!((pairs.used >> i) & 1)) to = i;
+    if (to < 0) return;                                     /* no free slot */
+    if (to != slot) {
+      if (slot >= 0) pairs.used &= ~(1u << slot);
+      slot = to;
+      memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save();
     }
+    pairing_until_ms = 0;
+    just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
+  } else if (pairing && !(slot >= 0 && slot == just_paired_slot && (int32_t)(just_paired_until_ms - ms_ticks) > 0)) {
+    /* in pairing mode but not pairing here: it only joins a beacon with pairing open, so assigning it
+       would show it connected at 100% loss until its pairing times out. Left alone until then. */
+    return;
   }
   if (slot < 0) return;
   memcpy(assign_id, id, 8); assign_slot = (uint8_t)slot; assign_left = 5;

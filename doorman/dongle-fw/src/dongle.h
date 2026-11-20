@@ -3,7 +3,7 @@
 
 #define DONGLE_VID         0x6767
 #define DONGLE_PID         0x0727
-#define DONGLE_FW_VERSION  0x0009
+#define DONGLE_FW_VERSION  0x000B
 #define STREAM_KIND        0x80   /* IN report: [0x80][slot][n][n bytes of [len][frame]... stream] */
 #define DONGLE_PRODUCT     "Doorman Dongle"
 

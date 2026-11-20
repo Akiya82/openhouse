@@ -661,11 +661,16 @@ static void pair_end(void) { pair_mode = 0; jreq[10] = 0; }
    command a host sends ('P' 9f 04 "off!"), once per hold. */
 static uint32_t sys_since;
 static uint8_t sys_held, sys_off_sent;
+/* Only System on its own counts, pairing or not: System + B is the pairing gesture (held from
+   power-on), and a combination never turns the device off. Other buttons in the first word:
+   trigger click (bit 0), A (2), B (12), stick click (18). */
+#define SYS_OTHER_BUTTONS ((1u << 0) | (1u << 2) | (1u << 12) | (1u << 18))
 static void sys_button(const uint8_t *f, uint8_t n)
 {
   if (n < 5) return;
   uint32_t b; memcpy(&b, f + 1, 4);
   if (!(b & 0x2000u)) { sys_held = 0; sys_off_sent = 0; return; }
+  if (b & SYS_OTHER_BUTTONS) { sys_held = 0; return; }   /* a combination: start over when it's alone again */
   if (!sys_held) { sys_held = 1; sys_since = now_us(); }
 }
 static void sys_button_poll(void)

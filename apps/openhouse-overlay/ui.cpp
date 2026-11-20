@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <fstream>
 
+#include "common/ui_theme.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/version.hpp"
 
@@ -115,13 +116,19 @@ void Row(const char* label, const char* fmt, ...) {
   va_end(args);
 }
 
-// A page's title: large, with room under it.
-void Title(const char* text) {
+// A page's title: large, with its icon before it.
+void Title(const char* text, lh::ui::Icon icon) {
   ImGui::PushFont(g_title);
+  const float s = ImGui::GetTextLineHeight();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  lh::ui::DrawIcon(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + s / 2, p.y + s / 2), s * 0.85f, lh::ui::kAccent);
+  ImGui::Dummy(ImVec2(s, s));
+  ImGui::SameLine(0, s * 0.45f);
   ImGui::TextUnformatted(text);
   ImGui::PopFont();
   ImGui::Dummy(ImVec2(0, ImGui::GetStyle().ItemSpacing.y));
 }
+
 
 // A short tooltip on the last item, also when it's disabled.
 void Tip(const char* text) {
@@ -197,8 +204,10 @@ void Ui::SetUpImGui(int k) {
   style.WindowRounding = 0;
   style.FramePadding = ImVec2(8, 6);
   style.ItemSpacing = ImVec2(10, 8);
-  style.WindowPadding = ImVec2(10, 10);
+  style.WindowPadding = ImVec2(12, 12);
   style.ScaleAllSizes(float(k));
+  lh::ui::ApplyTheme(float(k));
+  style.Colors[ImGuiCol_ChildBg] = lh::ui::CardColor();   // bordered panels are cards over the snow
 }
 
 // A wide, tall button: the main actions, easy to hit with a laser pointer.
@@ -238,11 +247,14 @@ void Ui::Draw(float width, float height) {
   ImGui::SetNextWindowSize(ImVec2(width, height));
   ImGui::Begin("openhouse", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                          ImGuiWindowFlags_NoScrollbar);
+  lh::ui::Snow(ImGui::GetWindowDrawList(), ImVec2(0, 0), ImVec2(width, height));
   const float statusHeight = ImGui::GetFrameHeightWithSpacing() + 4;
   const float body = ImGui::GetContentRegionAvail().y - statusHeight;
   Sidebar(body);
   ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
   ImGui::BeginChild("page", ImVec2(0, body), ImGuiChildFlags_None);
+  ImGui::PopStyleColor();
   switch (page_) {
     case Page::Overview: Overview(); break;
     case Page::Devices: Devices(); break;
@@ -280,21 +292,21 @@ void Ui::Sidebar(float height) {
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::Spacing();
-  struct Item { Page page; const char* label; };
-  static const Item items[] = {{Page::Overview, "Overview"}, {Page::Devices, "Devices"}, {Page::Bases, "Base stations"},
-                               {Page::Dongles, "Dongles"}, {Page::Map, "Room map"}, {Page::Settings, "Settings"},
-                               {Page::Debug, "Debug"}, {Page::About, "About"}};
-  const float rowHeight = ImGui::GetFrameHeight() * 1.15f;
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 6));
-  for (const auto& item : items) {
-    const bool selected = page_ == item.page;
-    // The page shown: solid blue; the others: plain until pointed at.
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(selected ? ImGuiCol_ButtonActive : ImGuiCol_Button));
-    ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.5f, 0.5f));
-    if (ImGui::Button(item.label, ImVec2(-1, rowHeight))) page_ = item.page;
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-  }
+  using lh::ui::Icon;
+  struct Item { Page page; const char* label; Icon icon; };
+  static const Item items[] = {{Page::Overview, "Overview", Icon::Overview}, {Page::Devices, "Devices", Icon::Tracker},
+                               {Page::Bases, "Base stations", Icon::BaseStation}, {Page::Dongles, "Dongles", Icon::Dongle},
+                               {Page::Map, "Room map", Icon::Map},          {Page::Settings, "Settings", Icon::Settings},
+                               {Page::Debug, "Debug", Icon::Debug},         {Page::About, "About", Icon::About}};
+  // Tall rows (easy to hit with a laser pointer), as tall as fits above the room actions.
+  const float gap = 4 * lh::ui::Scale();
+  const float bottom = ImGui::GetTextLineHeightWithSpacing() * 2.2f + ImGui::GetFrameHeight() * 1.25f * 2 +
+                       ImGui::GetStyle().ItemSpacing.y * 4;
+  const float room = ImGui::GetWindowHeight() - ImGui::GetCursorPosY() - bottom;
+  const float rowHeight = std::clamp(room / float(std::size(items)) - gap, ImGui::GetFrameHeight(), ImGui::GetFrameHeight() * 1.3f);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, gap));
+  for (const auto& item : items)
+    if (lh::ui::NavItem(item.label, item.icon, page_ == item.page, rowHeight)) page_ = item.page;
   ImGui::PopStyleVar();
   // Recording and the room reset, then the connection, at the bottom.
   const float line = ImGui::GetTextLineHeightWithSpacing();
@@ -408,7 +420,7 @@ void Ui::StatusBar() {
 // ---- pages ----
 
 void Ui::Overview() {
-  Title("Overview");
+  Title("Overview", lh::ui::Icon::Overview);
   if (!client_.Connected()) {
     ImGui::TextColored(kBad, "Not connected to the driver");
     return;
@@ -517,7 +529,7 @@ void Ui::Overview() {
 }
 
 void Ui::Devices() {
-  Title("Devices");
+  Title("Devices", lh::ui::Icon::Tracker);
   const State& s = client_.Current();
   if (s.devices.empty()) { ImGui::TextDisabled("No devices"); return; }
   const float listWidth = ImGui::GetFontSize() * 20;
@@ -589,7 +601,7 @@ void Ui::Devices() {
 }
 
 void Ui::Bases() {
-  Title("Base stations");
+  Title("Base stations", lh::ui::Icon::BaseStation);
   const State& s = client_.Current();
   if (s.bases.empty()) { ImGui::TextDisabled("No base stations"); return; }
   const float listWidth = ImGui::GetFontSize() * 20;
@@ -645,7 +657,7 @@ void Ui::Bases() {
 }
 
 void Ui::Dongles() {
-  Title("Dongles");
+  Title("Dongles", lh::ui::Icon::Dongle);
   const State& s = client_.Current();
   if (s.receivers.empty()) { ImGui::TextDisabled("No dongles"); return; }
   if (!ImGui::BeginTable("dongles", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) return;
@@ -674,7 +686,7 @@ void Ui::Dongles() {
 }
 
 void Ui::Map() {
-  Title("Room map");
+  Title("Room map", lh::ui::Icon::Map);
   const State& s = client_.Current();
   const json st = Settings(s);
   const float bar = ImGui::GetFrameHeight() * 1.25f + ImGui::GetStyle().ItemSpacing.y;
@@ -734,7 +746,7 @@ void Ui::FloorCalibration() {
 }
 
 void Ui::SettingsPage() {
-  Title("Settings");
+  Title("Settings", lh::ui::Icon::Settings);
   if (!client_.Connected() || !client_.HaveState()) { ImGui::TextDisabled("Not connected"); return; }
   const json st = Settings(client_.Current());
   const bool steamvr = st.value("steamvr", false);
@@ -777,7 +789,7 @@ void Ui::SettingsPage() {
 }
 
 void Ui::Debug() {
-  Title("Debug");
+  Title("Debug", lh::ui::Icon::Debug);
   bool advanced = detail_ == viewer::Detail::Advanced;
   if (ImGui::Checkbox("Advanced", &advanced)) detail_ = advanced ? viewer::Detail::Advanced : viewer::Detail::Basic;
   ImGui::SameLine();
@@ -802,7 +814,7 @@ void Ui::Debug() {
 }
 
 void Ui::About() {
-  Title("About");
+  Title("About", lh::ui::Icon::About);
   ImGui::SeparatorText("openhouse");
   ImGui::Text("Version: v%s", lh::kVersion);
   ImGui::Text("Driver: %s", client_.Connected() ? (client_.Version().empty() ? "?" : ("v" + client_.Version()).c_str()) : "Not connected");

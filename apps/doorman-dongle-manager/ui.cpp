@@ -12,6 +12,7 @@
 #include <fstream>
 
 #include "common/nordic_dfu.hpp"
+#include "common/ui_theme.hpp"
 #include "lh/telemetry.hpp"
 #include "lh/version.hpp"
 #include "update_check.hpp"
@@ -54,12 +55,20 @@ void Dot(const ImVec4& color, float radius = 5, bool frame = false) {
   ImGui::SameLine();
 }
 
-void Title(const char* text) {
+// A page's title: large, with its icon before it.
+void Title(const char* text, lh::ui::Icon icon) {
   ImGui::PushFont(g_title);
+  const float s = ImGui::GetTextLineHeight();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  lh::ui::DrawIcon(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + s / 2, p.y + s / 2), s * 0.85f, lh::ui::kAccent);
+  ImGui::Dummy(ImVec2(s, s));
+  ImGui::SameLine(0, s * 0.45f);
   ImGui::TextUnformatted(text);
   ImGui::PopFont();
   ImGui::Dummy(ImVec2(0, ImGui::GetStyle().ItemSpacing.y));
 }
+
+void Title(const char* text) { Title(text, lh::ui::Icon::Dongle); }
 
 void Tip(const char* text) {
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text);
@@ -127,8 +136,9 @@ const char* SignalWord(int rssi) {
 void SignalBars(int rssi) {
   const int bars = !rssi ? 0 : rssi > -55 ? 4 : rssi > -65 ? 3 : rssi > -78 ? 2 : 1;
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImVec2 p = ImGui::GetCursorScreenPos();
+  ImVec2 p = ImGui::GetCursorScreenPos();
   const float h = ImGui::GetTextLineHeight(), w = h * 0.22f, gap = h * 0.12f;
+  p.y += h * 0.3f;    // sit on the text's baseline, not the line's top
   for (int i = 0; i < 4; ++i) {
     const float bh = h * (0.35f + 0.65f * (i + 1) / 4);
     const ImVec2 a(p.x + i * (w + gap), p.y + h - bh), b(a.x + w, p.y + h);
@@ -226,12 +236,12 @@ void Ui::SetUpImGui(int k) {
   ImGui::StyleColorsDark();
   ImGuiStyle& style = ImGui::GetStyle();
   style.WindowRounding = 0;
-  style.ChildRounding = 4;
-  style.FrameRounding = 3;
   style.FramePadding = ImVec2(8, 6);
   style.ItemSpacing = ImVec2(10, 8);
-  style.WindowPadding = ImVec2(10, 10);
+  style.WindowPadding = ImVec2(12, 12);
   style.ScaleAllSizes(float(k));
+  lh::ui::ApplyTheme(float(k));
+  style.Colors[ImGuiCol_ChildBg] = lh::ui::CardColor();   // bordered panels are cards over the snow
 }
 
 std::shared_ptr<Dongle> Ui::Current() {
@@ -322,11 +332,14 @@ void Ui::Draw(float width, float height) {
   ImGui::SetNextWindowSize(ImVec2(width, height));
   ImGui::Begin("Doorman Dongle", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
+  lh::ui::Snow(ImGui::GetWindowDrawList(), ImVec2(0, 0), ImVec2(width, height));
   const float statusHeight = ImGui::GetFrameHeightWithSpacing() + 4;
   const float body = ImGui::GetContentRegionAvail().y - statusHeight;
   Sidebar(body);
   ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
   ImGui::BeginChild("page", ImVec2(0, body), ImGuiChildFlags_None);
+  ImGui::PopStyleColor();
   const auto dongle = Current();
   if (page_ == Page::About) About();
   else if (!dongle) NoDongle();
@@ -383,17 +396,15 @@ void Ui::Sidebar(float height) {
   }
   ImGui::Separator();
   ImGui::Spacing();
-  struct Item { Page page; const char* label; };
-  static const Item items[] = {{Page::Overview, "Overview"}, {Page::Slots, "Slots"},     {Page::Radio, "Radio"},
-                               {Page::Channels, "Channels"}, {Page::Firmware, "Firmware"}, {Page::About, "About"}};
-  const float rowHeight = ImGui::GetFrameHeight() * 1.15f;
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 6));
-  for (const auto& item : items) {
-    const bool selected = page_ == item.page;
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(selected ? ImGuiCol_ButtonActive : ImGuiCol_Button));
-    if (ImGui::Button(item.label, ImVec2(-1, rowHeight))) page_ = item.page;
-    ImGui::PopStyleColor();
-  }
+  using lh::ui::Icon;
+  struct Item { Page page; const char* label; Icon icon; };
+  static const Item items[] = {{Page::Overview, "Overview", Icon::Overview}, {Page::Slots, "Slots", Icon::Slots},
+                               {Page::Radio, "Radio", Icon::Wireless},       {Page::Channels, "Channels", Icon::Channels},
+                               {Page::Firmware, "Firmware", Icon::Chip},     {Page::About, "About", Icon::About}};
+  const float rowHeight = ImGui::GetFrameHeight() * 1.3f;
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 4 * lh::ui::Scale()));
+  for (const auto& item : items)
+    if (lh::ui::NavItem(item.label, item.icon, page_ == item.page, rowHeight)) page_ = item.page;
   ImGui::PopStyleVar();
   // the dongle and the driver, at the bottom
   const float line = ImGui::GetTextLineHeightWithSpacing();
@@ -466,7 +477,7 @@ void Ui::PairBar(const DongleState& d) {
 // ---- pages ----
 
 void Ui::Overview(const DongleState& d) {
-  Title("Overview");
+  Title("Overview", lh::ui::Icon::Overview);
   PairBar(d);
   ImGui::Spacing();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -626,7 +637,7 @@ void Ui::SlotCard(const DongleState& d, int i, float width) {
 }
 
 void Ui::Slots(const DongleState& d) {
-  Title("Slots");
+  Title("Slots", lh::ui::Icon::Slots);
   PairBar(d);
   ImGui::SameLine();
   ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - ImGui::GetFontSize() * 10);
@@ -648,7 +659,7 @@ void Ui::Slots(const DongleState& d) {
 }
 
 void Ui::Radio(const DongleState& d) {
-  Title("Radio");
+  Title("Radio", lh::ui::Icon::Wireless);
   // every slot, one row each
   if (ImGui::BeginTable("radio", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 3);
@@ -733,7 +744,7 @@ void Ui::Radio(const DongleState& d) {
 }
 
 void Ui::Channels(const DongleState& d) {
-  Title("Channels");
+  Title("Channels", lh::ui::Icon::Channels);
   ImGui::TextWrapped("The radio hops over 16 channels and leaves out the ones losing too much (Wi-Fi, other "
                      "2.4 GHz gear). The bars are each channel's loss; grey ones are off for now.");
   ImGui::Spacing();
@@ -818,7 +829,7 @@ void Ui::Channels(const DongleState& d) {
 }
 
 void Ui::Firmware(const DongleState& d) {
-  Title("Firmware");
+  Title("Firmware", lh::ui::Icon::Chip);
   const auto dongle = Current();
   if (ImGui::BeginTable("fw", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
     const auto row = [](const char* a, const std::string& b) {
@@ -946,7 +957,7 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bo
 }
 
 void Ui::About() {
-  Title("About");
+  Title("About", lh::ui::Icon::About);
   ImGui::TextWrapped("Doorman Dongle Manager: the openhouse wireless dongle's slots, pairing and radio.");
   ImGui::Spacing();
   ImGui::TextWrapped("A dongle has six slots, one device each. Pairing puts a device into a slot; it then "

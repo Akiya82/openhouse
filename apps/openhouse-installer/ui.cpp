@@ -11,6 +11,7 @@
 #include <cstdlib>
 
 #include "common/nordic_dfu.hpp"
+#include "common/ui_theme.hpp"
 #include "lh/version.hpp"
 
 namespace openhouse::installer {
@@ -51,9 +52,9 @@ enum class Tint { None, Red, Green, Yellow };
 
 // ---- tiles: big square choices with a drawn icon ----
 
-enum class Icon { Download, Refresh, Trash, Chip, Restore, BaseStation, Wireless, Dongle, Tracker, Wire };
-
-const ImU32 kAccent = IM_COL32(110, 168, 255, 255);
+using lh::ui::DrawIcon;
+using lh::ui::Icon;
+using lh::ui::kAccent;
 
 ImU32 TintColor(Tint t) {
   switch (t) {
@@ -61,106 +62,6 @@ ImU32 TintColor(Tint t) {
     case Tint::Green: return IM_COL32(98, 206, 120, 255);
     case Tint::Yellow: return IM_COL32(242, 196, 82, 255);
     default: return kAccent;
-  }
-}
-
-void Arc(ImDrawList* dl, ImVec2 c, float r, float a0, float a1, ImU32 col, float th) {
-  dl->PathArcTo(c, r, a0, a1, 32);
-  dl->PathStroke(col, 0, th);
-}
-
-// A ring with an arrowhead on its end (refresh style). clockwise false = mirror image.
-// The ring ends at the top with a gap beside it; the arrowhead's base sits across the ring's end
-// and its tip points sideways into the gap.
-void RingArrow(ImDrawList* dl, ImVec2 c, float r, float th, bool clockwise, ImU32 col) {
-  const float pi = 3.14159265f;
-  // clockwise in screen space (y down) = increasing angle
-  const float end = 1.5f * pi, start = end - 1.6f * pi;             // ends at the top
-  const auto mirror = [&](float a) { return clockwise ? a : pi - a; };
-  const float a0 = mirror(start), a1 = mirror(end);
-  dl->PathArcTo(c, r, a0, a1, 40);
-  dl->PathStroke(col, 0, th);
-  const ImVec2 e(c.x + std::cos(a1) * r, c.y + std::sin(a1) * r);
-  const ImVec2 radial(std::cos(a1), std::sin(a1));
-  // direction of travel at the end
-  const float sgn = clockwise ? 1.f : -1.f;
-  const ImVec2 d(-radial.y * sgn, radial.x * sgn);
-  const float half = th * 2.3f, len = th * 2.8f;
-  dl->AddTriangleFilled(ImVec2(e.x + radial.x * half, e.y + radial.y * half),
-                        ImVec2(e.x - radial.x * half, e.y - radial.y * half),
-                        ImVec2(e.x + d.x * len, e.y + d.y * len), col);
-}
-
-// Icons drawn in a box of side s around c.
-void DrawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
-  const float th = std::max(2.f, s * 0.07f), h = s / 2;
-  const auto P = [&](float x, float y) { return ImVec2(c.x + x * h, c.y + y * h); };
-  const float pi = 3.14159265f;
-  switch (icon) {
-    case Icon::Download:
-      dl->AddLine(P(0, -0.85f), P(0, 0.0f), col, th);
-      dl->AddTriangleFilled(P(-0.36f, -0.05f), P(0.36f, -0.05f), P(0, 0.38f), col);
-      dl->PathLineTo(P(-0.8f, 0.35f)); dl->PathLineTo(P(-0.8f, 0.8f)); dl->PathLineTo(P(0.8f, 0.8f)); dl->PathLineTo(P(0.8f, 0.35f));
-      dl->PathStroke(col, 0, th);
-      break;
-    case Icon::Refresh:
-      RingArrow(dl, c, h * 0.62f, th, true, col);
-      break;
-    case Icon::Restore:
-      RingArrow(dl, c, h * 0.62f, th, false, col);
-      dl->AddLine(ImVec2(c.x, c.y + th * 0.3f), P(0, -0.24f), col, th);
-      dl->AddLine(ImVec2(c.x - th * 0.3f, c.y), P(0.26f, 0.14f), col, th);
-      break;
-    case Icon::Trash:
-      dl->AddLine(P(-0.8f, -0.55f), P(0.8f, -0.55f), col, th);
-      dl->AddRect(P(-0.25f, -0.82f), P(0.25f, -0.55f), col, th * 0.5f, 0, th);
-      dl->AddRect(P(-0.6f, -0.4f), P(0.6f, 0.85f), col, th * 1.2f, 0, th);
-      dl->AddLine(P(-0.2f, -0.15f), P(-0.2f, 0.6f), col, th);
-      dl->AddLine(P(0.2f, -0.15f), P(0.2f, 0.6f), col, th);
-      break;
-    case Icon::Chip:
-      dl->AddRect(P(-0.55f, -0.55f), P(0.55f, 0.55f), col, th * 1.5f, 0, th);
-      dl->AddRectFilled(P(-0.22f, -0.22f), P(0.22f, 0.22f), col, th * 0.6f);
-      for (int i = -1; i <= 1; ++i) {
-        const float k = i * 0.3f;
-        dl->AddLine(P(k, -0.55f), P(k, -0.85f), col, th);
-        dl->AddLine(P(k, 0.55f), P(k, 0.85f), col, th);
-        dl->AddLine(P(-0.55f, k), P(-0.85f, k), col, th);
-        dl->AddLine(P(0.55f, k), P(0.85f, k), col, th);
-      }
-      break;
-    case Icon::BaseStation:
-      dl->AddRect(P(-0.75f, -0.75f), P(0.75f, 0.75f), col, h * 0.35f, 0, th);
-      dl->AddCircleFilled(P(0, -0.45f), h * 0.1f, col, 16);   // status light
-      break;
-    case Icon::Wireless: {
-      const ImVec2 o = P(0, 0.62f);
-      dl->AddCircleFilled(o, h * 0.13f, col);
-      for (int i = 1; i <= 3; ++i) Arc(dl, o, h * 0.42f * i, -pi * 0.78f, -pi * 0.22f, col, th);
-      break;
-    }
-    case Icon::Dongle:
-      dl->AddRect(P(-0.42f, -0.2f), P(0.42f, 0.9f), col, th * 1.5f, 0, th);
-      dl->AddRect(P(-0.3f, -0.85f), P(0.3f, -0.2f), col, 0, 0, th);
-      dl->AddRectFilled(P(-0.15f, -0.65f), P(-0.04f, -0.5f), col);
-      dl->AddRectFilled(P(0.04f, -0.65f), P(0.15f, -0.5f), col);
-      dl->AddCircleFilled(P(0, 0.45f), h * 0.1f, col);
-      break;
-    case Icon::Tracker:
-      dl->AddCircle(P(0, 0.1f), h * 0.62f, col, 40, th);
-      dl->AddCircleFilled(P(0, 0.1f), h * 0.16f, col);
-      for (int i = 0; i < 3; ++i) {
-        const float a = -pi / 2 + i * 2 * pi / 3;
-        dl->AddLine(ImVec2(c.x + std::cos(a) * h * 0.62f, c.y + h * 0.1f + std::sin(a) * h * 0.62f),
-                    ImVec2(c.x + std::cos(a) * h * 0.9f, c.y + h * 0.1f + std::sin(a) * h * 0.9f), col, th * 1.4f);
-      }
-      break;
-    case Icon::Wire:
-      dl->AddRect(P(-0.35f, -0.45f), P(0.35f, 0.1f), col, th, 0, th);
-      dl->AddLine(P(-0.15f, -0.45f), P(-0.15f, -0.85f), col, th);
-      dl->AddLine(P(0.15f, -0.45f), P(0.15f, -0.85f), col, th);
-      dl->AddBezierCubic(P(0, 0.1f), P(0, 0.6f), P(-0.7f, 0.4f), P(-0.6f, 0.9f), col, th);
-      break;
   }
 }
 
@@ -353,24 +254,6 @@ void Note(const char* text) {
   ImGui::PopStyleColor();
 }
 
-// Slow snow behind everything.
-void Snow(ImDrawList* dl, ImVec2 size) {
-  struct Flake { float x, y, r, v, phase; };
-  static std::vector<Flake> flakes;
-  static unsigned seed = 12345;
-  const auto rnd = [] { seed = seed * 1103515245u + 12345u; return float((seed >> 8) & 0xFFFF) / 65535.f; };
-  if (flakes.empty())
-    for (int i = 0; i < 70; ++i) flakes.push_back({rnd(), rnd(), 0.8f + rnd() * 1.6f, 0.012f + rnd() * 0.02f, rnd() * 6.28f});
-  const float dt = std::min(0.1f, ImGui::GetIO().DeltaTime);
-  const double t = ImGui::GetTime();
-  for (auto& f : flakes) {
-    f.y += f.v * dt * (0.6f + f.r * 0.25f);
-    if (f.y > 1.02f) { f.y = -0.02f; f.x = rnd(); }
-    const float x = f.x * size.x + std::sin(float(t) * 0.5f + f.phase) * 14.f;
-    dl->AddCircleFilled(ImVec2(x, f.y * size.y), f.r, IM_COL32(220, 230, 255, int(40 + f.r * 30)), 8);
-  }
-}
-
 void Warning(const char* heading, const char* body) {
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.45f, 0.10f, 0.10f, 1));
   ImGui::BeginChild(heading, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -527,27 +410,7 @@ void Ui::SetUpImGui() {
   style.FramePadding = ImVec2(10, 7);
   style.ItemSpacing = ImVec2(10, 9);
   style.WindowPadding = ImVec2(18, 14);
-  style.FrameRounding = 6;
-  style.ChildRounding = 8;
-  style.GrabRounding = 6;
-  style.PopupRounding = 8;
-  ImVec4* c = style.Colors;
-  c[ImGuiCol_WindowBg] = ImVec4(0.067f, 0.075f, 0.098f, 1);
-  c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-  c[ImGuiCol_PopupBg] = ImVec4(0.10f, 0.11f, 0.14f, 0.98f);
-  c[ImGuiCol_Border] = ImVec4(0.25f, 0.27f, 0.33f, 0.6f);
-  c[ImGuiCol_Separator] = ImVec4(0.22f, 0.24f, 0.30f, 1);
-  c[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.20f, 1);
-  c[ImGuiCol_FrameBgHovered] = ImVec4(0.19f, 0.22f, 0.28f, 1);
-  c[ImGuiCol_FrameBgActive] = ImVec4(0.22f, 0.26f, 0.34f, 1);
-  c[ImGuiCol_Button] = ImVec4(0.20f, 0.33f, 0.55f, 1);
-  c[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.42f, 0.68f, 1);
-  c[ImGuiCol_ButtonActive] = ImVec4(0.17f, 0.28f, 0.48f, 1);
-  c[ImGuiCol_Header] = ImVec4(0.20f, 0.33f, 0.55f, 0.55f);
-  c[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.42f, 0.68f, 0.7f);
-  c[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.42f, 0.68f, 0.9f);
-  c[ImGuiCol_CheckMark] = ImVec4(0.45f, 0.68f, 1, 1);
-  c[ImGuiCol_PlotHistogram] = ImVec4(0.36f, 0.62f, 1, 1);
+  lh::ui::ApplyTheme();
 }
 
 Ui::Ui() {
@@ -605,7 +468,7 @@ void Ui::Draw(float width, float height) {
   ImGui::SetNextWindowSize(ImVec2(width, height));
   ImGui::Begin("openhouse installer", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-  Snow(ImGui::GetWindowDrawList(), ImVec2(width, height));
+  lh::ui::Snow(ImGui::GetWindowDrawList(), ImVec2(0, 0), ImVec2(width, height));
   Header();
   ImGui::Separator();
   ImGui::Spacing();

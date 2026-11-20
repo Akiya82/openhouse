@@ -408,8 +408,6 @@ bool UsbTransport::Start() {
   // fail. With none plugged in at all, run and wait for one (hotplug).
   if (open_.empty() && idle_.empty() && unopenable) return false;
   if (open_.empty() && idle_.empty()) Log(LogLevel::Info, "no Lighthouse receivers yet; waiting for one to be plugged in\n");
-  oh_ = std::make_unique<DoormanDongle>(sink_, &decoder_, &capture_, &nextEp_, opts_.steamLighthouseConfigDir,
-                                   [this](LogLevel level, const std::string& text) { Log(level, "%s\n", text.c_str()); });
   thread_ = std::thread(&UsbTransport::Run, this);
   probe_ = std::thread(&UsbTransport::ProbeMain, this);
   return true;
@@ -505,41 +503,98 @@ void UsbTransport::DropReceiver(const std::string& serial) {
 }
 
 std::vector<UsbTransport::Receiver> UsbTransport::Receivers() const {
-  std::lock_guard lock(receiversMutex_);
   std::vector<Receiver> out;
-  for (const auto& [serial, r] : receivers_) out.push_back(r);
+  {
+    std::lock_guard lock(receiversMutex_);
+    for (const auto& [serial, r] : receivers_) out.push_back(r);
+  }
   // Each slot of a Doorman Dongle shows as a receiver of its own, empty ones too, so SteamVR's
   // pairing page sees what's free: empty slots first (pairing takes the first one offered free),
-  // then paired ones, whose device may be off (pairing into one of those replaces it).
-  if (oh_ && !oh_->Serial().empty()) {
-    auto stats = oh_->SlotStats();
-    std::stable_sort(stats.begin(), stats.end(), [](const auto& a, const auto& b) { return !a.used && b.used; });
-    for (const auto& st : stats) {
+  // then paired ones, whose device may be off (pairing into one of those replaces it). With
+  // several dongles, every dongle's empty slots come before any paired one, each by dongle serial.
+  std::vector<Receiver> slots;
+  for (const auto& dongle : DoormanDongles()) {
+    for (const auto& st : dongle->SlotStats()) {   // none while the dongle isn't open
       Receiver r;
-      r.serial = oh_->Serial() + "/" + std::to_string(st.slot);
+      r.serial = dongle->Serial() + "/" + std::to_string(st.slot);
       r.connected = st.serial; r.pid = 0x0001; r.kind = "openhouse"; r.slot = st.slot;
       r.linked = st.active; r.kBytesPerSec = st.kBytesPerSec; r.framesPerSec = st.framesPerSec;
       r.lossPercent = st.lossPercent; r.dropsPerSec = st.dropsPerSec;
       r.rssiDongle = st.rssiDongle; r.rssiDevice = st.rssiDevice; r.devicesOnDongle = st.devicesOnDongle;
       r.paired = st.used;
-      out.push_back(r);
+      slots.push_back(r);
     }
   }
+  std::stable_sort(slots.begin(), slots.end(), [](const auto& a, const auto& b) { return !a.paired && b.paired; });
+  out.insert(out.end(), slots.begin(), slots.end());
   return out;
 }
 
 void UsbTransport::OnDeviceGone(const DeviceId& serial) {
-  std::lock_guard lock(receiversMutex_);
-  for (auto& [id, r] : receivers_) {
-    if (r.connected == serial) r.connected.clear();
+  {
+    std::lock_guard lock(receiversMutex_);
+    for (auto& [id, r] : receivers_) {
+      if (r.connected == serial) r.connected.clear();
+    }
   }
+  for (const auto& dongle : DoormanDongles()) dongle->DeviceGone(serial);
+}
+
+std::vector<std::shared_ptr<DoormanDongle>> UsbTransport::DoormanDongles() const {
+  std::lock_guard lock(doormanMutex_);
+  return doorman_;
+}
+
+void UsbTransport::ScanDoorman() {
+  std::map<std::string, int> shared;
+  auto found = ScanDoormanDongles(&shared);
+  for (const auto& [serial, count] : shared)
+    if (doormanShared_.insert(serial).second)
+      Log(LogLevel::Warn, "%d Doorman Dongles share the name %s (the same USB serial): their interfaces can't be told "
+                          "apart, so none of them is used\n", count, serial.c_str());
+  std::erase_if(doormanShared_, [&](const std::string& serial) { return !shared.count(serial); });
+  std::lock_guard lock(doormanMutex_);
+  doormanFound_ = std::move(found);
+}
+
+void UsbTransport::PumpDoorman(double now) {
+  std::optional<std::vector<DoormanDongleFound>> found;
+  std::vector<std::shared_ptr<DoormanDongle>> dongles;
+  {
+    std::lock_guard lock(doormanMutex_);
+    found.swap(doormanFound_);
+    dongles = doorman_;
+  }
+  if (found) {
+    for (const auto& f : *found) {
+      auto it = std::find_if(dongles.begin(), dongles.end(), [&](const auto& d) { return d->Serial() == f.serial; });
+      if (it == dongles.end()) {
+        auto dongle = std::make_shared<DoormanDongle>(
+            f.serial, sink_, &decoder_, &capture_, &nextEp_, opts_.steamLighthouseConfigDir,
+            [this](LogLevel level, const std::string& text) { Log(level, "%s\n", text.c_str()); }, &doormanCarriers_);
+        const auto bySerial = [](const auto& a, const auto& b) { return a->Serial() < b->Serial(); };
+        dongles.insert(std::upper_bound(dongles.begin(), dongles.end(), dongle, bySerial), dongle);
+        std::lock_guard lock(doormanMutex_);
+        doorman_ = dongles;
+        it = std::find(dongles.begin(), dongles.end(), dongle);
+      }
+      DoormanDongle& dongle = **it;
+      if (!dongle.IsOpen()) dongle.Open(f, now);
+      else if (!dongle.HasInterface1()) dongle.OpenInterface1(f.path1);
+    }
+  }
+  // No lock held: a device detaching here calls back into OnDeviceGone through the sink.
+  for (const auto& dongle : dongles) dongle->Pump(now);
 }
 
 bool UsbTransport::SetPairing(const std::string& receiver, int milliseconds) {
-  if (oh_ && !oh_->Serial().empty() && receiver.rfind(oh_->Serial(), 0) == 0) {   // the dongle or one of its slots
-    const std::string rest = receiver.substr(oh_->Serial().size());           // "/3": that slot
-    const int slot = rest.size() == 2 && rest[0] == '/' && rest[1] >= '0' && rest[1] < '0' + DoormanDongle::kSlots ? rest[1] - '0' : -1;
-    return oh_->Pair(milliseconds, slot);
+  for (const auto& dongle : DoormanDongles()) {   // the dongle ("OHDG-...") or one of its slots ("OHDG-.../3")
+    const std::string& serial = dongle->Serial();
+    if (receiver.compare(0, serial.size(), serial) != 0) continue;
+    const std::string rest = receiver.substr(serial.size());
+    const bool slotted = rest.size() == 2 && rest[0] == '/' && rest[1] >= '0' && rest[1] < '0' + DoormanDongle::kSlots;
+    if (!rest.empty() && !slotted) continue;   // another dongle whose serial starts with this one's
+    return dongle->Pair(milliseconds, slotted ? rest[1] - '0' : -1);
   }
   {
     std::lock_guard lock(receiversMutex_);
@@ -682,6 +737,7 @@ void UsbTransport::ProbeMain() {
     RunDeviceChecks();
   };
   while (!stop_) {
+    ScanDoorman();   // Doorman Dongles: listed here, opened by the reader thread (also with LH_DOORMAN_ONLY)
     Enumerate(false);
     for (size_t i = 0; i < idle_.size() && !stop_;) {
       serve();
@@ -728,14 +784,24 @@ void UsbTransport::Stop() {
     failedPaths_.clear();
   }
   for (const auto& id : detached) sink_->OnDeviceDetached(id);
-  if (oh_) { oh_->Close(); oh_.reset(); }
+  {
+    std::vector<std::shared_ptr<DoormanDongle>> dongles;
+    {
+      std::lock_guard lock(doormanMutex_);
+      dongles.swap(doorman_);
+      doormanFound_.reset();
+    }
+    doormanShared_.clear();   // the probe thread has ended
+    for (const auto& dongle : dongles) dongle->Close();   // no lock held: detaching calls OnDeviceGone
+  }
   capture_.Close();
 }
 
 std::vector<EndpointInfo> UsbTransport::Endpoints() const {
   std::vector<EndpointInfo> v;
   for (auto& o : open_) v.push_back(o.info);
-  if (oh_) for (auto& e : oh_->Endpoints()) v.push_back(e);
+  for (const auto& dongle : DoormanDongles())
+    for (auto& e : dongle->Endpoints()) v.push_back(e);
   return v;
 }
 
@@ -816,16 +882,21 @@ void UsbTransport::Run() {
         result.status = result.bytes == int(command.report.size()) ? "written" : "write-failed";
         break;
       }
-      if (std::string(result.status) == "not-connected" && passStart <= command.deadline && oh_) {
-        if (command.opticalMode >= 0) {
-          // Our radio link carries the main MCU's wired host protocol: switch as on a cable.
-          const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();
-          if (oh_->Command(command.serial, mode, &result.status, 2)) {
-            oh_->Command(command.serial, verbosity, &result.status, 2);
-            result.bytes = 2;
+      // The Doorman Dongle carrying the device, if any (a device is set up on one dongle only).
+      if (std::string(result.status) == "not-connected" && passStart <= command.deadline) {
+        for (const auto& oh : DoormanDongles()) {
+          if (command.opticalMode >= 0) {
+            // Our radio link carries the main MCU's wired host protocol: switch as on a cable.
+            const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();
+            if (oh->Command(command.serial, mode, &result.status, 2)) {
+              oh->Command(command.serial, verbosity, &result.status, 2);
+              result.bytes = 2;
+              break;
+            }
+          } else if (oh->Command(command.serial, command.report, &result.status)) {
+            result.bytes = int(command.report.size());
+            break;
           }
-        } else if (oh_->Command(command.serial, command.report, &result.status)) {
-          result.bytes = int(command.report.size());
         }
       }
       if (opts_.onCommandResult) opts_.onCommandResult(result);
@@ -937,7 +1008,7 @@ void UsbTransport::Run() {
       }
       if (o.disconnected) sink_->OnDeviceDetached(o.info.serial);
     }
-    if (oh_) oh_->Pump(HostNow());
+    PumpDoorman(HostNow());
     // Unplugged: close it and forget its path, so the probe thread reopens it when it
     // comes back (as a new endpoint; the device keeps its id).
     for (auto it = open_.begin(); it != open_.end();) {

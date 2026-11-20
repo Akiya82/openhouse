@@ -399,6 +399,15 @@ if(LH_BUILD_TESTS)
     target_sources(lh_unit_tests PRIVATE tests/unit/test_report_parser.cpp tests/unit/test_device_config.cpp
       tests/unit/test_raw_capture.cpp tests/unit/test_radio_mode.cpp)
     target_link_libraries(lh_unit_tests PRIVATE lh_usb)
+    get_target_property(LH_USB_TARGET_TYPE lh_usb TYPE)
+    if(LH_USB_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+      # Several Doorman Dongles at once. The test defines hidapi's entry points itself (fake
+      # dongles); they replace the static transport's device calls, so no real device is opened.
+      add_executable(lh_doorman_dongle_tests tests/unit/test_doorman_dongles.cpp)
+      target_link_libraries(lh_doorman_dongle_tests PRIVATE lh_usb GTest::gtest_main)
+      add_test(NAME doorman_dongles COMMAND lh_doorman_dongle_tests)
+      set_tests_properties(doorman_dongles PROPERTIES TIMEOUT 60)
+    endif()
     add_executable(lh_replay_tests tests/integration/test_replay.cpp)
     target_compile_definitions(lh_replay_tests PRIVATE LH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     target_include_directories(lh_replay_tests PRIVATE tests)

@@ -91,7 +91,19 @@ bool DoormanDongle::Open() {
 
 void DoormanDongle::Drop() {
   if (!dev_) return;
-  for (int i = 0; i < 6; ++i) if (slots_[i].attached) Detach(i);
+  // Each slot is forgotten as when its device turns off: plugged back in, the dongle's devices are
+  // identified and attached again. Keeping the serial meant nothing re-attached them (listed in
+  // SteamVR, never tracked).
+  for (int i = 0; i < 6; ++i) {
+    Slot& s = slots_[i];
+    if (s.attached) Detach(i);
+    s.serial.clear();
+    s.noIdent = false;
+    s.identTries = 0;
+    s.identSeq = -1;
+    s.sensorType = -1;
+    s.ringN = s.ringPos = 0;
+  }
   hid_close(dev_);
   dev_ = nullptr;
   if (dev1_) hid_close(dev1_);
@@ -367,7 +379,7 @@ void DoormanDongle::OnIdent(int slot, const uint8_t* f, int n) {
   Slot& s = slots_[slot];
   char serial[16];
   std::snprintf(serial, sizeof serial, "LHR-%08X", unsigned(Rd32(f + 2)));
-  if (s.serial == serial) return;
+  if (s.serial == serial && s.attached) return;
   if (s.attached) Detach(slot);
   s.serial = serial;
   s.gyro = int8_t(f[6]);

@@ -1,6 +1,8 @@
-// USB descriptors: two vendor-defined HID interfaces, 64-byte IN/OUT reports, no report IDs.
-// Interface 0: commands/replies + stream of even slots; interface 1: stream of odd slots (a second
-// 1 ms 64-byte IN endpoint: one alone carries ~61 kB/s, six devices need more).
+// USB descriptors: four vendor-defined HID interfaces, 64-byte IN/OUT reports, no report IDs.
+// Interface 0: commands/replies; slot s streams on interface s % 4. A full-speed interrupt endpoint
+// sends one 64-byte report per 1 ms frame (~61 kB/s of stream); with two interfaces the even slots'
+// endpoint ran near that limit and their data queued here for tens of ms. Four keep each one at
+// two devices, well under it.
 #include "tusb.h"
 #include "dongle.h"
 
@@ -16,11 +18,13 @@ const uint8_t *tud_descriptor_device_cb(void) { return (const uint8_t *)&dev_des
 static const uint8_t hid_report_desc[] = { TUD_HID_REPORT_DESC_GENERIC_INOUT(64) };
 const uint8_t *tud_hid_descriptor_report_cb(uint8_t itf) { (void)itf; return hid_report_desc; }
 
-#define CFG_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_INOUT_DESC_LEN)
+#define CFG_LEN (TUD_CONFIG_DESC_LEN + DONGLE_NIF * TUD_HID_INOUT_DESC_LEN)
 static const uint8_t cfg_desc[] = {
-    TUD_CONFIG_DESCRIPTOR(1, 2, 0, CFG_LEN, 0, 100),
+    TUD_CONFIG_DESCRIPTOR(1, DONGLE_NIF, 0, CFG_LEN, 0, 100),
     TUD_HID_INOUT_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_NONE, sizeof(hid_report_desc), 0x01, 0x81, 64, 1),
     TUD_HID_INOUT_DESCRIPTOR(1, 0, HID_ITF_PROTOCOL_NONE, sizeof(hid_report_desc), 0x02, 0x82, 64, 1),
+    TUD_HID_INOUT_DESCRIPTOR(2, 0, HID_ITF_PROTOCOL_NONE, sizeof(hid_report_desc), 0x03, 0x83, 64, 1),
+    TUD_HID_INOUT_DESCRIPTOR(3, 0, HID_ITF_PROTOCOL_NONE, sizeof(hid_report_desc), 0x04, 0x84, 64, 1),
 };
 const uint8_t *tud_descriptor_configuration_cb(uint8_t i) { (void)i; return cfg_desc; }
 

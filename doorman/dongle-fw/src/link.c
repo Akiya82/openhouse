@@ -54,7 +54,8 @@ typedef struct {
   uint16_t dev_drops, dev_reply_drops;   /* the radio's own drop totals (its 'D' frames) */
   uint8_t rssi_last_d, rssi_last_t, rssi_min_d, rssi_max_d;
   uint8_t ident[16];                    /* last 'H' frame, ident[0] = 0: none yet */
-  uint16_t frag_left;                   /* bytes of a big frame still to send as 0x81 fragments */   /* raw -dBm; min/max reset on read (0x29) */
+  uint16_t frag_left;                   /* bytes of a big frame still to send as 0x81 fragments */
+  uint16_t upq_hw;                      /* most bytes waiting for USB since the last 0x28 read */   /* raw -dBm; min/max reset on read (0x29) */
 } slot_t;
 static slot_t sl[DML_SLOTS];
 static uint8_t link_on = 1;
@@ -222,6 +223,7 @@ static void poll_slot(uint8_t i)
     if (upq_used(s) + gl + 1 >= UPQ) { s->drops++; continue; }
     s->upq[s->up_tail] = (uint8_t)gl; s->up_tail = (s->up_tail + 1) & (UPQ - 1);
     for (int i = 0; i < gl; i++) { s->upq[s->up_tail] = f[i]; s->up_tail = (s->up_tail + 1) & (UPQ - 1); }
+    if (upq_used(s) > s->upq_hw) s->upq_hw = upq_used(s);
   }
 }
 
@@ -416,7 +418,7 @@ int link_stream_pop(uint8_t *rep, int itf)
   uint8_t rr = rrs[itf];
   for (int k = 0; k < DML_SLOTS; k++) {
     uint8_t si = (uint8_t)((rr + k) % DML_SLOTS);
-    if ((si & 1) != itf) continue;               /* each slot stays on one interface: fragments in order */
+    if (si % DONGLE_NIF != itf) continue;         /* each slot stays on one interface: fragments in order */
     slot_t *s = &sl[si];
     int n = 0;
     if (!s->frag_left) {
@@ -483,7 +485,9 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
   case 0x2A: memcpy(d, s->ident, 16); return 1;            /* identity ('H' frame) of a slot */
   case 0x28:                                                /* codec, and the radio's own drops */
     put32(d, s->air_bytes); put32(d + 4, s->bytes_up); put32(d + 8, s->bad_frames);
-    put32(d + 12, s->dev_drops); put32(d + 16, s->dev_reply_drops); return 1;
+    put32(d + 12, s->dev_drops); put32(d + 16, s->dev_reply_drops);
+    d[20] = (uint8_t)s->upq_hw; d[21] = (uint8_t)(s->upq_hw >> 8); s->upq_hw = 0;   /* USB queue high-water, reset on read */
+    return 1;
   case 0x24:                                                /* pair SECS [SLOT+1] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;
     pair_target = in[3] >= 1 && in[3] <= DML_SLOTS ? (uint8_t)(in[3] - 1) : 0xFF;

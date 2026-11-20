@@ -91,14 +91,21 @@ frames = repeated [len][frame]
 
 ## Dongle USB interface (VID:PID 6767:0727, "Doorman Dongle")
 
-**Two HID interfaces**, 64-byte reports, 1 ms interval (endpoints 0x01/0x81 and 0x02/0x82).
-One interrupt IN endpoint carries at most 64 B per ms (~61 kB/s), which wasn't enough for 6
-devices, so **interface 1 streams the odd slots**. Interface 0 streams the even slots and
-carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` in `Pump`;
-`doorman_link.py` reads `h1` first).
+**Four HID interfaces** (firmware 0x000D), 64-byte reports, 1 ms interval (endpoints
+0x01/0x81 .. 0x04/0x84). **Slot s streams on interface s % 4**; interface 0 also carries every
+command and reply (replies go first). One interrupt IN endpoint sends at most one 64-byte report
+per 1 ms frame (~61 kB/s). With two interfaces the even slots' endpoint ran near that limit with
+five devices, and their data waited in the dongle: a controller in slot 2 arrived 12-27 ms older
+at the median (p90 31-61 ms) than one in slot 1. With four, at most two devices share an
+endpoint (both controllers then 5-6 ms median, p90 ~11.5 ms). Hosts open all four (grouped by USB
+serial) and read them all: the driver (`DoormanDongle::devs_`), the dongle manager, the installer
+and `doorman_link.py`. Older two-interface firmware isn't supported.
 
 * Commands go out on interface 0 as `[cmd][seq][args]`. Replies come back as
-  `[cmd][seq][status][61 B data]`.
+  `[cmd][seq][status][61 B data]`. Every program on the dongle sees every reply, so seq ranges
+  are split: **the driver uses 1..127, tools (dongle manager, installer, scripts) 128..255**.
+  Reusing one range let the driver take the manager's slots-6-7 live reply as its own and drop
+  every device.
 * Stream reports are `[0x80][slot][n][whole [len][frame] items]`. Every report stands alone,
   so readers never desync.
 * A frame too big for one report (feature replies, up to 64 B) comes as consecutive
@@ -121,10 +128,10 @@ carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` 
 | 0x22 | RSSI scan of 2400–2500 MHz (pauses the link) |
 | 0x23 | per-slot stats (15 u32) |
 | 0x24 | pair `[secs][slot+1]` |
-| 0x25 | slots `[first]`: 10 B per slot for slots first..first+5 (0 and 6): used, active, id x8. `d[60] = pairing \| (target+1) << 1` |
+| 0x25 | slots `[first]`: 10 B per slot for slots first..first+5 (0 and 6): used, active, id x8. `d[60] = pairing \| (target+1) << 1`. The driver reads it every second: a slot whose id changes (re-paired to another device with no gap) is identified afresh |
 | 0x26 | forget slot (0xFF = all) |
 | 0x27 | channels: mask, loss % per hop channel, joins, net base |
-| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each) |
+| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each); bytes 20-21: most bytes waiting for USB since the last read (u16) |
 | 0x29 | live `[first]` (6 slots per reply, as 0x25): per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 

@@ -90,32 +90,33 @@ void Dongle::SetKnown(const std::string& pairId, const Identity& id) {
 }
 
 bool Dongle::Open() {
-  dev0_ = hid_open_path(path_.c_str());
-  if (!dev0_) return false;
-  hid_set_nonblocking(H(dev0_), 1);
-  // interface 1 (odd slots' stream), the sibling with the same serial
+  devs_[0] = hid_open_path(path_.c_str());
+  if (!devs_[0]) return false;
+  hid_set_nonblocking(H(devs_[0]), 1);
+  // the other interfaces (slot s streams on interface s % 4): the siblings with the same serial
   if (hid_device_info* list = hid_enumerate(kVid, kPid)) {
     for (hid_device_info* d = list; d; d = d->next)
-      if (d->interface_number == 1 && Narrow(d->serial_number) == serial_.substr(5)) {
-        dev1_ = hid_open_path(d->path);
-        if (dev1_) hid_set_nonblocking(H(dev1_), 1);
-        break;
+      if (d->interface_number > 0 && d->interface_number < kInterfaces && !devs_[d->interface_number] &&
+          Narrow(d->serial_number) == serial_.substr(5)) {
+        devs_[d->interface_number] = hid_open_path(d->path);
+        if (devs_[d->interface_number]) hid_set_nonblocking(H(devs_[d->interface_number]), 1);
       }
     hid_free_enumeration(list);
   }
+  dev0_ = devs_[0];
   return true;
 }
 
 void Dongle::Close() {
-  if (dev0_) hid_close(H(dev0_));
-  if (dev1_) hid_close(H(dev1_));
-  dev0_ = dev1_ = nullptr;
+  for (auto& d : devs_) { if (d) hid_close(H(d)); d = nullptr; }
+  dev0_ = nullptr;
 }
 
 // One command and its reply; stream reports read meanwhile are handled as they come.
 bool Dongle::Command(uint8_t cmd, const uint8_t* args, size_t n, Reply* reply, int timeoutMs) {
   if (!dev0_) return false;
-  const uint8_t seq = ++seq_;
+  seq_ = uint8_t(0x80 | (seq_ + 1));   // 128..255: the driver uses 1..127 (it sees our replies too)
+  const uint8_t seq = seq_;
   uint8_t out[65] = {0, cmd, seq};
   std::memcpy(out + 3, args, std::min<size_t>(n, 62));
   if (hid_write(H(dev0_), out, sizeof out) < 0) { alive_ = false; return false; }
@@ -124,12 +125,13 @@ bool Dongle::Command(uint8_t cmd, const uint8_t* args, size_t n, Reply* reply, i
   while (Now() < until) {
     const int got = hid_read_timeout(H(dev0_), r, sizeof r, 5);
     if (got < 0) { alive_ = false; return false; }
-    if (dev1_) for (int k = 0; k < 16; ++k) {
-      uint8_t q[64];
-      const int m = hid_read(H(dev1_), q, sizeof q);
-      if (m <= 0) break;
-      OnReport(q, m);
-    }
+    for (int i = 1; i < kInterfaces; ++i)
+      if (devs_[i]) for (int k = 0; k < 16; ++k) {
+        uint8_t q[64];
+        const int m = hid_read(H(devs_[i]), q, sizeof q);
+        if (m <= 0) break;
+        OnReport(q, m);
+      }
     if (got == 0) continue;
     if (r[0] == cmd && r[1] == seq) {
       if (reply) { reply->status = r[2]; std::memcpy(reply->data.data(), r + 3, 61); }
@@ -144,7 +146,7 @@ void Dongle::ReadPending(int timeoutMs) {
   uint8_t r[64];
   for (int pass = 0; pass < 200; ++pass) {
     bool any = false;
-    for (void* d : {dev0_, dev1_}) {
+    for (void* d : devs_) {
       if (!d) continue;
       const int n = pass == 0 && d == dev0_ ? hid_read_timeout(H(d), r, sizeof r, timeoutMs) : hid_read(H(d), r, sizeof r);
       if (n < 0) { alive_ = false; return; }

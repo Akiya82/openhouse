@@ -149,15 +149,12 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t id, hid_report_type_t t, const u
 static void usb_service(void)              /* also called while the link waits inside a cycle */
 {
     tud_task();
+    if (!tud_mounted()) return;
+    /* replies first on interface 0; slot s's stream [0x80][slot][n][bytes] on interface s % DONGLE_NIF */
     if (pending_reply && tud_hid_n_ready(0)) { tud_hid_n_report(0, 0, reply, 64); usb_tx++; pending_reply = 0; }
-    else if (tud_hid_n_ready(0) && tud_mounted()) {         /* tracker stream: [0x80][slot][n][bytes] */
-        static uint8_t rep[64];
-        if (link_stream_pop(rep, 0)) tud_hid_n_report(0, 0, rep, 64);
-    }
-    if (tud_hid_n_ready(1) && tud_mounted()) {              /* odd slots on the second interface */
-        static uint8_t rep1[64];
-        if (link_stream_pop(rep1, 1)) tud_hid_n_report(1, 0, rep1, 64);
-    }
+    static uint8_t rep[DONGLE_NIF][64];
+    for (int itf = 0; itf < DONGLE_NIF; itf++)
+        if (tud_hid_n_ready(itf) && link_stream_pop(rep[itf], itf)) tud_hid_n_report(itf, 0, rep[itf], 64);
 }
 
 int main(void) {

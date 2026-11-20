@@ -27,7 +27,7 @@ def open_dev():
 _seq = 0
 def cmd(h, c, args=b"", timeout=1000):
     global _seq
-    _seq = (_seq + 1) & 0xFF
+    _seq = 0x80 | ((_seq + 1) & 0x7F)   # 128..255: the driver uses 1..127 and sees our replies
     h.write(bytes([0, c, _seq]) + bytes(args) + bytes(64 - 2 - len(args)))
     t = time.time()
     while time.time() - t < timeout / 1000:

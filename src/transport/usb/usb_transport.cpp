@@ -580,7 +580,6 @@ void UsbTransport::PumpDoorman(double now) {
       }
       DoormanDongle& dongle = **it;
       if (!dongle.IsOpen()) dongle.Open(f, now);
-      else if (!dongle.HasInterface1()) dongle.OpenInterface1(f.path1);
     }
   }
   // No lock held: a device detaching here calls back into OnDeviceGone through the sink.

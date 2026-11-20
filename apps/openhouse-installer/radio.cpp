@@ -82,23 +82,26 @@ class DoormanDongle {
   explicit DoormanDongle(const std::string& path) {
     dev0_ = hid_open_path(path.c_str());
     if (!dev0_) return;
-    // The second interface carries the odd slots' stream.
+    devs_[0] = dev0_;
+    // The other interfaces carry the slots' streams (slot s on interface s % 4).
     if (hid_device_info* list = hid_enumerate(kDoormanVid, kDoormanPid)) {
       wchar_t serial[64]{};
       hid_get_serial_number_string(dev0_, serial, 64);
       for (hid_device_info* d = list; d; d = d->next)
-        if (d->interface_number == 1 && d->serial_number && std::wcscmp(d->serial_number, serial) == 0) dev1_ = hid_open_path(d->path);
+        if (d->interface_number > 0 && d->interface_number < kInterfaces && !devs_[d->interface_number] && d->serial_number &&
+            std::wcscmp(d->serial_number, serial) == 0)
+          devs_[d->interface_number] = hid_open_path(d->path);
       hid_free_enumeration(list);
     }
   }
   ~DoormanDongle() {
-    if (dev0_) hid_close(dev0_);
-    if (dev1_) hid_close(dev1_);
+    for (hid_device* d : devs_) if (d) hid_close(d);
   }
   bool Ok() const { return dev0_ != nullptr; }
 
   bool Command(uint8_t cmd, const uint8_t* args, size_t n, uint8_t* reply = nullptr, int timeoutMs = 500) {
-    const uint8_t seq = ++seq_;
+    seq_ = uint8_t(0x80 | (seq_ + 1));   // 128..255: the driver uses 1..127 (it sees our replies too)
+    const uint8_t seq = seq_;
     uint8_t out[65] = {0, cmd, seq};
     std::memcpy(out + 3, args, std::min<size_t>(n, 62));
     if (hid_write(dev0_, out, sizeof out) < 0) return false;
@@ -138,8 +141,8 @@ class DoormanDongle {
   }
 
  private:
-  // Reads everything both interfaces have queued (interface 1 carries the odd slots' stream: reading
-  // only one of its reports per wait let it pile up, and odd slots' replies arrived seconds late),
+  // Reads everything every interface has queued (each carries some slots' stream: reading only one
+  // of its reports per wait let it pile up, and those slots' replies arrived seconds late),
   // then waits up to `waitMs` on interface 0 if nothing was there. A command reply goes to `reply`
   // (true: taken); stream reports are parsed into frames_. False on a read error.
   bool Pump(int waitMs, const std::function<bool(const uint8_t*)>& reply) {
@@ -147,7 +150,7 @@ class DoormanDongle {
     bool any = false;
     for (int round = 0; round < 512; ++round) {
       bool got = false;
-      for (hid_device* dev : {dev0_, dev1_}) {
+      for (hid_device* dev : devs_) {
         if (!dev) continue;
         const int n = hid_read_timeout(dev, r, sizeof r, 0);
         if (n < 0) return false;
@@ -188,8 +191,9 @@ class DoormanDongle {
       i += 1 + m;
     }
   }
+  static constexpr int kInterfaces = 4;   // interface 0: commands; slot s streams on interface s % 4
   hid_device* dev0_ = nullptr;
-  hid_device* dev1_ = nullptr;
+  hid_device* devs_[kInterfaces] = {};
   uint8_t seq_ = 0;
   std::vector<std::pair<int, std::string>> frames_;
   std::map<int, std::string> frag_;

@@ -41,17 +41,18 @@ namespace lh::usb {
 
 class ReportDecoder;
 
-// One Doorman Dongle as hidapi lists it: interface 0 (commands, replies, even slots' stream)
-// and, with newer dongle firmware, interface 1 (odd slots' stream) with the same USB serial.
+// The dongle's USB data interfaces: interface 0 carries commands and replies, slot s streams on
+// interface s % kDoormanInterfaces (dongle-fw usb_descriptors.c).
+constexpr int kDoormanInterfaces = 4;
+// One Doorman Dongle as hidapi lists it: its interfaces, all with the same USB serial.
 struct DoormanDongleFound {
   std::string serial;  // "OHDG-" + USB serial: the dongle's receiver name
-  std::string path;    // interface 0
-  std::string path1;   // interface 1; "" if it has none (older firmware: every slot on interface 0)
+  std::array<std::string, kDoormanInterfaces> paths;   // by interface number; paths[0] takes commands
 };
-// The Doorman Dongles in an enumeration, by serial. Interface 1 goes with the interface 0 of
-// the same USB serial, wherever each is in the list. A serial carried by more than one
-// interface 0 or interface 1 (an empty serial counts as one) can't be matched: it is left
-// out, and *shared gets it with how many dongles share it.
+// The Doorman Dongles in an enumeration, by serial: a dongle once every interface of its USB
+// serial is listed, wherever each is in the list. A serial carried by more than one interface
+// of a number (an empty serial counts as one) can't be matched: it is left out, and *shared
+// gets it with how many dongles share it.
 std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list,
                                                    std::map<std::string, int>* shared = nullptr);
 // hid_enumerate for the dongle's USB id, then FindDoormanDongles.
@@ -83,11 +84,7 @@ class DoormanDongle {
 
   // Reader thread. Opens the dongle's interfaces (at most one attempt every 2 s); true if open.
   bool Open(const DoormanDongleFound& found, double now);
-  // Reader thread. Interface 1 listed after interface 0 was opened without it (plugged in
-  // between two enumerations): opened now.
-  void OpenInterface1(const std::string& path1);
   bool IsOpen() const { return dev_ != nullptr; }   // reader thread
-  bool HasInterface1() const { return dev1_ != nullptr; }   // reader thread
   void Pump(double now);   // reader thread: read/dispatch; closes the dongle on a read or write error
   void Close();            // detaches every tracker
   std::vector<EndpointInfo> Endpoints() const;
@@ -112,6 +109,7 @@ class DoormanDongle {
  private:
   struct Slot {
     bool used = false, active = false;
+    std::array<uint8_t, 8> pairId{}; bool havePairId = false;   // the paired device (0x25): a new one resets the slot
     int identSeq = -1;     // seq of the pending ident request
     double identAskT = 0;
     int identTries = 0;
@@ -168,9 +166,12 @@ class DoormanDongle {
   DoormanCarriers* carriers_;
 
   hid_device_* dev_ = nullptr;
-  hid_device_* dev1_ = nullptr;   // interface 1: odd slots' stream (newer dongle firmware)
+  std::array<hid_device_*, kDoormanInterfaces> devs_{};   // every interface; dev_ is devs_[0]
   double nextOpen_ = 0, nextLive_ = 0, nextStats_ = 0, nextLinkLog_ = 0;
   int statsSlot_ = 0, statsSeq_ = -1;
+  int idsSeq_[2] = {-1, -1};    // the slots (0x25) requests in flight
+  double nextIds_ = 0;
+  void ResetSlot(int slot);     // its device left or was replaced: identify what comes next afresh
   int liveSeq_[2] = {-1, -1};   // the live (0x29) requests in flight: slots 0-5 and 6-7
   uint8_t seq_ = 0;
   Slot slots_[kSlots];

@@ -122,8 +122,9 @@ class Dongle {
   void Ident(int slot);
 
   const std::string path_, serial_;
-  void* dev0_ = nullptr;  // hid_device*
-  void* dev1_ = nullptr;
+  static constexpr int kInterfaces = 4;   // interface 0: commands; slot s streams on interface s % 4
+  void* dev0_ = nullptr;                   // hid_device*: devs_[0]
+  void* devs_[kInterfaces] = {};
   uint8_t seq_ = 0;
   std::thread thread_;
   std::atomic<bool> stop_{false}, alive_{true};

@@ -22,7 +22,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
-constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdLive = 0x29, kCmdIdent = 0x2A;
+constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
 uint32_t Rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
 
@@ -52,26 +52,27 @@ void AddSensorType(std::string* json, int type) {
 }  // namespace
 
 std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list, std::map<std::string, int>* shared) {
-  // interface 0: commands/replies + even slots' stream; interface 1 (newer dongle firmware): odd slots'
-  // stream (a second 1 ms IN endpoint; one carries ~61 kB/s, six devices need more). Both carry the
-  // dongle's USB serial: that pairs them, whatever order hidapi lists them in.
-  struct Interfaces { std::vector<std::string> if0, if1; };
-  std::map<std::string, Interfaces> bySerial;
+  // Every interface carries the dongle's USB serial: that groups them, whatever order hidapi lists them in.
+  std::map<std::string, std::array<std::vector<std::string>, kDoormanInterfaces>> bySerial;
   for (const hid_device_info* d = list; d; d = d->next) {
     if (d->vendor_id != kVid || d->product_id != kPid || !d->path) continue;
     if (Narrow(d->product_string) != "Doorman Dongle") continue;
-    auto& found = bySerial[Narrow(d->serial_number)];
-    (d->interface_number == 1 ? found.if1 : found.if0).push_back(d->path);
+    if (d->interface_number < 0 || d->interface_number >= kDoormanInterfaces) continue;
+    bySerial[Narrow(d->serial_number)][size_t(d->interface_number)].push_back(d->path);
   }
   std::vector<DoormanDongleFound> out;
   for (const auto& [usbSerial, found] : bySerial) {
     const std::string serial = "OHDG-" + usbSerial;
-    if (found.if0.size() > 1 || found.if1.size() > 1) {   // several dongles: whose interface 1 is whose?
-      if (shared) (*shared)[serial] = int(std::max(found.if0.size(), found.if1.size()));
+    size_t most = 0, fewest = SIZE_MAX;
+    for (const auto& paths : found) { most = std::max(most, paths.size()); fewest = std::min(fewest, paths.size()); }
+    if (most > 1) {   // several dongles: whose interfaces are whose?
+      if (shared) (*shared)[serial] = int(most);
       continue;
     }
-    if (found.if0.empty()) continue;   // interface 1 only: interface 0 isn't listed yet
-    out.push_back({serial, found.if0.front(), found.if1.empty() ? std::string() : found.if1.front()});
+    if (fewest == 0) continue;   // not every interface listed yet
+    DoormanDongleFound f{serial, {}};
+    for (int i = 0; i < kDoormanInterfaces; ++i) f.paths[size_t(i)] = found[size_t(i)].front();
+    out.push_back(std::move(f));
   }
   return out;
 }
@@ -107,11 +108,15 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
   if (dev_) return true;
   if (now < nextOpen_) return false;
   nextOpen_ = now + 2.0;
-  dev_ = hid_open_path(found.path.c_str());
-  if (!dev_) return false;
-  hid_set_nonblocking(dev_, 1);
-  dev1_ = found.path1.empty() ? nullptr : hid_open_path(found.path1.c_str());
-  if (dev1_) hid_set_nonblocking(dev1_, 1);
+  for (int i = 0; i < kDoormanInterfaces; ++i) {
+    devs_[size_t(i)] = hid_open_path(found.paths[size_t(i)].c_str());
+    if (!devs_[size_t(i)]) {   // all or nothing: a slot on a missing interface would never be heard
+      for (auto& d : devs_) if (d) { hid_close(d); d = nullptr; }
+      return false;
+    }
+    hid_set_nonblocking(devs_[size_t(i)], 1);
+  }
+  dev_ = devs_[0];
   {
     std::lock_guard lock(mutex_);
     opened_ = true;
@@ -120,14 +125,6 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
   nextLive_ = 0;
   log_(LogLevel::Info, "Doorman Dongle " + serial_ + " opened");
   return true;
-}
-
-void DoormanDongle::OpenInterface1(const std::string& path1) {
-  if (!dev_ || dev1_ || path1.empty()) return;
-  dev1_ = hid_open_path(path1.c_str());
-  if (!dev1_) return;
-  hid_set_nonblocking(dev1_, 1);
-  log_(LogLevel::Info, "Doorman Dongle " + serial_ + ": interface 1 opened");
 }
 
 void DoormanDongle::Drop() {
@@ -148,10 +145,8 @@ void DoormanDongle::Drop() {
     s.waitConfig.clear();
     frag_[i].clear();
   }
-  hid_close(dev_);
+  for (auto& d : devs_) if (d) { hid_close(d); d = nullptr; }
   dev_ = nullptr;
-  if (dev1_) hid_close(dev1_);
-  dev1_ = nullptr;
   {
     std::lock_guard lock(mutex_);
     opened_ = false;
@@ -172,7 +167,11 @@ void DoormanDongle::Close() {
 
 void DoormanDongle::Send(uint8_t cmd, const uint8_t* args, size_t n) {
   if (!dev_) return;
-  uint8_t buf[65] = {0, cmd, ++seq_};
+  // Every program on the dongle sees every reply, matched by [cmd][seq]: the driver numbers its
+  // commands 1..127, the tools (dongle manager, installer, scripts) 128..255, so a reply to one
+  // is never taken for the other's (the manager's slots 6-7 read as the driver's 0-5 dropped them all).
+  seq_ = uint8_t(seq_ % 127 + 1);
+  uint8_t buf[65] = {0, cmd, seq_};
   std::memcpy(buf + 3, args, std::min<size_t>(n, 62));
   if (hid_write(dev_, buf, sizeof buf) < 0) Drop();
 }
@@ -191,6 +190,14 @@ void DoormanDongle::Pump(double now) {
       const uint8_t first = uint8_t(page * 6);
       Send(kCmdLive, &first, 1);
       liveSeq_[page] = seq_;
+    }
+  }
+  if (now >= nextIds_) {               // which device each slot is paired to: a re-pair can swap it with no gap
+    nextIds_ = now + 1.0;
+    for (int page = 0; page < 2; ++page) {
+      const uint8_t first = uint8_t(page * 6);
+      Send(kCmdSlots, &first, 1);
+      idsSeq_[page] = seq_;
     }
   }
   if (now >= nextStats_) {             // one paired slot's counters every 1/kSlots s: each slot once a second
@@ -307,8 +314,8 @@ void DoormanDongle::Pump(double now) {
     }
     return n[cur] >= 0;
   };
-  if (dev1_ && !drain(dev1_)) { Drop(); return; }
-  if (!drain(dev_)) Drop();
+  for (auto* d : devs_)
+    if (!drain(d)) { Drop(); return; }
 }
 
 void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
@@ -344,15 +351,25 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
       Slot& s = slots_[i];
       s.used = e[0] & 1;
       const bool active = (e[0] & 2) != 0;
-      if (s.active && !active) {
-        if (s.attached) Detach(i);
-        s.serial.clear();
-        s.noIdent = false;
-        s.identTries = 0;
-        s.waiting = false;
-        s.waitConfig.clear();
-      }
+      if (s.active && !active) ResetSlot(i);
       s.active = active;
+    }
+  } else if (r[0] == kCmdSlots && r[2] == 0 && n >= 63 && (r[1] == idsSeq_[0] || r[1] == idsSeq_[1])) {
+    const int page = r[1] == idsSeq_[0] ? 0 : 1;
+    idsSeq_[page] = -1;
+    for (int i = page * 6; i < kSlots && i < page * 6 + 6; ++i) {
+      const uint8_t* e = d + (i - page * 6) * 10;
+      Slot& s = slots_[i];
+      if (!e[0]) { s.havePairId = false; continue; }   // not paired
+      std::array<uint8_t, 8> id;
+      std::memcpy(id.data(), e + 2, 8);
+      if (s.havePairId && id != s.pairId) {
+        log_(LogLevel::Info, "Doorman Dongle " + serial_ + " slot " + std::to_string(i) + ": paired to another device" +
+                                 (s.serial.empty() ? std::string() : " (was " + s.serial + ")"));
+        ResetSlot(i);
+      }
+      s.pairId = id;
+      s.havePairId = true;
     }
   } else if (r[0] == kCmdStats && r[2] == 0 && n >= 63 && statsSeq_ >= 0 && r[1] == (statsSeq_ & 0xff)) {
     Slot& s = slots_[statsSeq_ >> 8];
@@ -593,6 +610,17 @@ void DoormanDongle::Attach(int slot, const std::string& configIn) {
     eps_.push_back(btn);
   }
   log_(LogLevel::Info, s.serial + ": connected on Doorman Dongle " + serial_ + " slot " + std::to_string(slot));
+}
+
+void DoormanDongle::ResetSlot(int slot) {
+  Slot& s = slots_[slot];
+  if (s.attached) Detach(slot);
+  s.serial.clear();
+  s.noIdent = false;
+  s.identTries = 0;
+  s.identAskT = 0;
+  s.waiting = false;
+  s.waitConfig.clear();
 }
 
 void DoormanDongle::Detach(int slot) {

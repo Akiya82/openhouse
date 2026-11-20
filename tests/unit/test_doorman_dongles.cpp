@@ -223,10 +223,9 @@ class Doorman : public testing::Test {
     fs::remove_all(configs, ec);
     fake::Reset();
   }
-  // A dongle's interfaces: <name>0, and <name>1 unless it has none.
-  static void Plug(const std::string& name, const std::wstring& serial, bool interface1 = true) {
-    fake::plugged.push_back({name + "0", serial, 0});
-    if (interface1) fake::plugged.push_back({name + "1", serial, 1});
+  // A dongle's interfaces: <name>0 .. <name>3 (slot s streams on interface s % 4).
+  static void Plug(const std::string& name, const std::wstring& serial) {
+    for (int i = 0; i < 4; ++i) fake::plugged.push_back({name + std::to_string(i), serial, i});
   }
   // The probe's scan, then a reader pass of the dongles, 0.3 s later than the last.
   void Step() {
@@ -258,46 +257,53 @@ class Doorman : public testing::Test {
   void Connect(const std::string& name, int slot, uint32_t device, uint8_t active) {
     Queue(name + "0", Live(active));
     Step();
-    Queue(name + (slot % 2 && fake::Open(name + "1") ? "1" : "0"), Ident(slot, device));
+    Queue(name + std::to_string(slot % 4), Ident(slot, device));
     Step();
     Step();   // the slot table (Receivers) follows on the next stats refresh
   }
 };
 
-TEST(DoormanFind, InterfacesArePairedBySerialWhateverTheOrder) {
+// Every interface of two dongles, interleaved and out of order.
+std::vector<fake::Interface> Interleaved() {
+  std::vector<fake::Interface> out;
+  for (int i : {3, 1, 0, 2}) {
+    out.push_back({"B" + std::to_string(i), L"TESTB", i});
+    out.push_back({"A" + std::to_string(i), L"TESTA", i});
+  }
+  return out;
+}
+
+TEST(DoormanFind, InterfacesAreGroupedBySerialWhateverTheOrder) {
   fake::Reset();
-  fake::plugged = {{"B1", L"TESTB", 1}, {"A0", L"TESTA", 0}, {"B0", L"TESTB", 0}, {"A1", L"TESTA", 1}};
+  fake::plugged = Interleaved();
   std::map<std::string, int> shared;
   const auto found = lh::usb::ScanDoormanDongles(&shared);
   ASSERT_EQ(found.size(), 2u);
   EXPECT_EQ(found[0].serial, "OHDG-TESTA");
-  EXPECT_EQ(found[0].path, "A0");
-  EXPECT_EQ(found[0].path1, "A1");
+  EXPECT_EQ(found[0].paths, (std::array<std::string, 4>{"A0", "A1", "A2", "A3"}));
   EXPECT_EQ(found[1].serial, "OHDG-TESTB");
-  EXPECT_EQ(found[1].path, "B0");
-  EXPECT_EQ(found[1].path1, "B1");
+  EXPECT_EQ(found[1].paths, (std::array<std::string, 4>{"B0", "B1", "B2", "B3"}));
   EXPECT_TRUE(shared.empty());
   fake::Reset();
 }
 
 TEST(DoormanFind, SharedOrMissingSerialsAreNotGuessed) {
   fake::Reset();
-  // Two dongles without a serial, two with the same one, one alone without a serial is fine
-  // elsewhere (EmptySerialDongleWorksAlone); interface 1 without its interface 0 waits.
-  fake::plugged = {{"E0", L"", 0}, {"F1", L"", 1}, {"F0", L"", 0}, {"E1", L"", 1},
-                   {"T0", L"TWIN", 0}, {"U0", L"TWIN", 0}, {"T1", L"TWIN", 1}, {"U1", L"TWIN", 1},
-                   {"L1", L"LATE", 1}, {"A0", L"TESTA", 0}};
+  // Two dongles without a serial, two with the same one; one with an interface not listed yet waits.
+  for (const char* name : {"E", "F"}) for (int i = 0; i < 4; ++i) fake::plugged.push_back({name + std::to_string(i), L"", i});
+  for (const char* name : {"T", "U"}) for (int i = 0; i < 4; ++i) fake::plugged.push_back({name + std::to_string(i), L"TWIN", i});
+  for (int i = 0; i < 3; ++i) fake::plugged.push_back({"L" + std::to_string(i), L"LATE", i});
+  for (int i = 0; i < 4; ++i) fake::plugged.push_back({"A" + std::to_string(i), L"TESTA", i});
   std::map<std::string, int> shared;
   const auto found = lh::usb::ScanDoormanDongles(&shared);
   ASSERT_EQ(found.size(), 1u);
   EXPECT_EQ(found[0].serial, "OHDG-TESTA");
-  EXPECT_EQ(found[0].path1, "");
   EXPECT_EQ(shared, (std::map<std::string, int>{{"OHDG-", 2}, {"OHDG-TWIN", 2}}));
   fake::Reset();
 }
 
-TEST_F(Doorman, TwoDonglesEnumeratedInterleavedEachReadItsOwnOddSlots) {
-  fake::plugged = {{"B1", L"TESTB", 1}, {"A0", L"TESTA", 0}, {"B0", L"TESTB", 0}, {"A1", L"TESTA", 1}};
+TEST_F(Doorman, TwoDonglesEnumeratedInterleavedEachReadItsOwnSlots) {
+  fake::plugged = Interleaved();
   Step();
   EXPECT_EQ(sink.Count("Doorman Dongle OHDG-TESTA opened"), 1u);
   EXPECT_EQ(sink.Count("Doorman Dongle OHDG-TESTB opened"), 1u);
@@ -336,24 +342,17 @@ TEST_F(Doorman, EmptySlotsOfEveryDongleAreOfferedBeforePairedOnes) {
   EXPECT_EQ(order.back(), "OHDG-TESTB/0*");
 }
 
-TEST_F(Doorman, DongleWithoutInterface1StreamsEverySlotOnInterface0) {
-  Plug("A", L"TESTA", false);   // older dongle firmware
+TEST_F(Doorman, ADongleOpensOnceEveryInterfaceIsListedAndEachSlotStreamsOnItsOwn) {
+  for (int i = 0; i < 3; ++i) fake::plugged.push_back({"A" + std::to_string(i), L"TESTA", i});
   Step();
-  Connect("A", 1, kA1, 0b10);
-  EXPECT_EQ(sink.Count(Serial(kA1) + ": connected on Doorman Dongle OHDG-TESTA slot 1"), 1u);
-  EXPECT_EQ(Slots().at("OHDG-TESTA/1"), Serial(kA1));
-  Queue("A0", Imu(1, 7));
+  EXPECT_EQ(sink.Count("Doorman Dongle OHDG-TESTA opened"), 0u);   // interface 3 isn't listed yet
+  fake::plugged.push_back({"A3", L"TESTA", 3});
   Step();
-  EXPECT_TRUE(fake::Open("A0")->input.empty());
-  // An interface 1 listed only after interface 0 was opened (plugged in between two scans).
-  fake::plugged.push_back({"A1", L"TESTA", 1});
-  Step();
-  EXPECT_EQ(sink.Count("Doorman Dongle OHDG-TESTA: interface 1 opened"), 1u);
-  Queue("A0", Live(0b1010));
-  Step();
-  Queue("A1", Ident(3, kA2));
-  Step();
-  EXPECT_EQ(sink.Count(Serial(kA2) + ": connected on Doorman Dongle OHDG-TESTA slot 3"), 1u);
+  EXPECT_EQ(sink.Count("Doorman Dongle OHDG-TESTA opened"), 1u);
+  Connect("A", 3, kA1, 0b1000);   // slot 3 on interface 3
+  Connect("A", 6, kA2, 0b1001000);   // slot 6 on interface 2
+  EXPECT_EQ(sink.Count(Serial(kA1) + ": connected on Doorman Dongle OHDG-TESTA slot 3"), 1u);
+  EXPECT_EQ(sink.Count(Serial(kA2) + ": connected on Doorman Dongle OHDG-TESTA slot 6"), 1u);
 }
 
 TEST_F(Doorman, EmptySerialDongleWorksAlone) {

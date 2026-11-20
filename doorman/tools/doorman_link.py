@@ -65,21 +65,19 @@ class Dongle:
             if not devs: raise IOError("Doorman Dongle (6767:0727) not found")
             path = next((d["path"] for d in devs if d.get("interface_number", 0) in (0, -1)), devs[0]["path"])
         self.h = hid.Device(path=path)
-        # interface 1 (dongle fw with two HID interfaces): stream of the odd slots
-        self.h1 = None
-        sib = [d["path"] for d in hid.enumerate(VID, PID) if d.get("interface_number") == 1
-               and d["path"] != path and d.get("serial_number") == self.h.serial]
-        if sib: self.h1 = hid.Device(path=sib[0])
+        # interfaces 1..3: slot s streams on interface s % 4 (interface 0 also carries commands)
+        self.hs = [hid.Device(path=d["path"]) for d in sorted(hid.enumerate(VID, PID), key=lambda d: d.get("interface_number", 0))
+                   if d.get("interface_number", 0) in (1, 2, 3) and d["path"] != path and d.get("serial_number") == self.h.serial]
         self._pending = []
         self._seq = 0
         self._frag = {}
     def __enter__(self): return self
     def __exit__(self, *a):
         self.h.close()
-        if self.h1: self.h1.close()
+        for h in self.hs: h.close()
 
     def cmd(self, c, args=b"", timeout=1000):
-        self._seq = (self._seq + 1) & 0xFF
+        self._seq = 0x80 | ((self._seq + 1) & 0x7F)   # 128..255: the driver uses 1..127 and sees our replies
         seq = self._seq
         self.h.write(bytes([0, c, seq]) + bytes(args) + bytes(62 - len(args)))
         t0 = time.time()
@@ -91,12 +89,12 @@ class Dongle:
 
     def reports(self, timeout_ms=100):
         while self._pending: yield self._pending.pop(0)
-        if self.h1:
+        for h in self.hs:
             for _ in range(8):
-                r = self.h1.read(64, 0)
+                r = h.read(64, 0)
                 if not r: break
                 yield bytes(r)
-        r = self.h.read(64, timeout_ms if not self.h1 else min(timeout_ms, 2))
+        r = self.h.read(64, timeout_ms if not self.hs else min(timeout_ms, 2))
         if r: yield bytes(r)
 
     def frames(self, raw=False, timeout_ms=100):

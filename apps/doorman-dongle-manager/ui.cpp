@@ -301,6 +301,7 @@ void Ui::Poll(double now) {
   if (driver_.Connected())
     for (const auto& dev : driver_.Current().devices) driverModel[dev.serial] = dev.model;
   for (const auto& d : manager_.Dongles()) {
+    d->SetAutoIdentify(!driver_.Connected());
     const DongleState st = d->Snapshot();
     Remember(st);
     for (int i = 0; i < kSlots; ++i) {

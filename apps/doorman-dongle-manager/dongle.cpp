@@ -1,5 +1,7 @@
 #include "dongle.hpp"
 
+#include <cmath>
+
 #include <hidapi/hidapi.h>
 #include <nlohmann/json.hpp>
 
@@ -222,10 +224,22 @@ void Dongle::Poll(double now) {
         auto& s = state_.slots[i];
         s.used = e[0] & 1;
         s.active = (e[0] & 2) != 0;
-        s.rssiDongle = s.active ? -int(e[1]) : 0;
-        s.rssiDevice = s.active ? -int(e[2]) : 0;
         s.rssiMin = -int(e[4]);  // min/max are magnitudes: the strongest is the smallest
         s.rssiMax = -int(e[3]);
+        // Signal strength differs by several dB from channel to channel (the link hops every
+        // cycle), so a single reading jumps around: show an average over all channels instead.
+        // The dongle's min/max cover every poll since the last read (all channels), the device's
+        // value is one reading (from the previous poll).
+        if (!s.active) {
+          s.rssiDongle = s.rssiDevice = 0;
+          rssiAvgD_[i] = rssiAvgT_[i] = 0;
+        } else {
+          const double d = e[3] && e[4] ? (double(e[3]) + double(e[4])) / 2 : double(e[1]);
+          rssiAvgD_[i] = rssiAvgD_[i] ? rssiAvgD_[i] * 0.7 + d * 0.3 : d;
+          rssiAvgT_[i] = rssiAvgT_[i] ? rssiAvgT_[i] * 0.8 + double(e[2]) * 0.2 : double(e[2]);
+          s.rssiDongle = -int(std::lround(rssiAvgD_[i]));
+          s.rssiDevice = -int(std::lround(rssiAvgT_[i]));
+        }
         s.msSinceResponse = Rd32(e + 6);
         state_.currentChannel = e[5];
       }
@@ -251,7 +265,7 @@ void Dongle::Poll(double now) {
       for (int i = 0; i < kSlots; ++i) {
         auto& s = state_.slots[i];
         const std::string id = r.data[i * 10] ? Hex(r.data.data() + i * 10 + 2, 8) : std::string();
-        if (id != s.pairId) { s.pairId = id; s.id = {}; s.nickname.clear(); identTried_[i] = 0; }
+        if (id != s.pairId) { s.pairId = id; s.id = {}; s.nickname.clear(); identTried_[i] = 0; configTried_[i] = 0; configNext_[i] = 0; }
         if (!id.empty() && s.id.serial.empty())
           for (const auto& [k, v] : known_)
             if (k == id) s.id = v;
@@ -278,6 +292,20 @@ void Dongle::Poll(double now) {
         want = s.active && s.id.serial.empty() && identTried_[i] < 3;
       }
       if (want) { identTried_[i]++; Ident(i); }
+      // No 'H' (HTC's and Valve's main firmware don't send it): read the device's config for its
+      // serial and model, unless the driver is running (it names devices and reads them itself).
+      bool read;
+      {
+        std::lock_guard lock(mutex_);
+        const auto& s = state_.slots[i];
+        read = autoIdentify_ && s.active && s.id.serial.empty() && identTried_[i] >= 1 && configTried_[i] < 3 &&
+               now >= configNext_[i];
+      }
+      if (read) {
+        configTried_[i]++;
+        configNext_[i] = now + 10;
+        Identify(i, nullptr);
+      }
     }
     // totals for the header
     std::lock_guard lock(mutex_);
@@ -289,13 +317,13 @@ void Dongle::Poll(double now) {
       if (s.active) state_.kBytesPerSec += s.kBytesPerSec;
     }
   }
-  if (now >= nextStats_) {  // each paired slot's counters once a second, spread out
-    nextStats_ = now + 1.0 / kSlots;
-    const int slot = statsSlot_;
-    statsSlot_ = (statsSlot_ + 1) % kSlots;
-    bool used;
-    { std::lock_guard lock(mutex_); used = state_.slots[slot].used; }
-    if (used) PollStats(slot, now);
+  if (now >= nextStats_) {  // every paired slot's counters once a second, all together
+    nextStats_ = now + 1.0;
+    for (int slot = 0; slot < kSlots; ++slot) {
+      bool used;
+      { std::lock_guard lock(mutex_); used = state_.slots[slot].used; }
+      if (used) PollStats(slot, now);
+    }
   }
 }
 

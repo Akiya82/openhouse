@@ -96,6 +96,8 @@ class Dongle {
   void Forget(int slot, Done done);             // -1: every slot
   void PowerOff(int slot, Done done);           // host command 0x9f "off!" through the radio
   void Identify(int slot, Done done);           // read its config over the radio for its name
+  // Read unnamed devices' configs by itself (off while the driver runs: it names them).
+  void SetAutoIdentify(bool on) { autoIdentify_ = on; }
   void Scan(Done done);                         // RSSI over 2400..2480 MHz (pauses the link ~0.2 s)
   void Reset(Done done);
   void EnterBootloader(Done done);              // UF2 drive (firmware update)
@@ -142,14 +144,17 @@ class Dongle {
     uint64_t imu0 = 0, light0 = 0, input0 = 0;
   };
   std::array<Counters, kSlots> counters_{};
+  std::array<double, kSlots> rssiAvgD_{}, rssiAvgT_{};   // -dBm averages over channels (0: none yet)
   std::array<std::vector<uint8_t>, kSlots> frag_;
   std::array<int, kSlots> identTried_{};  // ident attempts made
+  std::atomic<bool> autoIdentify_{false};
+  std::array<int, kSlots> configTried_{};  // config reads made for a name
+  std::array<double, kSlots> configNext_{};
   // a feature read waiting for the device's 'P' answer
   int waitSlot_ = -1;
   std::vector<uint8_t> waitReply_;
   bool waitDone_ = false;
   double nextLive_ = 0, nextSlow_ = 0, nextStats_ = 0;
-  int statsSlot_ = 0;
 };
 
 // Every Doorman Dongle plugged in, found again every two seconds.

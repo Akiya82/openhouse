@@ -477,6 +477,16 @@ static uint16_t uq_head, uq_tail;
 static uint32_t uq_drops;
 static ohc_state_t ohc;                 /* air codec state, reset on every join */
 static uint16_t uq_used(void) { return (uint16_t)((uq_tail - uq_head) & (UQ_BYTES - 1)); }
+/* Replies to the host ('P' feature replies, 'H' identity) queue apart and go out first. In the shared
+   queue they waited behind ~1 KB of IMU/light when the link was busy (six devices on one dongle), or
+   were dropped when it was full: a config read over the radio is a stream of 0x11 replies, and one
+   late or lost reply broke the whole read. They don't touch the air codec (only 'p'/'q' do), so
+   sending them ahead keeps both ends in step. */
+#define PQ_BYTES 256
+static uint8_t pq[PQ_BYTES];
+static uint16_t pq_head, pq_tail;
+static uint32_t pq_drops;
+static uint16_t pq_used(void) { return (uint16_t)((pq_tail - pq_head) & (PQ_BYTES - 1)); }
 
 static uint8_t pkt_rx[2 + OHL_MAXLEN];
 static uint8_t pb[3][2 + OHL_MAXLEN];  /* RESP buffers: [len][payload] */
@@ -573,6 +583,12 @@ static void link_from_lpc(const uint8_t *f, uint8_t n)
 }
 static void uplink_push(const uint8_t *f, uint8_t n)
 {
+  if (n && (f[0] == 'P' || f[0] == 'H')) {
+    if (pq_used() + n + 1 >= PQ_BYTES) { pq_drops++; return; }
+    pq[pq_tail] = n; pq_tail = (pq_tail + 1) & (PQ_BYTES - 1);
+    for (int i = 0; i < n; i++) { pq[pq_tail] = f[i]; pq_tail = (pq_tail + 1) & (PQ_BYTES - 1); }
+    return;
+  }
   if (uq_used() + n + 1 >= UQ_BYTES) { uq_drops++; return; }   /* drop BEFORE the codec sees it */
   static uint8_t enc[80];
   addr_check();
@@ -629,7 +645,7 @@ static void arm_rx(int auto_tx)
 static void go_unjoined(void)
 {
   if (link_up) { uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
-  link_up = 0; joined = 0; on = 0; send_i = 0; uq_head = uq_tail;
+  link_up = 0; joined = 0; on = 0; send_i = 0; uq_head = uq_tail; pq_head = pq_tail;
   radio_stop();
   set_addr(OHL_JOIN_BASE, OHL_JOIN_PREFIX);
   cur_ch = OHL_JOIN_CHANNEL;
@@ -641,7 +657,7 @@ static void go_joined(uint32_t base, uint8_t slot)
 {
   radio_stop();
   joined = 1; my_slot = slot; net_base = base;
-  memset(&ohc, 0, sizeof ohc); uq_head = uq_tail;
+  memset(&ohc, 0, sizeof ohc); uq_head = uq_tail; pq_head = pq_tail;
   on = 0; send_i = 0; next_seq = 0; last_dseq = 1; have_cycle = 0;
   mask = 0xFFFF; cur_ch = ohl_hop_ch[0]; period_us = 2000; max_resp = OHL_MAXLEN;
   last_poll_us = now_us();
@@ -659,6 +675,13 @@ static uint8_t build_new(void)                             /* fill a free buffer
   while ((on > 0 && ob[0] == b) || (on > 1 && ob[1] == b)) b++;
   uint8_t *p = pb[b] + 1;
   int len = OHL_RESP_HDR;
+  while (pq_used()) {                                      /* replies first */
+    uint8_t n = pq[pq_head];
+    if (len + 1 + n > max_resp) break;
+    p[len++] = n;
+    for (int i = 0; i < n; i++) p[len++] = pq[(pq_head + 1 + i) & (PQ_BYTES - 1)];
+    pq_head = (pq_head + 1 + n) & (PQ_BYTES - 1);
+  }
   while (uq_used()) {
     uint8_t n = uq[uq_head];
     if (len + 1 + n > max_resp) break;

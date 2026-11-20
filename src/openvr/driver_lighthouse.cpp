@@ -2014,7 +2014,8 @@ class Provider : public IServerTrackedDeviceProvider {
   // once. Read from the file itself: SteamVR's GetBool answers false with no error for a key
   // it has no default for, which would turn options off.
   void MigrateSteamVRSettings() {
-    const std::string path = lh::platform::SteamConfigDirectory() + "/steamvr.vrsettings";
+    // <Steam>/config/, not SteamConfigDirectory() (<Steam>/config/lighthouse): there it was never found.
+    const std::string path = lh::platform::SteamRoot() + "/config/steamvr.vrsettings";
     std::ifstream in(std::filesystem::u8path(path));
     if (!in) return;
     const nlohmann::json vr = nlohmann::json::parse(in, nullptr, false);

@@ -6,7 +6,8 @@ radio images can be put back this way) and the Tracker 1.0.
   air_update.py info    SLOT
   air_update.py install SLOT IMAGE [--no-reset]     IMAGE: .fw (SteamVR or ours) or a raw .bin
       then powers the device off; turn it back on to install (it installs at boot)
-      --reboot: reboot it instead and check the version automatically (headless)
+      --reboot: reboot it instead and check the version automatically (headless); a Tracker 1.0
+                turns off instead (its main firmware), and installs when you turn it back on
 
 Protocol: radio-fw/src/main.c air_update() (downlink frame op 0xF0 'X'/'Y'/'Z'/'['/'R').
 """
@@ -116,8 +117,12 @@ def reboot(d, a, slot, want):
     d.send(slot, bytes([ord('P'), 0x95, 0x00]))
     t = time.time()
     while active(d, slot) and time.time() - t < 3: time.sleep(0.1)
+    tracker10 = want >> 24 == 0x0A
     if active(d, slot):
         print('device did not reboot; resetting the radio alone'); a.req('R')
+    elif tracker10:
+        # HTC's Tracker 1.0 main firmware turns the device off on 0x95 instead of rebooting it.
+        print('device turned off (a Tracker 1.0 does that): turn it back on to install')
     else:
         print('device rebooting to install')
     if want >> 24 not in (0x0A, 0x6A):              # not our firmware (e.g. Valve's radio put back)
@@ -125,8 +130,9 @@ def reboot(d, a, slot, want):
               'check it through a Valve/HTC dongle (lighthouse_console: version)')
         return
     t = time.time()
-    while not active(d, slot) and time.time() - t < 30: time.sleep(0.2)
-    if not active(d, slot): sys.exit('device did not come back within 30 s')
+    wait = 120 if tracker10 else 30
+    while not active(d, slot) and time.time() - t < wait: time.sleep(0.2)
+    if not active(d, slot): sys.exit(f'device did not come back within {wait} s')
     time.sleep(0.5)
     ver = info(a)
     print('INSTALLED' if ver == want else f'version {ver:#x}, expected {want:#x}: NOT installed (the old radio is still running)')

@@ -315,8 +315,119 @@ static void gpio_watch_poll(void)
     if (gw[i].mode == 3 || (gw[i].mode == 1 && lv) || (gw[i].mode == 2 && !lv)) gpio_edge(gw[i].pin, lv);
   }
 }
+/* Analog service, in the same 0x83 requests (Valve's sub-ops 1e/1f/21/28): the Index's thumbstick axes
+   and trackpad force sensor are wired to the nRF's analog inputs, and the main MCU has the radio
+   sample them. Without it the stick stays centred and force reads nothing, on USB too.
+     1e: [res 0-3][oversample 0-8]                     -> 80 st
+     1f:                                               -> 84 20 00 00 00 00 [res][oversample]
+     21: channel: [ain+][ain-] (0-7 AINn, 8 VDD, 9 none) [res+][res-][gain][ref][tacq]
+         [excite pin][active level][settle us u32][use excite]           -> 80 st (3: no free channel)
+     28: [u32 mask, bit k = ain+ k]: sample those once, in channel order -> 80 st, then
+         84 29 00 00 00 00 [n] n x [ain+][ain-][s16]
+   Before each sample the excite pin is driven to its level for the settle time, then released. */
+#define ADC_CH 4
+static struct { uint8_t used, p, n, pin, level, excite, want; uint32_t config, settle_us; } adc[ADC_CH];
+static uint8_t adc_cur = 0xFF, adc_state, adc_rep[7 + 4 * ADC_CH];   /* state 0 idle, 1 settling, 2 converting */
+static uint32_t adc_t;
+static volatile int16_t adc_sample;
+static const uint8_t adc_pin[8] = { 2, 3, 4, 5, 28, 29, 30, 31 };
+static uint8_t adc_psel(uint8_t code) { return code < 9 ? (uint8_t)(code + 1) : 0; }   /* 1-8 AIN0-7, 9 VDD */
+static void adc_excite(int i, int on)
+{
+  if (!adc[i].excite || !adc[i].pin || adc[i].pin > 31) return;
+  if ((adc[i].level != 0) == (on != 0)) NRF_P0->OUTSET = 1u << adc[i].pin; else NRF_P0->OUTCLR = 1u << adc[i].pin;
+}
+static void adc_next(void)
+{
+  int i = adc_cur == 0xFF ? 0 : adc_cur + 1;
+  while (i < ADC_CH && !(adc[i].used && adc[i].want)) i++;
+  if (i >= ADC_CH) {                                       /* all done: one report */
+    adc_cur = 0xFF; adc_state = 0;
+    NRF_SAADC->ENABLE = 0;
+    adc_rep[0] = 0x84; adc_rep[1] = 0x29; memset(adc_rep + 2, 0, 4);
+    reply_push(adc_rep, (uint8_t)(7 + 4 * adc_rep[6]));
+    adc_rep[6] = 0;
+    return;
+  }
+  adc_cur = (uint8_t)i; adc[i].want = 0;
+  NRF_SAADC->ENABLE = 1;
+  NRF_SAADC->CH[0].PSELP = adc_psel(adc[i].p);
+  NRF_SAADC->CH[0].PSELN = adc_psel(adc[i].n);
+  NRF_SAADC->CH[0].CONFIG = adc[i].config;
+  NRF_SAADC->RESULT.PTR = (uint32_t)&adc_sample; NRF_SAADC->RESULT.MAXCNT = 1;
+  NRF_SAADC->EVENTS_STARTED = 0; NRF_SAADC->EVENTS_END = 0;
+  NRF_SAADC->TASKS_START = 1;
+  for (uint32_t t = now_us(); !NRF_SAADC->EVENTS_STARTED && now_us() - t < 100;) {}
+  if (adc[i].excite && adc[i].settle_us >= 16) { adc_excite(i, 1); adc_t = now_us(); adc_state = 1; }   /* like stock: < 1 RTC tick, none */
+  else { NRF_SAADC->TASKS_SAMPLE = 1; adc_state = 2; }
+}
+static void adc_poll(void)
+{
+  if (adc_state == 1 && now_us() - adc_t >= adc[adc_cur].settle_us) { NRF_SAADC->TASKS_SAMPLE = 1; adc_state = 2; }
+  if (adc_state != 2 || !NRF_SAADC->EVENTS_END) return;
+  NRF_SAADC->EVENTS_END = 0;
+  adc_excite(adc_cur, 0);
+  uint8_t *e = adc_rep + 7 + 4 * adc_rep[6]++;
+  e[0] = adc[adc_cur].p; e[1] = adc[adc_cur].n; e[2] = (uint8_t)adc_sample; e[3] = (uint8_t)((uint16_t)adc_sample >> 8);
+  adc_next();
+}
+static void adc_stop(void)
+{
+  if (adc_state) { adc_excite(adc_cur, 0); NRF_SAADC->TASKS_STOP = 1; NRF_SAADC->ENABLE = 0; }
+  adc_state = 0; adc_cur = 0xFF; adc_rep[6] = 0;
+  for (int i = 0; i < ADC_CH; i++) adc[i].want = 0;
+}
+static void adc_request(const uint8_t *f, uint8_t n)
+{
+  switch (f[1]) {
+  case 0x1e: {
+    if (n < 8) { reply2(0x80, 2); return; }
+    adc_stop();
+    NRF_SAADC->RESOLUTION = f[6] <= 3 ? f[6] : 0;
+    NRF_SAADC->OVERSAMPLE = f[7] <= 8 ? f[7] : 0;
+    reply2(0x80, 0); return;
+  }
+  case 0x1f: {
+    uint8_t b[8] = { 0x84, 0x20, 0, 0, 0, 0, (uint8_t)(NRF_SAADC->RESOLUTION & 7), (uint8_t)(NRF_SAADC->OVERSAMPLE & 0xF) };
+    reply_push(b, 8); return;
+  }
+  case 0x21: {
+    if (n < 20 || (f[6] > 8 && f[7] > 8)) { reply2(0x80, 2); return; }
+    uint8_t p = f[6] > 8 ? 9 : f[6], m = f[7] > 8 ? 9 : f[7];
+    int k = -1;
+    for (int i = 0; i < ADC_CH && k < 0; i++) if (adc[i].used && adc[i].p == p && adc[i].n == m) k = i;
+    for (int i = 0; i < ADC_CH && k < 0; i++) if (!adc[i].used) k = i;
+    if (k < 0) { reply2(0x80, 3); return; }
+    if (adc_state) adc_stop();
+    uint32_t c = (uint32_t)(f[8] & 3) | (uint32_t)(f[9] & 3) << 4 | (uint32_t)(f[10] <= 7 ? f[10] : 5) << 8 |
+                 (uint32_t)(f[11] == 1) << 12 | (uint32_t)(f[12] <= 5 ? f[12] : 0) << 16 |
+                 (uint32_t)(p != 9 && m != 9) << 20 | (uint32_t)((NRF_SAADC->OVERSAMPLE & 0xF) != 0) << 24;
+    adc[k].used = 1; adc[k].p = p; adc[k].n = m; adc[k].config = c;
+    adc[k].pin = f[13]; adc[k].level = f[14]; adc[k].excite = f[19];
+    adc[k].settle_us = (uint32_t)f[15] | (uint32_t)f[16] << 8 | (uint32_t)f[17] << 16 | (uint32_t)f[18] << 24;
+    if (p < 8) NRF_P0->PIN_CNF[adc_pin[p]] = 0;            /* as stock: a plain input (boot drives some) */
+    if (m < 8) NRF_P0->PIN_CNF[adc_pin[m]] = 0;
+    reply2(0x80, 0); return;
+  }
+  case 0x28: {
+    reply2(0x80, n < 10 ? 2 : 0);
+    if (n < 10) return;
+    if (adc_state) {                                       /* a new request cuts the last one short */
+      adc_stop();
+      uint8_t b[39] = { 0x84, 0x29 }; reply_push(b, sizeof b);
+    }
+    uint32_t mask = (uint32_t)f[6] | (uint32_t)f[7] << 8 | (uint32_t)f[8] << 16 | (uint32_t)f[9] << 24;
+    for (int i = 0; i < ADC_CH; i++) adc[i].want = adc[i].used && adc[i].p < 9 && (mask >> adc[i].p & 1);
+    adc_cur = 0xFF; adc_rep[6] = 0;
+    adc_next();
+    return;
+  }
+  }
+}
+
 static void gpio_request(const uint8_t *f, uint8_t n)
 {
+  if (n >= 2 && (f[1] == 0x1e || f[1] == 0x1f || f[1] == 0x21 || f[1] == 0x28)) { adc_request(f, n); return; }
   if (n < 6) { reply2(0x80, 0x04); return; }
   const uint8_t op = f[1], pin = f[6], arg = n > 7 ? f[7] : 0;
   uint8_t st = 2;
@@ -925,6 +1036,7 @@ int main(void)
 #ifdef DML_IDX
     sys_button_poll();
     gpio_watch_poll();
+    adc_poll();
 #endif
     if (pair_mode && now_us() - pair_since > 35000000u) pair_end();   /* the main MCU gives up at 30 s */
     drops_report();

@@ -49,30 +49,326 @@ void Step(int n, const char* text) {
 // Two to four big buttons side by side, centred; returns the one pressed (-1: none).
 enum class Tint { None, Red, Green, Yellow };
 
-int ChoiceRow(const std::vector<const char*>& labels, float height = 0, const std::vector<Tint>& tints = {}) {
-  const float gap = ImGui::GetStyle().ItemSpacing.x * 2;
-  const float avail = ImGui::GetContentRegionAvail().x;
-  const float w = std::min(360.f, (avail - gap * float(labels.size() - 1)) / float(labels.size()));
-  const float total = w * float(labels.size()) + gap * float(labels.size() - 1);
-  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - total) / 2));
-  int pressed = -1;
-  ImGui::PushFont(g_title);
-  for (size_t i = 0; i < labels.size(); ++i) {
-    if (i) ImGui::SameLine(0, gap);
-    const Tint tint = i < tints.size() ? tints[i] : Tint::None;
-    if (tint != Tint::None) {
-      const ImVec4 c = tint == Tint::Red ? ImVec4(0.62f, 0.24f, 0.24f, 1)
-                     : tint == Tint::Green ? ImVec4(0.22f, 0.50f, 0.28f, 1)
-                                           : ImVec4(0.62f, 0.50f, 0.16f, 1);
-      ImGui::PushStyleColor(ImGuiCol_Button, c);
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(c.x * 1.2f, c.y * 1.2f, c.z * 1.2f, 1));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(c.x * 0.85f, c.y * 0.85f, c.z * 0.85f, 1));
-    }
-    if (BigButton(labels[i], w, height > 0 ? height : ImGui::GetFrameHeight() * 3)) pressed = int(i);
-    if (tint != Tint::None) ImGui::PopStyleColor(3);
+// ---- tiles: big square choices with a drawn icon ----
+
+enum class Icon { Download, Refresh, Trash, Chip, Restore, BaseStation, Wireless, Dongle, Tracker, Wire };
+
+const ImU32 kAccent = IM_COL32(110, 168, 255, 255);
+
+ImU32 TintColor(Tint t) {
+  switch (t) {
+    case Tint::Red: return IM_COL32(240, 104, 100, 255);
+    case Tint::Green: return IM_COL32(98, 206, 120, 255);
+    case Tint::Yellow: return IM_COL32(242, 196, 82, 255);
+    default: return kAccent;
   }
-  ImGui::PopFont();
+}
+
+void Arc(ImDrawList* dl, ImVec2 c, float r, float a0, float a1, ImU32 col, float th) {
+  dl->PathArcTo(c, r, a0, a1, 32);
+  dl->PathStroke(col, 0, th);
+}
+
+// A ring with an arrowhead on its end (refresh style). clockwise false = mirror image.
+// The ring ends at the top with a gap beside it; the arrowhead's base sits across the ring's end
+// and its tip points sideways into the gap.
+void RingArrow(ImDrawList* dl, ImVec2 c, float r, float th, bool clockwise, ImU32 col) {
+  const float pi = 3.14159265f;
+  // clockwise in screen space (y down) = increasing angle
+  const float end = 1.5f * pi, start = end - 1.6f * pi;             // ends at the top
+  const auto mirror = [&](float a) { return clockwise ? a : pi - a; };
+  const float a0 = mirror(start), a1 = mirror(end);
+  dl->PathArcTo(c, r, a0, a1, 40);
+  dl->PathStroke(col, 0, th);
+  const ImVec2 e(c.x + std::cos(a1) * r, c.y + std::sin(a1) * r);
+  const ImVec2 radial(std::cos(a1), std::sin(a1));
+  // direction of travel at the end
+  const float sgn = clockwise ? 1.f : -1.f;
+  const ImVec2 d(-radial.y * sgn, radial.x * sgn);
+  const float half = th * 2.3f, len = th * 2.8f;
+  dl->AddTriangleFilled(ImVec2(e.x + radial.x * half, e.y + radial.y * half),
+                        ImVec2(e.x - radial.x * half, e.y - radial.y * half),
+                        ImVec2(e.x + d.x * len, e.y + d.y * len), col);
+}
+
+// Icons drawn in a box of side s around c.
+void DrawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
+  const float th = std::max(2.f, s * 0.07f), h = s / 2;
+  const auto P = [&](float x, float y) { return ImVec2(c.x + x * h, c.y + y * h); };
+  const float pi = 3.14159265f;
+  switch (icon) {
+    case Icon::Download:
+      dl->AddLine(P(0, -0.85f), P(0, 0.0f), col, th);
+      dl->AddTriangleFilled(P(-0.36f, -0.05f), P(0.36f, -0.05f), P(0, 0.38f), col);
+      dl->PathLineTo(P(-0.8f, 0.35f)); dl->PathLineTo(P(-0.8f, 0.8f)); dl->PathLineTo(P(0.8f, 0.8f)); dl->PathLineTo(P(0.8f, 0.35f));
+      dl->PathStroke(col, 0, th);
+      break;
+    case Icon::Refresh:
+      RingArrow(dl, c, h * 0.62f, th, true, col);
+      break;
+    case Icon::Restore:
+      RingArrow(dl, c, h * 0.62f, th, false, col);
+      dl->AddLine(ImVec2(c.x, c.y + th * 0.3f), P(0, -0.24f), col, th);
+      dl->AddLine(ImVec2(c.x - th * 0.3f, c.y), P(0.26f, 0.14f), col, th);
+      break;
+    case Icon::Trash:
+      dl->AddLine(P(-0.8f, -0.55f), P(0.8f, -0.55f), col, th);
+      dl->AddRect(P(-0.25f, -0.82f), P(0.25f, -0.55f), col, th * 0.5f, 0, th);
+      dl->AddRect(P(-0.6f, -0.4f), P(0.6f, 0.85f), col, th * 1.2f, 0, th);
+      dl->AddLine(P(-0.2f, -0.15f), P(-0.2f, 0.6f), col, th);
+      dl->AddLine(P(0.2f, -0.15f), P(0.2f, 0.6f), col, th);
+      break;
+    case Icon::Chip:
+      dl->AddRect(P(-0.55f, -0.55f), P(0.55f, 0.55f), col, th * 1.5f, 0, th);
+      dl->AddRectFilled(P(-0.22f, -0.22f), P(0.22f, 0.22f), col, th * 0.6f);
+      for (int i = -1; i <= 1; ++i) {
+        const float k = i * 0.3f;
+        dl->AddLine(P(k, -0.55f), P(k, -0.85f), col, th);
+        dl->AddLine(P(k, 0.55f), P(k, 0.85f), col, th);
+        dl->AddLine(P(-0.55f, k), P(-0.85f, k), col, th);
+        dl->AddLine(P(0.55f, k), P(0.85f, k), col, th);
+      }
+      break;
+    case Icon::BaseStation:
+      dl->AddRect(P(-0.75f, -0.75f), P(0.75f, 0.75f), col, h * 0.35f, 0, th);
+      dl->AddCircleFilled(P(0, -0.45f), h * 0.1f, col, 16);   // status light
+      break;
+    case Icon::Wireless: {
+      const ImVec2 o = P(0, 0.62f);
+      dl->AddCircleFilled(o, h * 0.13f, col);
+      for (int i = 1; i <= 3; ++i) Arc(dl, o, h * 0.42f * i, -pi * 0.78f, -pi * 0.22f, col, th);
+      break;
+    }
+    case Icon::Dongle:
+      dl->AddRect(P(-0.42f, -0.2f), P(0.42f, 0.9f), col, th * 1.5f, 0, th);
+      dl->AddRect(P(-0.3f, -0.85f), P(0.3f, -0.2f), col, 0, 0, th);
+      dl->AddRectFilled(P(-0.15f, -0.65f), P(-0.04f, -0.5f), col);
+      dl->AddRectFilled(P(0.04f, -0.65f), P(0.15f, -0.5f), col);
+      dl->AddCircleFilled(P(0, 0.45f), h * 0.1f, col);
+      break;
+    case Icon::Tracker:
+      dl->AddCircle(P(0, 0.1f), h * 0.62f, col, 40, th);
+      dl->AddCircleFilled(P(0, 0.1f), h * 0.16f, col);
+      for (int i = 0; i < 3; ++i) {
+        const float a = -pi / 2 + i * 2 * pi / 3;
+        dl->AddLine(ImVec2(c.x + std::cos(a) * h * 0.62f, c.y + h * 0.1f + std::sin(a) * h * 0.62f),
+                    ImVec2(c.x + std::cos(a) * h * 0.9f, c.y + h * 0.1f + std::sin(a) * h * 0.9f), col, th * 1.4f);
+      }
+      break;
+    case Icon::Wire:
+      dl->AddRect(P(-0.35f, -0.45f), P(0.35f, 0.1f), col, th, 0, th);
+      dl->AddLine(P(-0.15f, -0.45f), P(-0.15f, -0.85f), col, th);
+      dl->AddLine(P(0.15f, -0.45f), P(0.15f, -0.85f), col, th);
+      dl->AddBezierCubic(P(0, 0.1f), P(0, 0.6f), P(-0.7f, 0.4f), P(-0.6f, 0.9f), col, th);
+      break;
+  }
+}
+
+// Word-wrapped text in the current font, centred (or left-aligned); returns the number of lines.
+// dl == nullptr only measures.
+int WrapText(ImDrawList* dl, ImVec2 topLeft, float width, ImU32 col, const char* text, bool centred = true) {
+  ImFont* f = ImGui::GetFont();
+  const float size = ImGui::GetFontSize();
+  const std::string all = text;
+  std::string line;
+  float y = topLeft.y;
+  int lines = 0;
+  const auto flush = [&] {
+    if (dl) {
+      const float w = ImGui::CalcTextSize(line.c_str()).x;
+      dl->AddText(f, size, ImVec2(topLeft.x + (centred ? (width - w) / 2 : 0), y), col, line.c_str());
+    }
+    y += size * 1.25f;
+    ++lines;
+    line.clear();
+  };
+  size_t i = 0;
+  while (i <= all.size()) {
+    size_t j = all.find_first_of(" \n", i);
+    if (j == std::string::npos) j = all.size();
+    const std::string word = all.substr(i, j - i);
+    const std::string next = line.empty() ? word : line + " " + word;
+    if (!line.empty() && ImGui::CalcTextSize(next.c_str()).x > width) { flush(); line = word; }
+    else line = next;
+    if (j < all.size() && all[j] == '\n') flush();
+    i = j + 1;
+  }
+  if (!line.empty()) flush();
+  return lines;
+}
+
+struct TileSpec {
+  Icon icon;
+  const char* title;
+  const char* subtitle = nullptr;
+  Tint tint = Tint::None;
+  const char* badge = nullptr;   // small tag in the corner, e.g. "Recommended"
+};
+
+// One tile at the cursor (w x h). wide: icon on the left, text beside it; else icon on top.
+bool Tile(const TileSpec& t, float w, float h, bool wide) {
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+  const bool disabled = ImGui::GetItemFlags() & ImGuiItemFlags_Disabled;
+  const bool pressed = ImGui::InvisibleButton(t.title, ImVec2(w, h));
+  const bool hover = ImGui::IsItemHovered() && !disabled, held = ImGui::IsItemActive();
+  const ImU32 accent = TintColor(t.tint);
+  const ImVec4 av = ImGui::ColorConvertU32ToFloat4(accent);
+  const float fs = ImGui::GetFontSize(), r = fs * 1.1f;
+  dl->AddRectFilled(a, b, held ? IM_COL32(40, 44, 54, 235) : hover ? IM_COL32(44, 50, 64, 235) : IM_COL32(28, 31, 40, 225), r);
+  dl->AddRect(a, b, hover ? accent : IM_COL32(62, 68, 82, 255), r, 0, hover ? 2.f : 1.f);
+  if (hover) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  const ImU32 disc = ImGui::GetColorU32(ImVec4(av.x, av.y, av.z, hover ? 0.22f : 0.13f));
+  const ImU32 titleCol = IM_COL32(236, 238, 242, 255), subCol = IM_COL32(158, 163, 174, 255);
+  if (wide) {
+    const float side = fs * 3.2f, pad = fs * 1.4f;
+    const ImVec2 ic(a.x + pad + side * 0.85f, a.y + h / 2);
+    dl->AddCircleFilled(ic, side * 0.85f, disc, 48);
+    DrawIcon(dl, t.icon, ic, side, accent);
+    const float tx = ic.x + side * 0.85f + pad, tw = b.x - tx - pad;
+    ImGui::PushFont(g_title);
+    const int tl = WrapText(nullptr, {}, tw, 0, t.title, false);
+    const float th = ImGui::GetFontSize() * 1.25f * float(tl);
+    ImGui::PopFont();
+    const int sl = t.subtitle ? WrapText(nullptr, {}, tw, 0, t.subtitle, false) : 0;
+    const float total = th + (sl ? 4 + fs * 1.25f * float(sl) : 0);
+    float y = a.y + (h - total) / 2;
+    ImGui::PushFont(g_title);
+    WrapText(dl, ImVec2(tx, y), tw, titleCol, t.title, false);
+    ImGui::PopFont();
+    if (t.subtitle) WrapText(dl, ImVec2(tx, y + th + 4), tw, subCol, t.subtitle, false);
+  } else {
+    const float side = std::min(w * 0.30f, fs * 4.4f);
+    const ImVec2 ic(a.x + w / 2, a.y + fs * 1.4f + side * 0.85f);
+    dl->AddCircleFilled(ic, side * 0.85f, disc, 48);
+    DrawIcon(dl, t.icon, ic, side, accent);
+    float y = ic.y + side * 0.85f + fs * 1.0f;
+    ImGui::PushFont(g_title);
+    y += ImGui::GetFontSize() * 1.25f * float(WrapText(dl, ImVec2(a.x + 12, y), w - 24, titleCol, t.title)) + 4;
+    ImGui::PopFont();
+    if (t.subtitle) WrapText(dl, ImVec2(a.x + 16, y), w - 32, subCol, t.subtitle);
+  }
+  if (t.badge) {
+    const ImVec2 bs = ImGui::CalcTextSize(t.badge);
+    const ImVec2 p0(b.x - bs.x - 24, a.y + 10), p1(b.x - 10, a.y + 10 + bs.y + 8);
+    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(av.x, av.y, av.z, 0.2f)), bs.y);
+    dl->AddText(ImVec2(p0.x + 7, p0.y + 4), accent, t.badge);
+  }
   return pressed;
+}
+
+// Height a tall tile needs for its text at width w.
+float TallTileHeight(const TileSpec& t, float w) {
+  const float fs = ImGui::GetFontSize(), side = std::min(w * 0.30f, fs * 4.4f);
+  float h = fs * 1.4f + side * 1.7f + fs * 1.0f;
+  ImGui::PushFont(g_title);
+  h += ImGui::GetFontSize() * 1.25f * float(WrapText(nullptr, {}, w - 24, 0, t.title)) + 4;
+  ImGui::PopFont();
+  if (t.subtitle) h += fs * 1.25f * float(WrapText(nullptr, {}, w - 32, 0, t.subtitle));
+  return h + fs * 1.4f;
+}
+
+// A centred row of tall tiles, all as high as the tallest; returns the one pressed (-1: none).
+int Tiles(const std::vector<TileSpec>& tiles, float maxSide = 0) {
+  const float gap = ImGui::GetFontSize() * 1.5f;
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float n = float(tiles.size());
+  if (maxSide <= 0) maxSide = ImGui::GetFontSize() * 20;
+  const float w = std::min(maxSide, (avail - gap * (n - 1)) / n);
+  float h = w * 0.8f;
+  for (const auto& t : tiles) h = std::max(h, TallTileHeight(t, w));
+  const float total = w * n + gap * (n - 1);
+  const float x0 = ImGui::GetCursorPosX() + std::max(0.f, (avail - total) / 2);
+  int pressed = -1;
+  for (size_t i = 0; i < tiles.size(); ++i) {
+    if (i) ImGui::SameLine(0, gap);
+    else ImGui::SetCursorPosX(x0);
+    ImGui::PushID(int(i));
+    if (Tile(tiles[i], w, h, false)) pressed = int(i);
+    ImGui::PopID();
+  }
+  return pressed;
+}
+
+// A centred grid of wide tiles (icon on the left), cols per row; returns the one pressed (-1: none).
+int TileGrid(const std::vector<TileSpec>& tiles, int cols) {
+  const float fs = ImGui::GetFontSize(), gap = fs * 1.2f;
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float w = std::min(fs * 34, (avail - gap * float(cols - 1)) / float(cols));
+  // text column width as Tile lays it out (wide)
+  const float side = fs * 3.2f, pad = fs * 1.4f, tw = w - (pad + side * 1.7f + pad) - pad;
+  float h = fs * 8;
+  for (const auto& t : tiles) {
+    ImGui::PushFont(g_title);
+    float th = ImGui::GetFontSize() * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.title, false));
+    ImGui::PopFont();
+    if (t.subtitle) th += 4 + fs * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.subtitle, false));
+    h = std::max(h, th + fs * 2.4f);
+  }
+  const int used = std::min<int>(cols, int(tiles.size()));
+  const float x0 = ImGui::GetCursorPosX() + std::max(0.f, (avail - (w * float(used) + gap * float(used - 1))) / 2);
+  int pressed = -1;
+  for (size_t i = 0; i < tiles.size(); ++i) {
+    if (i % size_t(cols)) ImGui::SameLine(0, gap);
+    else {
+      if (i) ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y * 2));
+      ImGui::SetCursorPosX(x0);
+    }
+    ImGui::PushID(int(i));
+    if (Tile(tiles[i], w, h, true)) pressed = int(i);
+    ImGui::PopID();
+  }
+  return pressed;
+}
+
+// A centred heading over a row of tiles.
+void Prompt(const char* text) {
+  ImGui::PushFont(g_title);
+  const float avail = ImGui::GetContentRegionAvail().x;
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - ImGui::CalcTextSize(text).x) / 2));
+  ImGui::TextUnformatted(text);
+  ImGui::PopFont();
+  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.6f));
+}
+
+// A soft blue box with a hint.
+void Note(const char* text) {
+  const float avail = ImGui::GetContentRegionAvail().x, w = std::min(avail, ImGui::GetFontSize() * 52);
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - w) / 2);
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.16f, 0.24f, 0.38f, 0.75f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ImGui::GetFontSize() * 0.6f);
+  ImGui::BeginChild(text, ImVec2(w, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+  const float fs = ImGui::GetFontSize();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 c(p.x + fs * 0.7f, p.y + fs * 0.6f);
+  dl->AddCircle(c, fs * 0.62f, kAccent, 24, 1.6f);
+  dl->AddLine(ImVec2(c.x, c.y - fs * 0.05f), ImVec2(c.x, c.y + fs * 0.32f), kAccent, 2);
+  dl->AddCircleFilled(ImVec2(c.x, c.y - fs * 0.3f), 1.4f, kAccent);
+  ImGui::Indent(fs * 2);
+  Wrapped(text);
+  ImGui::Unindent(fs * 2);
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+}
+
+// Slow snow behind everything.
+void Snow(ImDrawList* dl, ImVec2 size) {
+  struct Flake { float x, y, r, v, phase; };
+  static std::vector<Flake> flakes;
+  static unsigned seed = 12345;
+  const auto rnd = [] { seed = seed * 1103515245u + 12345u; return float((seed >> 8) & 0xFFFF) / 65535.f; };
+  if (flakes.empty())
+    for (int i = 0; i < 70; ++i) flakes.push_back({rnd(), rnd(), 0.8f + rnd() * 1.6f, 0.012f + rnd() * 0.02f, rnd() * 6.28f});
+  const float dt = std::min(0.1f, ImGui::GetIO().DeltaTime);
+  const double t = ImGui::GetTime();
+  for (auto& f : flakes) {
+    f.y += f.v * dt * (0.6f + f.r * 0.25f);
+    if (f.y > 1.02f) { f.y = -0.02f; f.x = rnd(); }
+    const float x = f.x * size.x + std::sin(float(t) * 0.5f + f.phase) * 14.f;
+    dl->AddCircleFilled(ImVec2(x, f.y * size.y), f.r, IM_COL32(220, 230, 255, int(40 + f.r * 30)), 8);
+  }
 }
 
 void Warning(const char* heading, const char* body) {
@@ -231,6 +527,27 @@ void Ui::SetUpImGui() {
   style.FramePadding = ImVec2(10, 7);
   style.ItemSpacing = ImVec2(10, 9);
   style.WindowPadding = ImVec2(18, 14);
+  style.FrameRounding = 6;
+  style.ChildRounding = 8;
+  style.GrabRounding = 6;
+  style.PopupRounding = 8;
+  ImVec4* c = style.Colors;
+  c[ImGuiCol_WindowBg] = ImVec4(0.067f, 0.075f, 0.098f, 1);
+  c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+  c[ImGuiCol_PopupBg] = ImVec4(0.10f, 0.11f, 0.14f, 0.98f);
+  c[ImGuiCol_Border] = ImVec4(0.25f, 0.27f, 0.33f, 0.6f);
+  c[ImGuiCol_Separator] = ImVec4(0.22f, 0.24f, 0.30f, 1);
+  c[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.20f, 1);
+  c[ImGuiCol_FrameBgHovered] = ImVec4(0.19f, 0.22f, 0.28f, 1);
+  c[ImGuiCol_FrameBgActive] = ImVec4(0.22f, 0.26f, 0.34f, 1);
+  c[ImGuiCol_Button] = ImVec4(0.20f, 0.33f, 0.55f, 1);
+  c[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.42f, 0.68f, 1);
+  c[ImGuiCol_ButtonActive] = ImVec4(0.17f, 0.28f, 0.48f, 1);
+  c[ImGuiCol_Header] = ImVec4(0.20f, 0.33f, 0.55f, 0.55f);
+  c[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.42f, 0.68f, 0.7f);
+  c[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.42f, 0.68f, 0.9f);
+  c[ImGuiCol_CheckMark] = ImVec4(0.45f, 0.68f, 1, 1);
+  c[ImGuiCol_PlotHistogram] = ImVec4(0.36f, 0.62f, 1, 1);
 }
 
 Ui::Ui() {
@@ -277,7 +594,9 @@ void Ui::Go(Page page) {
 void Ui::Back(Page to) {
   ImGui::Spacing();
   ImGui::BeginDisabled(job_.Running());
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetFontSize() * 1.2f, ImGui::GetFontSize() * 0.7f));
   if (ImGui::Button(to == Page::Home ? "< Home" : "< Back")) Go(to);
+  ImGui::PopStyleVar();
   ImGui::EndDisabled();
 }
 
@@ -286,6 +605,7 @@ void Ui::Draw(float width, float height) {
   ImGui::SetNextWindowSize(ImVec2(width, height));
   ImGui::Begin("openhouse installer", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+  Snow(ImGui::GetWindowDrawList(), ImVec2(width, height));
   Header();
   ImGui::Separator();
   ImGui::Spacing();
@@ -450,28 +770,31 @@ bool Ui::RuntimesClosed() {
 
 void Ui::Home() {
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 2));
-  const float avail = ImGui::GetContentRegionAvail().x;
-  const char* lines[] = {"What would you like to do?"};
-  ImGui::PushFont(g_title);
-  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - ImGui::CalcTextSize(lines[0]).x) / 2);
-  ImGui::TextUnformatted(lines[0]);
-  ImGui::PopFont();
-  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  const float h = ImGui::GetFontSize() * 5;
-  int top;
+  Prompt("What would you like to do?");
+  std::vector<TileSpec> tiles;
+  int install = -1, uninstall = -1;
+  static std::string sub;
+  sub = std::string("openhouse v") + lh::kVersion + " for SteamVR";
   if (status_.openhouse) {
     const bool older = CompareVersions(status_.version, lh::kVersion) < 0;
-    top = ChoiceRow({older ? "Update Driver" : "Reinstall Driver", "Uninstall Driver"}, h,
-                    {older ? Tint::Green : Tint::Yellow, Tint::Red});
+    install = int(tiles.size());
+    tiles.push_back({older ? Icon::Download : Icon::Refresh, older ? "Update Driver" : "Reinstall Driver", sub.c_str(),
+                     older ? Tint::Green : Tint::Yellow});
+    uninstall = int(tiles.size());
+    tiles.push_back({Icon::Trash, "Uninstall Driver", "Restore SteamVR's Lighthouse driver back", Tint::Red});
   } else {
-    top = ChoiceRow({"Install Driver"}, h);
+    install = int(tiles.size());
+    tiles.push_back({Icon::Download, "Install Driver", sub.c_str(), Tint::Green});
   }
-  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.5f));
-  const int bottom = ChoiceRow({"Flash Firmware", "Restore Firmware"}, h);
-  if (top == 0) Go(Page::Install);
-  if (top == 1) Go(Page::Uninstall);
-  if (bottom == 0) Go(Page::FlashMenu);
-  if (bottom == 1) Go(Page::RestoreMenu);
+  const int flash = int(tiles.size());
+  tiles.push_back({Icon::Chip, "Install or Update Firmware", "Base stations, dongles, trackers and controllers"});
+  const int restore = int(tiles.size());
+  tiles.push_back({Icon::Restore, "Restore Firmware", "Put the original firmware back"});
+  const int pressed = TileGrid(tiles, 2);
+  if (pressed == install) Go(Page::Install);
+  else if (pressed == uninstall && uninstall >= 0) Go(Page::Uninstall);
+  else if (pressed == flash) Go(Page::FlashMenu);
+  else if (pressed == restore) Go(Page::RestoreMenu);
 }
 
 // ---- install / uninstall ----
@@ -568,10 +891,16 @@ void Ui::InstallPage(bool install) {
 
 // ---- menus ----
 
+namespace {
+constexpr const char* kWirelessHint = "Only if your devices already run Doorman radio firmware and are paired to a Doorman dongle";
+}
+
 void Ui::FlashMenu() {
-  Title("Flash Firmware");
+  Title("Install or Update Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Flash 1.0 Lighthouse\n(lhbs) Firmware", "Flash Doorman\nFirmware"}, ImGui::GetFontSize() * 7)) {
+  Prompt("What do you want to flash?");
+  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "lhbs firmware for Lighthouse 1.0 base stations"},
+                 {Icon::Wireless, "Doorman", "Dongle and tracker/controller radio firmware"}})) {
     case 0: Go(Page::BaseStation); break;
     case 1: Go(Page::DoormanMenu); break;
   }
@@ -579,9 +908,13 @@ void Ui::FlashMenu() {
 }
 
 void Ui::DoormanMenu() {
-  Title("Flash Doorman Firmware");
-  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Flash Dongle\nFirmware", "Flash Tracker/Controller\nRadio Firmware"}, ImGui::GetFontSize() * 7)) {
+  Title("Doorman Firmware");
+  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.5f));
+  Note("No Doorman dongle yet? Flash the dongle first, then come back here and flash your trackers and controllers.");
+  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.8f));
+  Prompt("What do you want to flash?");
+  switch (Tiles({{Icon::Dongle, "Dongle", "ProMicro nRF52840, Holyiot 21017 or Nordic PCA10059"},
+                 {Icon::Tracker, "Trackers & Controllers", "VIVE Trackers, VIVE Controllers and Index Controllers"}})) {
     case 0: Go(Page::Dongle); break;
     case 1: Go(Page::RadioMenu); break;
   }
@@ -589,9 +922,11 @@ void Ui::DoormanMenu() {
 }
 
 void Ui::RadioMenu() {
-  Title("Flash Tracker/Controller Radio Firmware");
+  Title("Trackers & Controllers");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Wired (recommended)", "Wireless"}, ImGui::GetFontSize() * 7)) {
+  Prompt("How are your devices connected?");
+  switch (Tiles({{Icon::Wire, "Wired", "Plug your devices in with a USB cable", Tint::None, "Recommended"},
+                 {Icon::Wireless, "Wireless", kWirelessHint}})) {
     case 0: Go(Page::RadioWired); break;
     case 1: Go(Page::RadioWireless); break;
   }
@@ -601,7 +936,9 @@ void Ui::RadioMenu() {
 void Ui::RestoreRadioMenu() {
   Title("Restore Tracker/Controller Radio Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"Wired (recommended)", "Wireless"}, ImGui::GetFontSize() * 7)) {
+  Prompt("How are your devices connected?");
+  switch (Tiles({{Icon::Wire, "Wired", "Plug your devices in with a USB cable", Tint::None, "Recommended"},
+                 {Icon::Wireless, "Wireless", kWirelessHint}})) {
     case 0: Go(Page::RestoreRadio); break;
     case 1: Go(Page::RestoreRadioWireless); break;
   }
@@ -611,7 +948,9 @@ void Ui::RestoreRadioMenu() {
 void Ui::RestoreMenu() {
   Title("Restore Firmware");
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-  switch (ChoiceRow({"1.0 Base Station\nFirmware", "Tracker/Controller\nRadio Firmware"}, ImGui::GetFontSize() * 7)) {
+  Prompt("What do you want to restore?");
+  switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Valve's original base station firmware"},
+                 {Icon::Tracker, "Trackers & Controllers", "Valve's or HTC's original radio firmware"}})) {
     case 0: Go(Page::RestoreBase); break;
     case 1: Go(Page::RestoreRadioMenu); break;
   }
@@ -767,10 +1106,11 @@ void Ui::BaseStationPage(bool restore) {
 // ---- dongle ----
 
 void Ui::DonglePage() {
-  Title("Flash Dongle Firmware");
+  Title("Dongle Firmware");
   switch (dongleStep_) {
     case DongleStep::Board: {
-      ImGui::TextUnformatted("Board:");
+      ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
+      Prompt("Which dongle do you have?");
       const auto watch = [this](int board) {
         dongleBoard_ = board;
         dongleStep_ = DongleStep::Detect;
@@ -783,9 +1123,10 @@ void Ui::DonglePage() {
           return s;
         }, 1.0);
       };
-      if (BigButton("ProMicro nRF52840 (Adafruit Bootloader)", ImGui::GetFontSize() * 34)) watch(0);
-      if (BigButton("Holyiot 21017 (Nordic Bootloader)", ImGui::GetFontSize() * 34)) watch(1);
-      if (BigButton("Nordic nRF52840 Dongle PCA10059", ImGui::GetFontSize() * 34)) watch(2);
+      const int board = Tiles({{Icon::Dongle, "ProMicro nRF52840", "Adafruit bootloader"},
+                               {Icon::Dongle, "Holyiot 21017", "Nordic bootloader"},
+                               {Icon::Dongle, "Nordic PCA10059", "nRF52840 Dongle"}}, ImGui::GetFontSize() * 15);
+      if (board >= 0) watch(board);
       Back(Page::DoormanMenu);
       return;
     }

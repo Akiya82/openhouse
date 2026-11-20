@@ -66,7 +66,7 @@ int Run() {
       int w, h;
       glfwGetFramebufferSize(window, &w, &h);
       glViewport(0, 0, w, h);
-      glClearColor(0.06f, 0.06f, 0.07f, 1);
+      glClearColor(0.067f, 0.075f, 0.098f, 1);
       glClear(GL_COLOR_BUFFER_BIT);
       ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
       glfwSwapBuffers(window);

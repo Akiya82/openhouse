@@ -2,7 +2,7 @@
 
 One source file (`src/main.c`) for two targets:
 * default: Vive Tracker 1.0, nRF51822 (`radio.ld`: app at 0x400, 0x1570 RAM). Image is a raw `.bin`.
-* `TARGET=idx` (`-DOHL_IDX`): Valve's nRF52832 radio module (Index controller family; `radio_idx.ld`:
+* `TARGET=idx` (`-DDML_IDX`): Valve's nRF52832 radio module (Index controller family; `radio_idx.ld`:
   app at 0x1000). Builds `radio.bin` plus `radio_idx.fw` (the SteamVR `.fw` container, made by
   `tools/radio_image.py container`).
 * `DIAG=1` (dev only, never released): noinit staging counters, a 96-entry SPI trace, air `'D'` dump and

@@ -13,7 +13,7 @@ Protocol: radio-fw/src/main.c air_update() (downlink frame op 0xF0 'X'/'Y'/'Z'/'
 """
 import os, struct, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ohlink import Dongle
+from doorman_link import Dongle
 from radio_image import radio_signature
 
 OP = 0xF0

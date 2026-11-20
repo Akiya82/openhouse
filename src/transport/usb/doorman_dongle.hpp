@@ -1,5 +1,5 @@
 // Doorman Dongle (6767:0727, nRF52840): up to 6 trackers over our own radio link
-// (doorman: doorman/common/ohlink.h, ai/doorman/protocol.md).
+// (doorman: doorman/common/doorman_link.h, ai/doorman/protocol.md).
 //
 // The dongle streams each device's main-MCU frames (the radio SPI protocol shared by our
 // Tracker 1.0 firmware and Valve's main firmwares on our radio). They are the wired reports with
@@ -91,7 +91,7 @@ class DoormanDongle {
   };
   struct FeatureWait {
     int slot = -1;
-    uint8_t id = 0;
+    uint8_t id = 0, tag = 0;
     bool sent = false, done = false;
     std::vector<uint8_t> reply;
   };
@@ -127,6 +127,8 @@ class DoormanDongle {
   mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, serial_, slot serials
   std::condition_variable cv_;
   std::deque<std::shared_ptr<FeatureWait>> featureWaits_;
+  uint8_t nextTag_ = 0;
+  std::array<double, 6> readsAfter_{};   // Pump thread
   std::deque<std::pair<int, std::vector<uint8_t>>> downlinks_;
   std::optional<int> pairMs_;
   int pairSlot_ = -1;

@@ -1,5 +1,5 @@
 /* openhouse radio firmware. Default: the Vive Tracker 1.0's nRF51822 (replaces HTC's radio app at 0x400).
- * OHL_IDX: Valve's nRF52 radio module (Index controller and relatives), same updater protocol.
+ * DML_IDX: Valve's nRF52 radio module (Index controller and relatives), same updater protocol.
  *
  * SAFETY: this image is installed by HTC's 1 KB bootloader and can only be replaced through its own
  * updater (frames Y/Z/[/!/0x20 below, same protocol and replies as HTC's app). So:
@@ -14,12 +14,12 @@
 #include <stdint.h>
 #include <string.h>
 #include "nrf.h"
-#include "ohlink.h"
-#include "ohcodec.h"
+#include "doorman_link.h"
+#include "doorman_codec.h"
 
 #define STAGE_BASE   0x10000u
 #define STAGE_MAX    0xF800u           /* 0x10000-0x1F7FF (Index family: 0x1F800 = Valve's record page) */
-#ifdef OHL_IDX
+#ifdef DML_IDX
 /* Valve nRF52 radio (Index controller, Vive Tracker 2018, Vive Pro controller, Tundra tracker), app at
  * 0x1000. Header in the Cortex-M4's reserved vector slots: +0x1C length, +0x20 marker, +0x24 version.
  * SPIS1: MOSI P0.13, MISO P0.12, SCK P0.14, CSN P0.11. P0.20 = "reply waiting" line to the main MCU. */
@@ -30,7 +30,7 @@
 #define HDR_LEN      0x10u
 #define HDR_MARK     0x14u
 #endif
-#ifdef OHL_IDX
+#ifdef DML_IDX
 #define S_TXPTR   NRF_SPIS1->TXD.PTR
 #define S_MAXTX   NRF_SPIS1->TXD.MAXCNT
 #define S_AMTTX   NRF_SPIS1->TXD.AMOUNT
@@ -80,7 +80,7 @@ static void boot_count(void)
 {
   if (boot_rec.magic != BOOT_MAGIC || boot_rec.sum != (boot_rec.magic ^ boot_rec.quick_boots)) boot_rec.quick_boots = 0;
   if (NRF_POWER->RESETREAS & POWER_RESETREAS_RESETPIN_Msk) boot_rec.quick_boots = 0;
-#ifdef OHL_IDX
+#ifdef DML_IDX
   /* Index family: safe mode keeps the link off, and the link is the only way to update this radio, so
      only crashes count (watchdog, lockup). Requested resets (the main MCU's \RESET, the bootloader's
      install restart, our own) are normal: an update alone makes two in a row. */
@@ -93,7 +93,7 @@ static void boot_count(void)
 }
 static void boot_stable(void) { boot_rec.quick_boots = 0; boot_rec.sum = boot_rec.magic ^ 0; }
 
-#ifdef OHL_DIAG   /* dev only: make TARGET=idx DIAG=1 */
+#ifdef DML_DIAG   /* dev only: make TARGET=idx DIAG=1 */
 /* survives resets (not power-off): what the main MCU sent around the last boots, read with air 'X' */
 static struct { uint32_t magic; uint16_t boots, ny, nz, nc; uint8_t cst, rr, nop, scrub; uint16_t zbad, ack_q, ack_out, ybad; uint32_t zmax_us; } dg __attribute__((section(".noinit")));
 
@@ -133,7 +133,7 @@ static int page_blank(uint32_t a)
   for (uint32_t i = 0; i < page; i += 4) if (*(volatile uint32_t *)(a + i) != 0xFFFFFFFFu) return 0;
   return 1;
 }
-#ifdef OHL_IDX
+#ifdef DML_IDX
 /* A 4 KB nRF52 page erase stalls the CPU for up to ~90 ms, and Valve's main firmware gives each staging
  * step ~120 ms (reply line + read included): erasing on the first block of a page made every USB
  * radio update fail at block 0. So staging is cleared ahead of time, a page per idle pass from 10 s
@@ -225,7 +225,7 @@ static void reply2(uint8_t op, uint8_t v) { uint8_t b[2] = { op, v }; reply_push
 
 static void spis_init(void)
 {
-#ifdef OHL_IDX
+#ifdef DML_IDX
   /* stock boot levels (FUN_00004fe4/4fb4/4fa4), then the SPI pins and the reply line */
   for (int i = 0; i <= 2; i++) { NRF_P0->PIN_CNF[i] = 3; NRF_P0->OUTSET = 1u << i; }
   for (int i = 4; i <= 6; i++) { NRF_P0->PIN_CNF[i] = 3; NRF_P0->OUTCLR = 1u << i; }
@@ -264,7 +264,7 @@ static void load_reply_and_release(void)
   S_TXPTR = (uint32_t)spi_tx; S_MAXTX = tx_loaded ? tx_loaded : 1;
   S_RXPTR = (uint32_t)spi_rx; S_MAXRX = sizeof spi_rx;
   NRF_SPIS1->TASKS_RELEASE = 1;
-#ifdef OHL_IDX
+#ifdef DML_IDX
   if (tx_loaded) NRF_P0->OUTSET = 1u << ATTN_PIN; else NRF_P0->OUTCLR = 1u << ATTN_PIN;
 #endif
 }
@@ -273,7 +273,7 @@ static void link_from_lpc(const uint8_t *f, uint8_t n);   /* below */
 static void addr_check(void);
 static int link_safe_request, link_sleep;
 /* survives resets (not power-off): what the main MCU sent around the last boots, read with air 'X' */
-#ifdef OHL_DIAG
+#ifdef DML_DIAG
 static void dg_boot(void)
 {
   if (dg.magic != 0x44474E31u) { memset(&dg, 0, sizeof dg); dg.magic = 0x44474E31u; tr.magic = 0; }
@@ -289,7 +289,7 @@ static uint32_t lpc_frames, lpc_bad;
    own nRF52 radio does ('Y' reply = const 59 00 @0x9406). Valve's main fw counts 0x59/0x5a/0x5b/0x21
    as acks (FUN_004158a4 -> 0x4159ee) and gives each step ~120 ms (FUN_004213b8). */
 
-#ifdef OHL_IDX
+#ifdef DML_IDX
 /* GPIO service, like Valve's radio: some of the device's buttons (on the Index, the ones it
    pairs with) are wired to the nRF, not the main MCU. The main MCU sets those pins up with 0x83
    requests ([0x83][op][4 B][pin][arg][u16 debounce ms]) and asks to be told about edges; each
@@ -388,7 +388,7 @@ static void handle_lpc_frame(const uint8_t *f, uint32_t n)
   switch (op) {
   case 0x00: case 0xFF: return;                            /* filler: only clocks our reply out */
   case 'X': {
-    uint8_t b[5] = { 'X' }; uint32_t v = OHL_VERSION; memcpy(b + 1, &v, 4); reply_push(b, 5); return;
+    uint8_t b[5] = { 'X' }; uint32_t v = DML_VERSION; memcpy(b + 1, &v, 4); reply_push(b, 5); return;
   }
   case 'c': {
     uint8_t b[9] = { 'c' }; memcpy(b + 1, (const void *)NRF_FICR->DEVICEID, 8); reply_push(b, 9); return;
@@ -418,7 +418,7 @@ static void handle_lpc_frame(const uint8_t *f, uint32_t n)
     if (n >= 2 && f[1] == 'S') link_safe_request = 1;
     reply2('O', (uint8_t)(safe_mode | link_safe_request << 1));
     return;
-#ifdef OHL_IDX
+#ifdef DML_IDX
   case 'l': reply2('l', n >= 2 ? f[1] : 0); lead0 = n >= 2 && f[1] != 0; return;   /* reply, then switch */
   case 0x81: reply2(0x82, 0x01); return;                   /* stock constant (0x9434) */
   case 0x83: gpio_request(f, (uint8_t)n); return;
@@ -440,7 +440,7 @@ static void spis_poll(void)
   if (NRF_SPIS1->EVENTS_END) {
     NRF_SPIS1->EVENTS_END = 0;
     uint32_t nrx = S_AMTRX, ntx = S_AMTTX;
-#ifdef OHL_IDX
+#ifdef DML_IDX
     NRF_P0->OUTCLR = 1u << ATTN_PIN;
 #endif
     if (tx_loaded && ntx >= tx_loaded) {                   /* the master clocked our whole reply */
@@ -448,7 +448,7 @@ static void spis_poll(void)
       tx_loaded = 0;
     }
     addr_check();
-#ifdef OHL_DIAG
+#ifdef DML_DIAG
     /* dev: log every unusual transfer (not the 0x70/0x71/0x83 data stream, or one where we sent more
        than a byte), kept across resets until full: what the main MCU does around power-off */
     if (tr.magic != 0x54524332u) { tr.magic = 0x54524332u; tr.n = 0; tr.t_last = now_us(); }
@@ -470,12 +470,12 @@ static void spis_poll(void)
   addr_check();
 }
 
-/* ---------------- radio link v1 (tracker side, see common/ohlink.h) ---------------- */
+/* ---------------- radio link v1 (tracker side, see common/doorman_link.h) ---------------- */
 #define UQ_BYTES 1024                  /* uplink frames from the LPC, [len][frame] */
 static uint8_t uq[UQ_BYTES];
 static uint16_t uq_head, uq_tail;
 static uint32_t uq_drops;
-static ohc_state_t ohc;                 /* air codec state, reset on every join */
+static dmc_state_t codec;              /* air codec state, reset on every join */
 static uint16_t uq_used(void) { return (uint16_t)((uq_tail - uq_head) & (UQ_BYTES - 1)); }
 /* Replies to the host ('P' feature replies, 'H' identity) queue apart and go out first. In the shared
    queue they waited behind ~1 KB of IMU/light when the link was busy (six devices on one dongle), or
@@ -487,14 +487,19 @@ static uint8_t pq[PQ_BYTES];
 static uint16_t pq_head, pq_tail;
 static uint32_t pq_drops;
 static uint16_t pq_used(void) { return (uint16_t)((pq_tail - pq_head) & (PQ_BYTES - 1)); }
+/* Tagged feature reads waiting for the main MCU's answer (it answers in order). An entry older than
+   500 ms is forgotten: a request it never answered must not shift every later tag. */
+#define TQ 8
+static uint8_t tq_tag[TQ], tq_head, tq_n;
+static uint32_t tq_t[TQ];
 
-static uint8_t pkt_rx[2 + OHL_MAXLEN];
-static uint8_t pb[3][2 + OHL_MAXLEN];  /* RESP buffers: [len][payload] */
+static uint8_t pkt_rx[2 + DML_MAXLEN];
+static uint8_t pb[3][2 + DML_MAXLEN];  /* RESP buffers: [len][payload] */
 static uint8_t ob[3], on;              /* outstanding (sent, unacked) buffers, oldest first */
 static uint8_t send_i;                 /* next ob[] entry to (re)send */
 static uint8_t next_seq;
 static uint8_t armed;                  /* buffer the next auto-TX sends */
-static uint8_t jreq[2 + OHL_JREQ_LEN];
+static uint8_t jreq[2 + DML_JREQ_LEN];
 static uint8_t last_dseq = 1;
 
 static uint8_t link_up, link_enabled, joined, my_slot;
@@ -518,7 +523,7 @@ static void addr_check(void)
   isr_heard = 1;
 }
 static uint32_t period_us = 2000, t_addr, t_last_poll;    /* cycle period (from POLLs), poll timing */
-static uint8_t max_resp = OHL_MAXLEN;
+static uint8_t max_resp = DML_MAXLEN;
 static uint32_t rng = 0x12345678u;
 enum { R_RX, R_TX } rstate;
 
@@ -538,7 +543,7 @@ static void pair_start(void)
   jreq[10] = 1;
 }
 static void pair_end(void) { pair_mode = 0; jreq[10] = 0; }
-#ifdef OHL_IDX
+#ifdef DML_IDX
 /* Holding the system button turns the device off. Valve's main firmware leaves that to the
    radio side: it only reports the button (bit 0x2000 of the 0x6e input frame's first word), and
    stock turns it off after ~4 s, with or without a host. We hand the main MCU the same power-off
@@ -561,7 +566,7 @@ static void sys_button_poll(void)
 #endif
 static void link_from_lpc(const uint8_t *f, uint8_t n)
 {
-#ifdef OHL_IDX
+#ifdef DML_IDX
   if (f[0] == 0x6e) sys_button(f, n);
   if (f[0] == 'S') {                                       /* main MCU sleeps: radio off until 'R'/'T' */
     /* Valve's radio answers every 'S' with 0x53 (link down), connected or not, and the main
@@ -583,7 +588,17 @@ static void link_from_lpc(const uint8_t *f, uint8_t n)
 }
 static void uplink_push(const uint8_t *f, uint8_t n)
 {
-  if (n && (f[0] == 'P' || f[0] == 'H')) {
+  static uint8_t tagged[80];                               /* answers are up to 64 B, 65 tagged */
+  if (n && f[0] == 'P' && n < sizeof tagged) {             /* answer to a tagged read: give it its tag */
+    while (tq_n && now_us() - tq_t[tq_head] > 500000u) { tq_head = (uint8_t)((tq_head + 1) % TQ); tq_n--; }
+    if (tq_n) {
+      tagged[0] = DML_TAGGED_REPLY; tagged[1] = tq_tag[tq_head];
+      memcpy(tagged + 2, f + 1, n - 1u);
+      tq_head = (uint8_t)((tq_head + 1) % TQ); tq_n--;
+      f = tagged; n = (uint8_t)(n + 1);
+    }
+  }
+  if (n && (f[0] == 'P' || f[0] == 'H' || f[0] == 'D' || f[0] == DML_TAGGED_REPLY)) {
     if (pq_used() + n + 1 >= PQ_BYTES) { pq_drops++; return; }
     pq[pq_tail] = n; pq_tail = (pq_tail + 1) & (PQ_BYTES - 1);
     for (int i = 0; i < n; i++) { pq[pq_tail] = f[i]; pq_tail = (pq_tail + 1) & (PQ_BYTES - 1); }
@@ -592,11 +607,24 @@ static void uplink_push(const uint8_t *f, uint8_t n)
   if (uq_used() + n + 1 >= UQ_BYTES) { uq_drops++; return; }   /* drop BEFORE the codec sees it */
   static uint8_t enc[80];
   addr_check();
-  int m = ohc_encode(&ohc, f, n, enc);
+  int m = dmc_encode(&codec, f, n, enc);
   addr_check();
   if (m) { f = enc; n = (uint8_t)m; }
   uq[uq_tail] = n; uq_tail = (uq_tail + 1) & (UQ_BYTES - 1);
   for (int i = 0; i < n; i++) { uq[uq_tail] = f[i]; uq_tail = (uq_tail + 1) & (UQ_BYTES - 1); }
+}
+
+/* Once a second while connected: what this radio dropped, ['D'][queue drops u16][reply drops u16]
+   (running totals, saturating). The dongle keeps the latest per slot (its cmd 0x28): without it, frames
+   lost here couldn't be told from frames lost in the dongle. */
+static uint32_t drops_at;
+static void drops_report(void)
+{
+  if (!link_up || now_us() - drops_at < 1000000u) return;
+  drops_at = now_us();
+  uint16_t u = uq_drops > 0xFFFF ? 0xFFFF : (uint16_t)uq_drops, q = pq_drops > 0xFFFF ? 0xFFFF : (uint16_t)pq_drops;
+  uint8_t f[5] = { 'D', (uint8_t)u, (uint8_t)(u >> 8), (uint8_t)q, (uint8_t)(q >> 8) };
+  uplink_push(f, sizeof f);
 }
 
 static void set_addr(uint32_t base, uint8_t prefix)
@@ -613,7 +641,7 @@ static void radio_setup(void)
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit;
   NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos4dBm;
   NRF_RADIO->PCNF0 = 8 << RADIO_PCNF0_LFLEN_Pos;
-  NRF_RADIO->PCNF1 = (OHL_MAXLEN << RADIO_PCNF1_MAXLEN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) |
+  NRF_RADIO->PCNF1 = (DML_MAXLEN << RADIO_PCNF1_MAXLEN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) |
                      (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos);
   NRF_RADIO->CRCCNF = 2; NRF_RADIO->CRCINIT = 0xFFFF; NRF_RADIO->CRCPOLY = 0x11021;
   NRF_RADIO->INTENCLR = 0xFFFFFFFF;
@@ -647,9 +675,9 @@ static void go_unjoined(void)
   if (link_up) { uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
   link_up = 0; joined = 0; on = 0; send_i = 0; uq_head = uq_tail; pq_head = pq_tail;
   radio_stop();
-  set_addr(OHL_JOIN_BASE, OHL_JOIN_PREFIX);
-  cur_ch = OHL_JOIN_CHANNEL;
-  jreq[0] = OHL_JREQ_LEN; jreq[1] = OHL_JREQ; jreq[10] = pair_mode;
+  set_addr(DML_JOIN_BASE, DML_JOIN_PREFIX);
+  cur_ch = DML_JOIN_CHANNEL;
+  jreq[0] = DML_JREQ_LEN; jreq[1] = DML_JREQ; jreq[10] = pair_mode;
   answer_join = 0;
   arm_rx(0);
 }
@@ -657,12 +685,12 @@ static void go_joined(uint32_t base, uint8_t slot)
 {
   radio_stop();
   joined = 1; my_slot = slot; net_base = base;
-  memset(&ohc, 0, sizeof ohc); uq_head = uq_tail; pq_head = pq_tail;
+  dmc_reset(&codec); uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
   on = 0; send_i = 0; next_seq = 0; last_dseq = 1; have_cycle = 0;
-  mask = 0xFFFF; cur_ch = ohl_hop_ch[0]; period_us = 2000; max_resp = OHL_MAXLEN;
+  mask = 0xFFFF; cur_ch = dml_hop_ch[0]; period_us = 2000; max_resp = DML_MAXLEN;
   last_poll_us = now_us();
-  set_addr(base, (uint8_t)(OHL_SLOT_PREFIX + slot));
-#ifdef OHL_IDX
+  set_addr(base, (uint8_t)(DML_SLOT_PREFIX + slot));
+#ifdef DML_IDX
   if (!link_up) { link_up = 1; uint8_t ev[1] = { 0x52 }; reply_push(ev, 1); }
 #else
   if (!link_up) { link_up = 1; uint8_t ev[6] = { 0x52, slot, 0, 0, 0, 0 }; reply_push(ev, 6); }
@@ -674,7 +702,7 @@ static uint8_t build_new(void)                             /* fill a free buffer
   uint8_t b = 0;
   while ((on > 0 && ob[0] == b) || (on > 1 && ob[1] == b)) b++;
   uint8_t *p = pb[b] + 1;
-  int len = OHL_RESP_HDR;
+  int len = DML_RESP_HDR;
   while (pq_used()) {                                      /* replies first */
     uint8_t n = pq[pq_head];
     if (len + 1 + n > max_resp) break;
@@ -690,8 +718,8 @@ static uint8_t build_new(void)                             /* fill a free buffer
     uq_head = (uq_head + 1 + n) & (UQ_BYTES - 1);
   }
   pb[b][0] = (uint8_t)len;
-  p[0] = OHL_RESP; p[1] = my_slot; p[2] = next_seq & OHL_F_SEQ_MASK;
-  next_seq = (next_seq + 1) & OHL_F_SEQ_MASK;
+  p[0] = DML_RESP; p[1] = my_slot; p[2] = next_seq & DML_F_SEQ_MASK;
+  next_seq = (next_seq + 1) & DML_F_SEQ_MASK;
   ob[on++] = b;
   return b;
 }
@@ -702,7 +730,7 @@ static void arm_next(void)                                 /* pick what the next
   else if (on < 2) { b = build_new(); send_i = (uint8_t)(on - 1); }
   else { send_i = 0; b = ob[0]; }
   uint8_t *p = pb[b] + 1;
-  p[2] = (uint8_t)((p[2] & OHL_F_SEQ_MASK) | (last_dseq ? OHL_F_DSEQ : 0));
+  p[2] = (uint8_t)((p[2] & DML_F_SEQ_MASK) | (last_dseq ? DML_F_DSEQ : 0));
   p[3] = poll_rssi; p[4] = poll_missed; p[5] = poll_crc_err;
   armed = b;
   arm_rx(1);
@@ -710,7 +738,7 @@ static void arm_next(void)                                 /* pick what the next
 static void exchange_done(void)                            /* our RESP pb[armed] just went out */
 {
   if (poll_ok) {                                           /* drop everything the poll acknowledged */
-    while (on && ((poll_ack - (pb[ob[0]][3] & OHL_F_SEQ_MASK)) & 7) < 4) {
+    while (on && ((poll_ack - (pb[ob[0]][3] & DML_F_SEQ_MASK)) & 7) < 4) {
       ob[0] = ob[1]; ob[1] = ob[2]; on--;
     }
   }
@@ -721,7 +749,7 @@ static void exchange_done(void)                            /* our RESP pb[armed]
 }
 
 /* Recovery updater over the radio link (works without the main MCU): a downlink frame starting
- * with OHL_AIR_UPD is handled here and never reaches the main MCU. Same staging bank, signature and
+ * with DML_AIR_UPD is handled here and never reaches the main MCU. Same staging bank, signature and
  * install marker as the SPI updater, so any radio image (ours or Valve's) can be put back.
  *   F0 'X'          -> F0 'X' ver[4] open off[4]
  *   F0 'Y'          -> F0 'Y' 0          open staging (link stays up)
@@ -732,26 +760,26 @@ static uint32_t air_reset_at;
 static void air_reply(const uint8_t *b, uint8_t n) { uplink_push(b, n); }
 static void air_update(const uint8_t *f, uint8_t n)
 {
-  uint8_t r[12] = { OHL_AIR_UPD, n > 1 ? f[1] : 0 };
+  uint8_t r[12] = { DML_AIR_UPD, n > 1 ? f[1] : 0 };
   if (n < 2) return;
   switch (f[1]) {
   case 'X': {
-    uint8_t x[60] = { OHL_AIR_UPD, 'X' }; uint32_t v = OHL_VERSION;
+    uint8_t x[60] = { DML_AIR_UPD, 'X' }; uint32_t v = DML_VERSION;
     memcpy(x + 2, &v, 4); x[6] = stg_open; memcpy(x + 7, &stg_off, 4);
     memcpy(x + 11, &lpc_frames, 4); memcpy(x + 15, &lpc_bad, 4);
     x[19] = (uint8_t)(safe_mode | link_safe_request << 1 | link_sleep << 2 | lead0 << 3);
     x[20] = dbg_nrx; x[21] = dbg_ntx; memcpy(x + 22, dbg_rx, 12);
     x[34] = (uint8_t)rq_used(); x[35] = (uint8_t)boot_rec.quick_boots;
-#ifdef OHL_DIAG
+#ifdef DML_DIAG
     memcpy(x + 36, &dg.boots, 8); x[44] = dg.cst; x[45] = dg.rr; x[46] = dg.scrub; memcpy(x + 47, &dg.zbad, 12);
     air_reply(x, 59); return;
 #else
     air_reply(x, 36); return;
 #endif
   }
-#ifdef OHL_DIAG
+#ifdef DML_DIAG
   case 'D': {                                              /* trace dump, 5 entries per request */
-    uint8_t x[60] = { OHL_AIR_UPD, 'D' }; uint8_t i0 = n > 2 ? f[2] : 0;
+    uint8_t x[60] = { DML_AIR_UPD, 'D' }; uint8_t i0 = n > 2 ? f[2] : 0;
     x[2] = i0; x[3] = (uint8_t)(tr.magic == 0x54524332u ? tr.n : 0);
     for (int k = 0; k < 5 && i0 + k < TR_N; k++) memcpy(x + 4 + 10 * k, tr.e[i0 + k], 10);
     air_reply(x, 54); return;
@@ -778,23 +806,30 @@ __attribute__((noipa)) static void handle_poll(const uint8_t *p, int len)   /* n
   if (have_cycle) poll_missed += (uint8_t)(cyc - last_cycle - 1);
   last_cycle = cyc; have_cycle = 1;
   poll_rssi = (uint8_t)NRF_RADIO->RSSISAMPLE;
-  poll_ack = p[2] & OHL_F_SEQ_MASK;
+  poll_ack = p[2] & DML_F_SEQ_MASK;
   mask = (uint16_t)(p[4] | p[5] << 8);
   if (p[6]) period_us = p[6] * 50u;
-  max_resp = p[7] >= OHL_RESP_HDR + 2 && p[7] <= OHL_MAXLEN ? p[7] : OHL_MAXLEN;
+  max_resp = p[7] >= DML_RESP_HDR + 2 && p[7] <= DML_MAXLEN ? p[7] : DML_MAXLEN;
   last_poll_us = now_us();
   t_last_poll = t_addr;
-  if ((p[2] & OHL_F_DOWN) && ((p[2] & OHL_F_DSEQ) ? 1 : 0) != last_dseq) {
-    last_dseq = (p[2] & OHL_F_DSEQ) ? 1 : 0;              /* new downlink frames: hand them to the LPC */
-    for (int i = OHL_POLL_HDR; i + 1 <= len; ) {
+  if ((p[2] & DML_F_DOWN) && ((p[2] & DML_F_DSEQ) ? 1 : 0) != last_dseq) {
+    last_dseq = (p[2] & DML_F_DSEQ) ? 1 : 0;              /* new downlink frames: hand them to the LPC */
+    for (int i = DML_POLL_HDR; i + 1 <= len; ) {
       uint8_t n = p[i];
       if (n == 0 || i + 1 + n > len) break;
-      if (p[i + 1] == OHL_AIR_UPD) air_update(p + i + 1, n);
+      if (p[i + 1] == DML_AIR_UPD) air_update(p + i + 1, n);
+      else if (p[i + 1] == DML_TAGGED_GET && n == 3) {    /* ask the main MCU as ever, remember the tag */
+        if (tq_n == TQ) { tq_head = (uint8_t)((tq_head + 1) % TQ); tq_n--; }
+        uint8_t k = (uint8_t)((tq_head + tq_n) % TQ);
+        tq_tag[k] = p[i + 2]; tq_t[k] = now_us(); tq_n++;
+        uint8_t get[2] = { 'P', p[i + 3] };
+        reply_push(get, 2);
+      }
       else reply_push(p + i + 1, n);
       i += 1 + n;
     }
   }
-  cur_ch = ohl_channel((uint8_t)(cyc + 1), mask);          /* where the next cycle will be */
+  cur_ch = dml_channel((uint8_t)(cyc + 1), mask);          /* where the next cycle will be */
 }
 
 static void radio_poll(void)
@@ -815,7 +850,7 @@ static void radio_poll(void)
          t_last_poll + j*P; be on its channel from half a period before until half after. */
       uint32_t j = (t - t_last_poll + period_us / 2) / period_us;
       if (j >= 1) {
-        uint8_t ch = ohl_channel((uint8_t)(last_cycle + j), mask);
+        uint8_t ch = dml_channel((uint8_t)(last_cycle + j), mask);
         if (ch != cur_ch) { radio_stop(); cur_ch = ch; arm_next(); }
       }
     }
@@ -830,7 +865,7 @@ static void radio_poll(void)
       /* TXEN already fired through the shortcut: stop it from firing again after the TX */
       NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk;
       if (!got_addr) { radio_stop(); arm_next(); return; } /* never answer with the wrong buffer */
-      poll_ok = crc && len >= OHL_POLL_HDR && p[0] == OHL_POLL && p[1] == my_slot;
+      poll_ok = crc && len >= DML_POLL_HDR && p[0] == DML_POLL && p[1] == my_slot;
       if (!crc) poll_crc_err++;
       if (poll_ok) handle_poll(p, len);
       rstate = R_TX;
@@ -841,9 +876,9 @@ static void radio_poll(void)
       NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk;
       rstate = R_TX;                                       /* our JREQ is going out */
     }
-    if (crc && len >= OHL_JOIN_LEN && p[0] == OHL_JOIN) {
+    if (crc && len >= DML_JOIN_LEN && p[0] == DML_JOIN) {
       uint32_t base; memcpy(&base, p + 1, 4);
-      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < OHL_SLOTS && (!pair_mode || p[5])) {
+      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < DML_SLOTS && (!pair_mode || p[5])) {
         pair_end();                                         /* paired (or back on its dongle) */
         if (rstate == R_TX) { while (!NRF_RADIO->EVENTS_DISABLED) {} NRF_RADIO->EVENTS_DISABLED = 0; }
         go_joined(base, p[14]);
@@ -851,7 +886,7 @@ static void radio_poll(void)
         if (p[18]) period_us = p[18] * 50u;
         last_cycle = p[17]; have_cycle = 1;
         t_last_poll = t_addr - (uint32_t)(p[19] | p[20] << 8);
-        cur_ch = ohl_channel((uint8_t)(last_cycle + (now_us() - t_last_poll + period_us / 2) / period_us), mask);
+        cur_ch = dml_channel((uint8_t)(last_cycle + (now_us() - t_last_poll + period_us / 2) / period_us), mask);
         arm_next();
         return;
       }
@@ -887,14 +922,15 @@ int main(void)
       if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
     }
     radio_poll();
-#ifdef OHL_IDX
+#ifdef DML_IDX
     sys_button_poll();
     gpio_watch_poll();
 #endif
     if (pair_mode && now_us() - pair_since > 35000000u) pair_end();   /* the main MCU gives up at 30 s */
+    drops_report();
     if (air_reset_at && (int32_t)(now_us() - air_reset_at) > 0) reset_now();
     if (boot_rec.quick_boots && now_us() - t0 > 5000000) boot_stable();
-#ifdef OHL_IDX
+#ifdef DML_IDX
     if (now_us() - t0 > 10000000) staging_scrub();
 #endif
   }

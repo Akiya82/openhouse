@@ -1,7 +1,7 @@
 # doorman protocol
 
-Source of truth: `doorman/common/ohlink.h` (air format, constants) and
-`doorman/common/ohcodec.h` (codec). The dongle side is in `dongle-fw/src/link.c` and
+Source of truth: `doorman/common/doorman_link.h` (air format, constants) and
+`doorman/common/doorman_codec.h` (codec). The dongle side is in `dongle-fw/src/link.c` and
 `main.c`, the device side in `radio-fw/src/main.c`.
 
 ## Air
@@ -59,14 +59,27 @@ frames = repeated [len][frame]
   2 s; Index: the stock gesture). The main MCU tells the radio over SPI exactly as it does with
   the stock radio.
 
-### Air codec (lossless, `ohcodec.h`)
-* IMU `p` (18 B) is sent as `j`: a flags byte, then zigzag varint deltas for the 6 axes and the
-  timestamp, plus the seq only if it isn't previous+1.
-* Light `q` is sent as `k`: per record `[b0][b1][varint A][zz varint dt]`.
-* Both ends update their state from the original frames; the state resets on join.
-* The dongle decodes, so USB carries the original frames.
-* Measured: 6.9 kB/s on air for 9.0 kB/s of frames (77 %). A device needs about 8 kB/s on air
-  and 10.5 kB/s decoded.
+### Air codec (lossless, `doorman_codec.h`)
+* Bit-packed, one frame at a time: no batching, no added latency. The radio codes, the dongle
+  decodes, so USB carries the original frames.
+* IMU `p` (18 B) -> `0xC1`: each axis predicted from the last two samples (2 x1 - x2), the
+  timestamp from the last interval; seq only if it isn't previous+1.
+* LH1 `q` -> `0xC2`: per record sensor (5 bits), b1 flag, width, time since the last record.
+* LH2 `s` -> `0xC3`: per 0x28 word the ts24 delta and the 5-6 flag/sensor bits; channel bytes
+  in 6 bits.
+* Residuals use Exp-Golomb codes with k adapted per field (running mean of bit lengths), so big
+  values (a new sweep) cost a few extra bits and nothing ever overflows.
+* Both ends update their state from the original frames (coded or sent raw); reset on join.
+* Measured on a 60 s Doorman recording (fast swings, 2 base stations) and Watchman LH2
+  recordings: IMU 4.75 -> 2.1 kB/s, LH1 light 8.4 -> 5.2 kB/s, LH2 8-10.7 -> 77 %. The old
+  byte-varint codec reached 77 % on IMU+LH1; this one 54-59 %.
+
+### Feature reads and drop counts
+* The host reads a feature with `[0xC5][tag][id]`; the radio asks the main MCU (`P id`) and
+  answers `[0xC4][tag][answer]`. A late answer can't be taken for the next request. Untagged
+  `P` reads (tools) still pass through.
+* Once a second the radio sends `D [queue drops u16][reply drops u16]` (totals). The dongle
+  keeps them per slot (cmd 0x28 bytes 12-19) and doesn't pass them on.
 
 ## Dongle USB interface (VID:PID 6767:0727, "Doorman Dongle")
 
@@ -74,7 +87,7 @@ frames = repeated [len][frame]
 One interrupt IN endpoint carries at most 64 B per ms (~61 kB/s), which wasn't enough for 6
 devices, so **interface 1 streams the odd slots**. Interface 0 streams the even slots and
 carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` in `Pump`;
-`ohlink.py` reads `h1` first).
+`doorman_link.py` reads `h1` first).
 
 * Commands go out on interface 0 as `[cmd][seq][args]`. Replies come back as
   `[cmd][seq][status][61 B data]`.
@@ -103,7 +116,7 @@ carries all commands. Hosts must read both (`doorman_dongle.cpp` drains `dev1_` 
 | 0x25 | slots: per slot used, active, id x8. `d[60] = pairing \| (target+1) << 1` |
 | 0x26 | forget slot (0xFF = all) |
 | 0x27 | channels: mask, loss % per hop channel, joins, net base |
-| 0x28 | codec: air bytes, frame bytes, bad frames |
+| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each) |
 | 0x29 | live: per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 

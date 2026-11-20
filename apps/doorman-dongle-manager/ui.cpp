@@ -721,6 +721,8 @@ void Ui::Radio(const DongleState& d) {
     std::snprintf(a, sizeof a, "%.0f / s", s.dropsPerSec);
     std::snprintf(b, sizeof b, "%d .. %d dBm", s.rssiMin, s.rssiMax);
     row("Dropped on the dongle", a, "Signal range", b);
+    std::snprintf(a, sizeof a, "%.0f / s", s.deviceDropsPerSec); std::snprintf(b, sizeof b, "%.1f / s", s.deviceReplyDropsPerSec);
+    row("Dropped on the device", a, "Replies dropped", b);
     if (s.airKBytesPerSec > 0 && s.kBytesPerSec > 0) {
       std::snprintf(a, sizeof a, "%.0f %% smaller", 100.0 * (1 - s.airKBytesPerSec / s.kBytesPerSec));
       std::snprintf(b, sizeof b, "%llu", static_cast<unsigned long long>(s.frames));

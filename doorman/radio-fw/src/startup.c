@@ -3,7 +3,7 @@
  * +0x14 0xFFFFFFFF (the staging commit marker word: must stay blank in the image), +0x18 version. */
 #include <stdint.h>
 #include "nrf.h"
-#include "ohlink.h"
+#include "doorman_link.h"
 
 extern uint32_t _estack, _sidata, _sdata, _edata, _sbss, _ebss;
 extern int main(void);
@@ -12,7 +12,7 @@ extern void SystemInit(void);
 void Reset_Handler(void);
 static void Default_Handler(void) { for (;;) {} }   /* unused: no interrupts are enabled; WDT resets */
 
-#ifdef OHL_IDX
+#ifdef DML_IDX
 /* Valve nRF52 radio: Cortex-M4 (slots 4-6 are fault handlers), header in reserved slots 7-10 like the
  * stock image: +0x1C length (patched), +0x20 blank commit marker slot, +0x24 version. */
 void SystemInit(void) {}            /* no Nordic system_nrf52.c: it can write UICR and reset */
@@ -22,7 +22,7 @@ const uint32_t vectors[64] = {
   [2 ... 6] = (uint32_t)Default_Handler,
   0x00000000u,  /* +0x1C image length, patched after linking */
   0xFFFFFFFFu,  /* +0x20 blank: commit marker slot */
-  OHL_VERSION,  /* +0x24 version */
+  DML_VERSION,  /* +0x24 version */
   0,
   [11 ... 63] = (uint32_t)Default_Handler,
 };
@@ -32,7 +32,7 @@ const uint32_t vectors[48] = {
   (uint32_t)&_estack, (uint32_t)Reset_Handler, (uint32_t)Default_Handler, (uint32_t)Default_Handler,
   0x00000000u,  /* +0x10 image length, patched after linking */
   0xFFFFFFFFu,  /* +0x14 blank: commit marker slot */
-  OHL_VERSION,  /* +0x18 version */
+  DML_VERSION,  /* +0x18 version */
   0,
   [8 ... 47] = (uint32_t)Default_Handler,
 };

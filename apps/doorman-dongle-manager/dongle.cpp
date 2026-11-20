@@ -322,7 +322,11 @@ void Dongle::PollStats(int slot, double now) {
     s.kBytesPerSec = rate(6) / 1000;
     s.dropsPerSec = rate(7);
     s.resendsPerSec = rate(9);
-    if (codec) s.airKBytesPerSec = double(Rd32(c.data.data()) - k.air) / dt / 1000;
+    if (codec) {
+      s.airKBytesPerSec = double(Rd32(c.data.data()) - k.air) / dt / 1000;
+      s.deviceDropsPerSec = double(uint16_t(Rd32(c.data.data() + 12) - k.devDrops)) / dt;
+      s.deviceReplyDropsPerSec = double(uint16_t(Rd32(c.data.data() + 16) - k.devReplyDrops)) / dt;
+    }
     s.imuHz = double(k.imu - k.imu0) / dt;
     s.lightPerSec = double(k.light - k.light0) / dt;
     s.inputPerSec = double(k.input - k.input0) / dt;
@@ -338,7 +342,11 @@ void Dongle::PollStats(int slot, double now) {
   k.have = true;
   k.t = now;
   std::memcpy(k.v, v, sizeof v);
-  if (codec) k.air = Rd32(c.data.data());
+  if (codec) {
+    k.air = Rd32(c.data.data());
+    k.devDrops = uint16_t(Rd32(c.data.data() + 12));
+    k.devReplyDrops = uint16_t(Rd32(c.data.data() + 16));
+  }
   k.imu0 = k.imu; k.light0 = k.light; k.input0 = k.input;
 }
 

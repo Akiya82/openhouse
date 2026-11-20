@@ -7,7 +7,7 @@
  * all on one channel; every 20 ms the dongle also sends a JOIN beacon on the join channel. Cycles hop
  * over 16 channels: channel = hop_ch[allowed[cycle % n_allowed]], allowed = set bits of the mask the
  * previous POLL announced. Each slot has its own address (BASE1 = per-dongle network base, prefix
- * OHL_SLOT_PREFIX + slot), so a tracker's radio only ever hears polls for its own slot and can answer
+ * DML_SLOT_PREFIX + slot), so a tracker's radio only ever hears polls for its own slot and can answer
  * with a hardware turnaround (END->DISABLE->TXEN shortcut, ~150 us) using a RESP prepared beforehand.
  *
  * Timing: fixed cycle period P; the k-th scheduled slot is polled at cycle_start + k * slot_time, so a
@@ -29,38 +29,43 @@
 #pragma once
 #include <stdint.h>
 
-#ifdef OHL_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
-#define OHL_VERSION        0x6A000017u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
+#ifdef DML_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
+#define DML_VERSION        0x6A000019u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
 #else
-#define OHL_VERSION        0x0A00000Au
+#define DML_VERSION        0x0A00000Cu
 #endif        /* radio fw version reported for 'X' (HTC: 0x576B0104) */
-#define OHL_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
-#define OHL_JOIN_CHANNEL   80                 /* 2480 MHz */
-#define OHL_JOIN_BASE      0x4F484A4Eu        /* "OHJN" */
-#define OHL_JOIN_PREFIX    0x5Au
-#define OHL_SLOT_PREFIX    0xA0u
-#define OHL_MAXLEN         250
-#define OHL_SLOTS          6
-#define OHL_NHOP           16
-static const uint8_t ohl_hop_ch[OHL_NHOP] = { 4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59, 64, 69, 74, 79 };
+#define DML_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
+#define DML_JOIN_CHANNEL   80                 /* 2480 MHz */
+#define DML_JOIN_BASE      0x4F484A4Eu        /* "OHJN" */
+#define DML_JOIN_PREFIX    0x5Au
+#define DML_SLOT_PREFIX    0xA0u
+#define DML_MAXLEN         250
+#define DML_SLOTS          6
+#define DML_NHOP           16
+static const uint8_t dml_hop_ch[DML_NHOP] = { 4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59, 64, 69, 74, 79 };
 
-enum { OHL_POLL = 0x01, OHL_RESP = 0x02, OHL_JOIN = 0x03, OHL_JREQ = 0x04 };
-#define OHL_POLL_HDR       8
-#define OHL_RESP_HDR       6
-#define OHL_JOIN_LEN       21
-#define OHL_JREQ_LEN       10
-#define OHL_F_SEQ_MASK     0x07
-#define OHL_F_DSEQ         0x08
-#define OHL_F_DOWN         0x10
+enum { DML_POLL = 0x01, DML_RESP = 0x02, DML_JOIN = 0x03, DML_JREQ = 0x04 };
+#define DML_POLL_HDR       8
+#define DML_RESP_HDR       6
+#define DML_JOIN_LEN       21
+/* Tagged feature reads: the host sends [0xC5][tag][report id]; the radio asks the main MCU with
+   ['P'][report id] and sends the answer back as [0xC4][tag][answer without the 'P']. The main MCU's
+   answers carry no id, so without the tag a late answer was taken for the next request. */
+#define DML_TAGGED_GET     0xC5
+#define DML_TAGGED_REPLY   0xC4
+#define DML_JREQ_LEN       10
+#define DML_F_SEQ_MASK     0x07
+#define DML_F_DSEQ         0x08
+#define DML_F_DOWN         0x10
 
 /* channel for a cycle: the (cycle % n)-th allowed hop channel */
-static inline uint8_t ohl_channel(uint8_t cycle, uint16_t mask)
+static inline uint8_t dml_channel(uint8_t cycle, uint16_t mask)
 {
   int n = 0;
-  for (int i = 0; i < OHL_NHOP; i++) n += (mask >> i) & 1;
-  if (n == 0) return ohl_hop_ch[0];
+  for (int i = 0; i < DML_NHOP; i++) n += (mask >> i) & 1;
+  if (n == 0) return dml_hop_ch[0];
   int k = cycle % n;
-  for (int i = 0; i < OHL_NHOP; i++)
-    if ((mask >> i) & 1) { if (k == 0) return ohl_hop_ch[i]; k--; }
-  return ohl_hop_ch[0];
+  for (int i = 0; i < DML_NHOP; i++)
+    if ((mask >> i) & 1) { if (k == 0) return dml_hop_ch[i]; k--; }
+  return dml_hop_ch[0];
 }

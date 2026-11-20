@@ -8,11 +8,11 @@ MDK = ../third_party/nrfx/mdk
 COMMON = -mthumb -Os -g -ffunction-sections -fdata-sections -Wall -Wextra -std=gnu11 \
   -I../common -I$(MDK) -I../third_party/CMSIS_5/CMSIS/Core/Include -ffreestanding
 ifeq ($(DIAG),1)
-COMMON += -DOHL_DIAG
+COMMON += -DDML_DIAG
 endif
 ifeq ($(TARGET),idx)
 B = build-idx
-CFLAGS = -mcpu=cortex-m4 $(COMMON) -DNRF52832_XXAA -DOHL_IDX
+CFLAGS = -mcpu=cortex-m4 $(COMMON) -DNRF52832_XXAA -DDML_IDX
 SRCS = src/main.c src/startup.c
 LD = radio_idx.ld
 FIX = --idx
@@ -26,7 +26,7 @@ FIX =
 OUT = $(B)/radio.bin
 endif
 all: $(OUT)
-$(B)/radio.elf: $(SRCS) $(LD) ../common/ohlink.h ../common/ohcodec.h
+$(B)/radio.elf: $(SRCS) $(LD) ../common/doorman_link.h ../common/doorman_codec.h
 	@mkdir -p $(B)
 	arm-none-eabi-gcc $(CFLAGS) $(SRCS) -nostartfiles -nostdlib -lgcc -Wl,--gc-sections -T$(LD) -Wl,-Map=$(B)/radio.map -o $@ -lc -lgcc
 	arm-none-eabi-size $@

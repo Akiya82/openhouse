@@ -166,14 +166,30 @@ void DoormanDongle::Pump(double now) {
   std::optional<int> pair;
   int pairSlot = -1;
   std::deque<std::pair<int, std::vector<uint8_t>>> downs;
-  std::vector<std::pair<int, uint8_t>> requests;
+  struct Request { int slot; uint8_t id, tag; };
+  std::vector<Request> requests;
   {
     std::lock_guard lock(mutex_);
     pair.swap(pairMs_);
     pairSlot = pairSlot_;
-    downs.swap(downlinks_);
+    // The main MCU's answers carry no id and the radio tags them in order, so an answer to a write
+    // must not land while a read waits: writes to a device wait for its read's answer, and a read
+    // waits 50 ms after a write (time for the write's answer, if there is one).
+    std::array<bool, 6> reading{};
     for (auto& w : featureWaits_)
-      if (!w->sent) { w->sent = true; requests.emplace_back(w->slot, w->id); }
+      if (w->sent && !w->done && w->slot >= 0 && w->slot < 6) reading[w->slot] = true;
+    for (auto it = downlinks_.begin(); it != downlinks_.end();) {
+      if (it->first >= 0 && it->first < 6 && reading[it->first]) { ++it; continue; }
+      if (it->first >= 0 && it->first < 6) readsAfter_[it->first] = now + 0.05;
+      downs.push_back(std::move(*it));
+      it = downlinks_.erase(it);
+    }
+    for (auto& w : featureWaits_)
+      if (!w->sent && !(w->slot >= 0 && w->slot < 6 && now < readsAfter_[w->slot])) {
+        w->sent = true;
+        w->tag = nextTag_++;
+        requests.push_back({w->slot, w->id, w->tag});
+      }
   }
   if (pair) {
     // [secs][slot + 1] (0: the first free slot; older dongle firmware ignores it)
@@ -181,9 +197,9 @@ void DoormanDongle::Pump(double now) {
     Send(kCmdPair, args, 2);
   }
   for (auto& [slot, frame] : downs) Downlink(slot, frame.data(), frame.size());
-  for (auto& [slot, id] : requests) {
-    const uint8_t f[2] = {'P', id};
-    Downlink(slot, f, 2);
+  for (const auto& r : requests) {
+    const uint8_t f[3] = {0xC5, r.tag, r.id};   // the radio answers [0xC4][tag][reply]
+    Downlink(r.slot, f, 3);
   }
   for (int i = 0; i < 6; ++i) {
     Slot& s = slots_[i];
@@ -303,6 +319,19 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
 void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool last) {
   Slot& s = slots_[slot];
   switch (f[0]) {
+    case 0xC4: {
+      if (n < 2) return;
+      std::lock_guard lock(mutex_);
+      for (auto& w : featureWaits_) {
+        if (w->slot != slot || !w->sent || w->done || w->tag != f[1]) continue;
+        w->reply.assign(1, w->id);
+        w->reply.insert(w->reply.end(), f + 2, f + n);
+        w->done = true;
+        cv_.notify_all();
+        break;
+      }
+      return;
+    }
     case 'H':
       OnIdent(slot, f, n);
       return;
@@ -360,18 +389,6 @@ void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool la
     case 'B':
       if (s.attached && n >= 2) sink_->OnBattery(s.serial, {0.0, f[1]});
       return;
-    case 'P': {
-      std::lock_guard lock(mutex_);
-      for (auto& w : featureWaits_) {
-        if (w->slot != slot || !w->sent || w->done) continue;
-        w->reply.assign(1, w->id);
-        w->reply.insert(w->reply.end(), f + 1, f + n);
-        w->done = true;
-        cv_.notify_all();
-        break;
-      }
-      return;
-    }
     default:
       return;
   }

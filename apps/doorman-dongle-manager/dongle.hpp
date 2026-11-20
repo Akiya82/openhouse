@@ -44,6 +44,7 @@ struct SlotState {
   double framesPerSec = 0, kBytesPerSec = 0, airKBytesPerSec = 0, dropsPerSec = 0, resendsPerSec = 0;
   double imuHz = 0, lightPerSec = 0, inputPerSec = 0;  // stream contents
   int deviceMissed = 0, deviceCrc = 0;                 // the device's own counters, last poll
+  double deviceDropsPerSec = 0, deviceReplyDropsPerSec = 0;  // dropped in the device's radio (radio fw that reports it)
   uint64_t frames = 0, drops = 0;                      // totals since the dongle started
   std::deque<float> lossHistory, rssiHistory, kbpsHistory;
 };
@@ -136,6 +137,7 @@ class Dongle {
     double t = 0;
     uint32_t v[15]{};
     uint32_t air = 0, decoded = 0;
+    uint16_t devDrops = 0, devReplyDrops = 0;
     uint64_t imu = 0, light = 0, input = 0;
     uint64_t imu0 = 0, light0 = 0, input0 = 0;
   };

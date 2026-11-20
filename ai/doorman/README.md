@@ -23,8 +23,8 @@ The device's main MCU keeps its **stock** firmware. It talks to the radio over S
 as it would to the stock radio app. So users only change the radio, and only over USB with
 SteamVR's own updater (`radio-fw.md`).
 
-Code names that predate the "doorman" name still say "ohlink" / "doorman_dongle" / "openhouse
-link": `common/ohlink.h`, `OHL_*`, `doorman_dongle.cpp`, `OHDG-` receiver serials, and the UF2
+Code names that predate the "doorman" name still say "doorman_link" / "doorman_dongle" / "openhouse
+link": `common/doorman_link.h`, `DML_*`, `doorman_dongle.cpp`, `OHDG-` receiver serials, and the UF2
 file names. They mean doorman. The owner may rename user-facing strings later (USB product
 string "Doorman Dongle", lhviz badge "OH"). Ask before renaming identifiers.
 
@@ -32,8 +32,8 @@ string "Doorman Dongle", lhviz badge "OH"). Ask before renaming identifiers.
 
 | Path | What |
 |---|---|
-| `doorman/common/ohlink.h` | air protocol (packets, timing constants, versions `OHL_VERSION`); shared by both firmwares |
-| `doorman/common/ohcodec.h` | lossless air codec for IMU/light frames (both ends) |
+| `doorman/common/doorman_link.h` | air protocol (packets, timing constants, versions `DML_VERSION`); shared by both firmwares |
+| `doorman/common/doorman_codec.h` | lossless air codec for IMU/light frames (both ends) |
 | `doorman/dongle-fw/` | dongle firmware: `src/` (main, link, USB descriptors, tinyusb config), `ld/` (two linker scripts), `tools/uf2conv.py` |
 | `doorman/radio-fw/` | radio firmware: `src/main.c` (whole app), `src/startup.c`, `radio.ld` (nRF51), `radio_idx.ld` (nRF52) |
 | `doorman/third_party/` | **only the files the builds use** from tinyusb 0.17.0, nrfx v2.11.0 and CMSIS_5 5.9.0, plus their licenses. Commits are in `VERSIONS.txt`. To update: clone those tags, build with `-M`, copy the listed files |
@@ -46,7 +46,7 @@ Tools (`doorman/tools`; Python 3, `hid` = hidapi bindings, `usb` = pyusb):
   * `info`, `slots`, `pair SECS`, `forget`, `channels`, `scan`, `listen`, `signal`, `slotstats`
   * `flash sd|nosd|FILE` (puts the dongle in its UF2 bootloader and copies the image)
   * Only ever touches 6767:0727 and UF2 drives; never Valve dongles.
-* `ohlink.py`: the Python library: `Dongle().frames()`, `slots()`, `pair()`, `send()`.
+* `doorman_link.py`: the Python library: `Dongle().frames()`, `slots()`, `pair()`, `send()`.
 * `air_update.py`: radio update over the doorman link (any image, ~3 s).
   * `install SLOT IMAGE`
   * `info SLOT`, `trace SLOT` (the last two need a `DIAG=1` radio)
@@ -82,7 +82,7 @@ Needs `arm-none-eabi-gcc` with newlib (the dongle links newlib-nano; its `_close
 **Versions** (bump on every image that goes to a device; a device refuses nothing, but
 SteamVR and our tools compare them):
 * dongle: `DONGLE_FW_VERSION` in `dongle-fw/src/dongle.h` (0x0004)
-* radio: `OHL_VERSION` in `common/ohlink.h`, one per target: Index `0x6A0000xx` (kept above
+* radio: `DML_VERSION` in `common/doorman_link.h`, one per target: Index `0x6A0000xx` (kept above
   Valve's 0x5D27B2A9 so nothing "updates" it back), Tracker 1.0 `0x0A0000xx`. Released:
   Index 0x6A000012, Tracker 1.0 0x0A000008.
 

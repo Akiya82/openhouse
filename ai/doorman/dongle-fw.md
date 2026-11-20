@@ -44,4 +44,4 @@ doorman-dongle-manager picks the file name from that. Flash end 0xED000; the **p
 See `protocol.md` for the air schedule. Per-slot overhead ~450 µs (turnaround, headers, guard), so bigger
 responses win: 6 devices × 120 B = 6.3 ms cycle, ~18 kB/s each against ~8 kB/s needed on air. USB is the
 other limit: one 64 B report per ms per HID interface, hence two interfaces (even/odd slots). Realistic
-ceiling ≈ 8 devices per dongle (needs `OHL_SLOTS` and the USB split changed); 16–20 only with worse latency.
+ceiling ≈ 8 devices per dongle (needs `DML_SLOTS` and the USB split changed); 16–20 only with worse latency.

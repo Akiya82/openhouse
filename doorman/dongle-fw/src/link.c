@@ -1,9 +1,9 @@
-/* openhouse link v1, dongle side (see common/ohlink.h): slots, joining/pairing, hopping, go-back-N.
+/* openhouse link v1, dongle side (see common/doorman_link.h): slots, joining/pairing, hopping, go-back-N.
  * Everything is polled from the main loop (no radio interrupts). */
 #include <string.h>
 #include "nrf.h"
-#include "ohlink.h"
-#include "ohcodec.h"
+#include "doorman_link.h"
+#include "doorman_codec.h"
 #include "link.h"
 #include "dongle.h"
 
@@ -17,7 +17,7 @@ static uint32_t us_now(void) { NRF_TIMER1->TASKS_CAPTURE[0] = 1; return NRF_TIME
 #define PAIR_PAGE   0xEC000u
 #endif
 #define PAIR_MAGIC  0x5250484Fu        /* "OHPR" */
-typedef struct { uint32_t magic, used; uint8_t id[OHL_SLOTS][8]; } pair_store_t;
+typedef struct { uint32_t magic, used; uint8_t id[DML_SLOTS][8]; } pair_store_t;
 static pair_store_t pairs;
 
 static void nvmc_wait(void) { while (!NRF_NVMC->READY) {} }
@@ -50,12 +50,13 @@ typedef struct {
   uint32_t polls, resp_ok, crc_err, timeouts, dup, frames_up, bytes_up, drops, down_frames, down_resends;
   uint32_t rssi_d16, rssi_t16, t_missed, t_crc;
   uint8_t last_missed, last_crc, have_tel;
-  ohc_state_t ohc; uint32_t air_bytes, bad_frames;
+  dmc_state_t codec; uint32_t air_bytes, bad_frames;
+  uint16_t dev_drops, dev_reply_drops;   /* the radio's own drop totals (its 'D' frames) */
   uint8_t rssi_last_d, rssi_last_t, rssi_min_d, rssi_max_d;
   uint8_t ident[16];                    /* last 'H' frame, ident[0] = 0: none yet */
   uint16_t frag_left;                   /* bytes of a big frame still to send as 0x81 fragments */   /* raw -dBm; min/max reset on read (0x29) */
 } slot_t;
-static slot_t sl[OHL_SLOTS];
+static slot_t sl[DML_SLOTS];
 static uint8_t link_on = 1;
 static uint32_t net_base;
 static uint8_t cycle;
@@ -63,7 +64,7 @@ static uint16_t mask = 0xFFFF, next_mask = 0xFFFF;
 static uint8_t cur_ch;
 
 /* per hop channel loss statistics (for adaptive hopping) */
-static struct { uint16_t polls, lost; uint32_t off_until_ms; uint8_t loss_pct, strikes; } chs[OHL_NHOP];
+static struct { uint16_t polls, lost; uint32_t off_until_ms; uint8_t loss_pct, strikes; } chs[DML_NHOP];
 static uint32_t ch_eval_ms;
 
 /* pairing */
@@ -78,9 +79,9 @@ static uint8_t just_paired_slot = 0xFF;
 static uint32_t just_paired_until_ms;
 static uint32_t last_join_ms, joins_heard;
 
-static uint8_t pkt_tx[2 + OHL_MAXLEN], pkt_rx[2 + OHL_MAXLEN];
+static uint8_t pkt_tx[2 + DML_MAXLEN], pkt_rx[2 + DML_MAXLEN];
 static uint32_t period_us = 2000, slot_us = 1450;
-static uint8_t max_resp = OHL_MAXLEN;
+static uint8_t max_resp = DML_MAXLEN;
 static void (*idle_hook)(void);
 void link_set_idle_hook(void (*f)(void)) { idle_hook = f; }
 static void wait_until(uint32_t t) { while ((int32_t)(us_now() - t) < 0) if (idle_hook) idle_hook(); }
@@ -170,20 +171,20 @@ static void poll_slot(uint8_t i)
 {
   slot_t *s = &sl[i];
   uint8_t *p = pkt_tx + 1;
-  int len = OHL_POLL_HDR;
-  p[0] = OHL_POLL; p[1] = i;
-  p[2] = (uint8_t)((s->last_seq & OHL_F_SEQ_MASK) | (s->dseq ? OHL_F_DSEQ : 0));
+  int len = DML_POLL_HDR;
+  p[0] = DML_POLL; p[1] = i;
+  p[2] = (uint8_t)((s->last_seq & DML_F_SEQ_MASK) | (s->dseq ? DML_F_DSEQ : 0));
   p[3] = cycle; p[4] = (uint8_t)next_mask; p[5] = (uint8_t)(next_mask >> 8);
   p[6] = (uint8_t)(period_us / 50); p[7] = max_resp;
-  if (s->down_len) { p[2] |= OHL_F_DOWN; memcpy(p + len, s->down_buf, s->down_len); len += s->down_len; }
+  if (s->down_len) { p[2] |= DML_F_DOWN; memcpy(p + len, s->down_buf, s->down_len); len += s->down_len; }
   pkt_tx[0] = (uint8_t)len;
   s->polls++;
   int hop = -1;
-  for (int k = 0; k < OHL_NHOP; k++) if (ohl_hop_ch[k] == cur_ch) hop = k;
+  for (int k = 0; k < DML_NHOP; k++) if (dml_hop_ch[k] == cur_ch) hop = k;
   if (hop >= 0) chs[hop].polls++;
-  int n = txrx(cur_ch, net_base, (uint8_t)(OHL_SLOT_PREFIX + i), 400);
+  int n = txrx(cur_ch, net_base, (uint8_t)(DML_SLOT_PREFIX + i), 400);
   const uint8_t *r = pkt_rx + 1;
-  if (n < OHL_RESP_HDR || r[0] != OHL_RESP || r[1] != i) {
+  if (n < DML_RESP_HDR || r[0] != DML_RESP || r[1] != i) {
     if (n == -3) s->crc_err++; else s->timeouts++;
     if (hop >= 0) chs[hop].lost++;
     if (s->active && ms_ticks - s->last_resp_ms > 1000) s->active = 0;
@@ -199,21 +200,22 @@ static void poll_slot(uint8_t i)
   s->rssi_t16 = s->rssi_t16 ? s->rssi_t16 - s->rssi_t16 / 16 + r[3] : (uint32_t)r[3] * 16;
   if (s->have_tel) { s->t_missed += (uint8_t)(r[4] - s->last_missed); s->t_crc += (uint8_t)(r[5] - s->last_crc); }
   s->last_missed = r[4]; s->last_crc = r[5]; s->have_tel = 1;
-  uint8_t dack = (r[2] & OHL_F_DSEQ) ? 1 : 0;
+  uint8_t dack = (r[2] & DML_F_DSEQ) ? 1 : 0;
   if (s->down_len) { if (dack == s->dseq) { s->down_len = 0; s->dseq ^= 1; } else s->down_resends++; }
-  uint8_t seq = r[2] & OHL_F_SEQ_MASK;
-  if (seq != ((s->last_seq + 1) & OHL_F_SEQ_MASK)) { s->dup++; return; }   /* duplicate / out of order */
+  uint8_t seq = r[2] & DML_F_SEQ_MASK;
+  if (seq != ((s->last_seq + 1) & DML_F_SEQ_MASK)) { s->dup++; return; }   /* duplicate / out of order */
   s->last_seq = seq;
-  s->air_bytes += (uint32_t)(n - OHL_RESP_HDR);
-  for (int k = OHL_RESP_HDR; k < n; ) {                     /* decode every frame (keeps codec state in sync) */
+  s->air_bytes += (uint32_t)(n - DML_RESP_HDR);
+  for (int k = DML_RESP_HDR; k < n; ) {                     /* decode every frame (keeps codec state in sync) */
     uint8_t fl = r[k];
     if (fl == 0 || k + 1 + fl > n) { s->bad_frames++; break; }
     const uint8_t *f = r + k + 1;
     uint8_t g[64]; int gl = fl;
-    if (f[0] == 'j' || f[0] == 'k') { gl = ohc_decode(&s->ohc, f, fl, g); f = g; if (!gl) { s->bad_frames++; k += 1 + fl; continue; } }
-    else ohc_observe(&s->ohc, f, fl);
+    if (f[0] >= DMC_IMU && f[0] <= DMC_LH2) { gl = dmc_decode(&s->codec, f, fl, g); f = g; if (!gl) { s->bad_frames++; k += 1 + fl; continue; } }
+    else dmc_observe(&s->codec, f, fl);
     k += 1 + fl;
     if (f[0] == 'H' && gl <= 16) { memset(s->ident, 0, 16); memcpy(s->ident, f, gl); }
+    if (f[0] == 'D' && gl >= 5) { s->dev_drops = (uint16_t)(f[1] | f[2] << 8); s->dev_reply_drops = (uint16_t)(f[3] | f[4] << 8); continue; }
     s->frames_up++; s->bytes_up += (uint32_t)gl;
     if (upq_used(s) + gl + 1 >= UPQ) { s->drops++; continue; }
     s->upq[s->up_tail] = (uint8_t)gl; s->up_tail = (s->up_tail + 1) & (UPQ - 1);
@@ -226,7 +228,7 @@ static void slot_reset(uint8_t i)
 {
   slot_t *s = &sl[i];
   s->last_seq = 7; s->dseq = 0; s->down_len = 0; s->have_tel = 0;
-  memset(&s->ohc, 0, sizeof s->ohc);
+  dmc_reset(&s->codec);
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0;
   s->active = 1; s->last_resp_ms = ms_ticks;               /* poll it right away */
@@ -235,39 +237,39 @@ static uint32_t t_c;                                       /* current cycle star
 static void join_beacon(void)
 {
   uint8_t *p = pkt_tx + 1;
-  p[0] = OHL_JOIN; memcpy(p + 1, &net_base, 4);
+  p[0] = DML_JOIN; memcpy(p + 1, &net_base, 4);
   p[5] = ms_ticks < pairing_until_ms ||
          (assign_left && assign_slot == just_paired_slot && (int32_t)(just_paired_until_ms - ms_ticks) > 0) ? 1 : 0;
   if (assign_left) { memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--; }
   else { memset(p + 6, 0, 8); p[14] = 0xFF; }
   p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us / 50);
   uint32_t since = 0;
-  if (p[14] < OHL_SLOTS) {                                  /* the assigned slot's place in this cycle */
+  if (p[14] < DML_SLOTS) {                                  /* the assigned slot's place in this cycle */
     int k = 0;
     for (int i = 0; i < p[14]; i++) k += (pairs.used >> i) & 1;
     since = us_now() - (t_c + (uint32_t)k * slot_us);
     if (since > 0xFFFF) since = 0xFFFF;
   }
   p[19] = (uint8_t)since; p[20] = (uint8_t)(since >> 8);
-  pkt_tx[0] = OHL_JOIN_LEN;
-  int n = txrx(OHL_JOIN_CHANNEL, OHL_JOIN_BASE, OHL_JOIN_PREFIX, 400);
+  pkt_tx[0] = DML_JOIN_LEN;
+  int n = txrx(DML_JOIN_CHANNEL, DML_JOIN_BASE, DML_JOIN_PREFIX, 400);
   const uint8_t *r = pkt_rx + 1;
-  if (n < OHL_JREQ_LEN || r[0] != OHL_JREQ) return;
+  if (n < DML_JREQ_LEN || r[0] != DML_JREQ) return;
   joins_heard++;
   const uint8_t *id = r + 1;
   const int pairing = r[9] & 1;                             /* the device is in pairing mode */
   int slot = -1;
-  for (int i = 0; i < OHL_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
+  for (int i = 0; i < DML_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
   /* Like stock, a new pairing takes both sides: pairing open here, and the device in pairing mode
      (its pairing buttons, or a host's pair command). Known devices just reconnect. */
-  if (ms_ticks < pairing_until_ms && pairing && pair_target < OHL_SLOTS && slot != pair_target) {
+  if (ms_ticks < pairing_until_ms && pairing && pair_target < DML_SLOTS && slot != pair_target) {
     /* pairing into a chosen slot: it replaces what was there, and leaves the device's old slot */
     if (slot >= 0) pairs.used &= ~(1u << slot);
     slot = pair_target;
     memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
     just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
   } else if (slot < 0 && ms_ticks < pairing_until_ms && pairing) {   /* new device, pairing: first free slot */
-    for (int i = 0; i < OHL_SLOTS && slot < 0; i++) if (!((pairs.used >> i) & 1)) slot = i;
+    for (int i = 0; i < DML_SLOTS && slot < 0; i++) if (!((pairs.used >> i) & 1)) slot = i;
     if (slot >= 0) {
       memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save(); pairing_until_ms = 0;
       just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
@@ -290,8 +292,8 @@ static void join_beacon(void)
    one weak device struck clean channels until only a few were left to hop on. */
 static uint8_t channels_typical_loss(uint16_t m)
 {
-  uint8_t v[OHL_NHOP]; int n = 0;
-  for (int k = 0; k < OHL_NHOP; k++)
+  uint8_t v[DML_NHOP]; int n = 0;
+  for (int k = 0; k < DML_NHOP; k++)
     if ((m >> k) & 1 && chs[k].polls >= 20) {
       uint8_t x = chs[k].loss_pct; int i = n++;
       while (i > 0 && v[i - 1] > x) { v[i] = v[i - 1]; i--; }
@@ -305,7 +307,7 @@ static void channels_eval(void)
   ch_eval_ms = ms_ticks;
   uint16_t m = mask;
   int on = 0;
-  for (int k = 0; k < OHL_NHOP; k++) {
+  for (int k = 0; k < DML_NHOP; k++) {
     chs[k].loss_pct = chs[k].polls ? (uint8_t)(100u * chs[k].lost / chs[k].polls) : 0;
     if ((m >> k) & 1) {
       on++;
@@ -316,7 +318,7 @@ static void channels_eval(void)
   const unsigned bad = CH_BAD_PCT + channels_typical_loss(m);
   for (;;) {                                                 /* drop the worst bad channel, again and again */
     int worst = -1;
-    for (int k = 0; k < OHL_NHOP; k++)
+    for (int k = 0; k < DML_NHOP; k++)
       if ((m >> k) & 1 && chs[k].polls >= 20 && chs[k].loss_pct > bad &&
           (worst < 0 || chs[k].loss_pct > chs[worst].loss_pct)) worst = k;
     if (worst < 0 || on <= CH_MIN_ON) break;
@@ -327,11 +329,11 @@ static void channels_eval(void)
     if (chs[worst].strikes < 8) chs[worst].strikes++;
   }
   int back = -1;                                             /* one expired channel back per round */
-  for (int k = 0; k < OHL_NHOP; k++)
+  for (int k = 0; k < DML_NHOP; k++)
     if (!((m >> k) & 1) && (int32_t)(ms_ticks - chs[k].off_until_ms) >= 0 &&
         (back < 0 || (int32_t)(chs[k].off_until_ms - chs[back].off_until_ms) < 0)) back = k;
   if (back >= 0 || on == 0) { if (back < 0) back = 0; m |= (uint16_t)(1u << back); chs[back].off_until_ms = ms_ticks; }
-  for (int k = 0; k < OHL_NHOP; k++) { chs[k].polls = 0; chs[k].lost = 0; }
+  for (int k = 0; k < DML_NHOP; k++) { chs[k].polls = 0; chs[k].lost = 0; }
   next_mask = m;
 }
 
@@ -347,7 +349,7 @@ void link_init(void)
   NRF_RADIO->MODECNF0 = RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos;   /* 40 us ramp-up */
   NRF_RADIO->TXPOWER = RADIO_TXPOWER;
   NRF_RADIO->PCNF0 = (8 << RADIO_PCNF0_LFLEN_Pos) | (RADIO_PCNF0_PLEN_8bit << RADIO_PCNF0_PLEN_Pos);
-  NRF_RADIO->PCNF1 = (OHL_MAXLEN << RADIO_PCNF1_MAXLEN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) |
+  NRF_RADIO->PCNF1 = (DML_MAXLEN << RADIO_PCNF1_MAXLEN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) |
                      (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos);
   NRF_RADIO->CRCCNF = RADIO_CRCCNF_LEN_Two; NRF_RADIO->CRCINIT = 0xFFFF; NRF_RADIO->CRCPOLY = 0x11021;
   NRF_RADIO->INTENCLR = 0xFFFFFFFF;
@@ -355,18 +357,18 @@ void link_init(void)
   net_base = (h & 0x7F7F7F7Fu) | 0x01010101u;               /* per-dongle network address */
   fem_init();
   pairs_load();
-  for (int i = 0; i < OHL_SLOTS; i++) { sl[i].last_seq = 7; sl[i].dseq = 0; }
+  for (int i = 0; i < DML_SLOTS; i++) { sl[i].last_seq = 7; sl[i].dseq = 0; }
 }
 
 void link_poll(void)
 {
   if (!link_on) { radio_off(); return; }
   int n = 0;
-  for (int i = 0; i < OHL_SLOTS; i++) n += (pairs.used >> i) & 1;
+  for (int i = 0; i < DML_SLOTS; i++) n += (pairs.used >> i) & 1;
   /* fixed TDMA plan: slot k polled at t_c + k*slot_us, then the join window */
   /* bigger responses amortise the ~450 us per-slot overhead: 6 x 120 B = 6.3 ms cycle, ~18 kB/s per device
      (72 B gave 12.9 kB/s, too little headroom for resends; queues overflowed) */
-  max_resp = n <= 1 ? OHL_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : 120;
+  max_resp = n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : 120;
   slot_us = 450u + 4u * max_resp;
   period_us = n * slot_us + 700u;
   t_c += period_us;
@@ -375,10 +377,10 @@ void link_poll(void)
   wait_until(t_c);
   cycle++;
   mask = next_mask;
-  cur_ch = ohl_channel(cycle, mask);
+  cur_ch = dml_channel(cycle, mask);
   channels_eval();                                          /* sets next_mask (announced in this cycle) */
   int k = 0;
-  for (uint8_t i = 0; i < OHL_SLOTS; i++) {
+  for (uint8_t i = 0; i < DML_SLOTS; i++) {
     if (!((pairs.used >> i) & 1)) continue;
     wait_until(t_c + (uint32_t)k * slot_us);
     k++;
@@ -397,8 +399,8 @@ int link_stream_pop(uint8_t *rep, int itf)
 {
   static uint8_t rrs[2];
   uint8_t rr = rrs[itf];
-  for (int k = 0; k < OHL_SLOTS; k++) {
-    uint8_t si = (uint8_t)((rr + k) % OHL_SLOTS);
+  for (int k = 0; k < DML_SLOTS; k++) {
+    uint8_t si = (uint8_t)((rr + k) % DML_SLOTS);
     if ((si & 1) != itf) continue;               /* each slot stays on one interface: fragments in order */
     slot_t *s = &sl[si];
     int n = 0;
@@ -433,7 +435,7 @@ static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 
 int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 61 bytes */
 {
-  uint8_t i = in[2] < OHL_SLOTS ? in[2] : 0;
+  uint8_t i = in[2] < DML_SLOTS ? in[2] : 0;
   slot_t *s = &sl[i];
   switch (in[0]) {
   case 0x20: if (in[2] != 0xFF) link_on = in[2]; d[0] = link_on; return 1;   /* radio_off happens in link_poll */
@@ -452,7 +454,7 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
     return 1;
   }
   case 0x29:                                                /* live: per slot 10 B, all slots */
-    for (int k = 0; k < OHL_SLOTS; k++) {
+    for (int k = 0; k < DML_SLOTS; k++) {
       uint8_t *e = d + k * 10; slot_t *q = &sl[k];
       e[0] = (uint8_t)(((pairs.used >> k) & 1) | (q->active << 1));
       e[1] = q->rssi_last_d; e[2] = q->rssi_last_t; e[3] = q->rssi_min_d; e[4] = q->rssi_max_d;
@@ -462,25 +464,27 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
     }
     return 1;
   case 0x2A: memcpy(d, s->ident, 16); return 1;            /* identity ('H' frame) of a slot */
-  case 0x28: put32(d, s->air_bytes); put32(d + 4, s->bytes_up); put32(d + 8, s->bad_frames); return 1;  /* codec */
+  case 0x28:                                                /* codec, and the radio's own drops */
+    put32(d, s->air_bytes); put32(d + 4, s->bytes_up); put32(d + 8, s->bad_frames);
+    put32(d + 12, s->dev_drops); put32(d + 16, s->dev_reply_drops); return 1;
   case 0x24:                                                /* pair SECS [SLOT+1] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;
-    pair_target = in[3] >= 1 && in[3] <= OHL_SLOTS ? (uint8_t)(in[3] - 1) : 0xFF;
+    pair_target = in[3] >= 1 && in[3] <= DML_SLOTS ? (uint8_t)(in[3] - 1) : 0xFF;
     d[0] = in[2]; d[1] = pair_target; return 1;
   case 0x25:                                                /* slots: used, active, id x8 per slot */
-    for (int k = 0; k < OHL_SLOTS; k++) {
+    for (int k = 0; k < DML_SLOTS; k++) {
       d[k * 10] = (pairs.used >> k) & 1; d[k * 10 + 1] = sl[k].active;
       memcpy(d + k * 10 + 2, pairs.id[k], 8);
     }
-    d[60] = ms_ticks < pairing_until_ms ? (uint8_t)(1 | (pair_target < OHL_SLOTS ? (pair_target + 1) << 1 : 0)) : 0;
+    d[60] = ms_ticks < pairing_until_ms ? (uint8_t)(1 | (pair_target < DML_SLOTS ? (pair_target + 1) << 1 : 0)) : 0;
     return 1;
   case 0x26:                                                /* forget slot (0xFF = all) */
-    if (in[2] == 0xFF) pairs.used = 0; else if (in[2] < OHL_SLOTS) pairs.used &= ~(1u << in[2]);
+    if (in[2] == 0xFF) pairs.used = 0; else if (in[2] < DML_SLOTS) pairs.used &= ~(1u << in[2]);
     pairs_save();
     return 1;
   case 0x27:                                                /* channels: mask, loss % per hop channel */
     d[0] = (uint8_t)mask; d[1] = (uint8_t)(mask >> 8);
-    for (int k = 0; k < OHL_NHOP; k++) { d[2 + k] = ohl_hop_ch[k]; d[18 + k] = chs[k].loss_pct; }
+    for (int k = 0; k < DML_NHOP; k++) { d[2 + k] = dml_hop_ch[k]; d[18 + k] = chs[k].loss_pct; }
     put32(d + 34, joins_heard); put32(d + 38, net_base);
     return 1;
   }

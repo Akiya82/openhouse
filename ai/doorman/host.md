@@ -26,4 +26,4 @@ plain binary: `tools/` in the Linux package, `apps/` in the Windows zip; **not i
 Test hooks: `OPENHOUSE_DONGLE_SNAPSHOT=FILE.ppm`, `OPENHOUSE_DONGLE_PAGE=...`.
 
 ## Python
-`doorman/tools/ohlink.py` mirrors the transport for scripts; `dongle.py` is the CLI (`README.md`).
+`doorman/tools/doorman_link.py` mirrors the transport for scripts; `dongle.py` is the CLI (`README.md`).

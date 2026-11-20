@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PC-side reader for the Doorman Dongle (6767:0727): per-tracker frame stream + link health.
 
-    from ohlink import Dongle
+    from doorman_link import Dongle
     with Dongle() as d:
         for slot, f in d.frames():          # f: Imu | Light | Status | Raw
             ...
@@ -12,7 +12,7 @@ tracker MCU's own radio frames, already decoded from the air codec:
   'p' IMU     acc[3] gyro[3] (s16), t (u32, 48 MHz), seq (u8)
   'q' light   n x 8 B: [sensor][b1][A u16][t u32], or sync [0xFF][b1][t u32][A u16]
   'V' status  passed through raw
-CLI:  python ohlink.py [SECS]    prints decoded frames briefly, then per-slot rates + signal.
+CLI:  python doorman_link.py [SECS]    prints decoded frames briefly, then per-slot rates + signal.
 See ai/doorman/protocol.md.
 """
 import struct, sys, time

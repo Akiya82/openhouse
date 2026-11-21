@@ -458,6 +458,13 @@ void Ui::Go(Page page) {
       radioStep_ = RadioStep::Choose;
       wired_.Start(FindWiredDevices, 2.0);
       break;
+    case Page::DeviceType: {
+      std::lock_guard l(kindsMutex_);
+      kinds_.clear();  // read again: a device may have been switched elsewhere meanwhile
+      kindTarget_.clear();
+      wired_.Start(FindWiredDevices, 2.0);
+      break;
+    }
     case Page::RadioWireless:
     case Page::RestoreRadioWireless:
       radioStep_ = RadioStep::Choose;
@@ -504,6 +511,7 @@ void Ui::Draw(float width, float height) {
     case Page::RestoreMenu: RestoreMenu(); break;
     case Page::RestoreBase: BaseStationPage(true); break;
     case Page::RestoreRadio: RadioWiredPage(true); break;
+    case Page::DeviceType: DeviceTypePage(); break;
   }
   ImGui::EndChild();
   Footer();
@@ -781,11 +789,116 @@ void Ui::FlashMenu() {
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("What do you want to flash?");
   switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Flashes lhbs to your 1.0 base stations"},
-                 {Icon::Wireless, "Doorman", "Flashes your dongle or your devices"}})) {
+                 {Icon::Wireless, "Doorman", "Flashes your dongle or your devices"},
+                 {Icon::Tracker, "Device Type", "Turns a controller into a tracker and back"}})) {
     case 0: Go(Page::BaseStation); break;
     case 1: Go(Page::DoormanMenu); break;
+    case 2: Go(Page::DeviceType); break;
   }
   Back(Page::Home);
+}
+
+// ---- device type ----
+
+void Ui::DeviceTypePage() {
+  Title("Device Type");
+  Wrapped("Switches a controller to a tracker and back, for a Vive wand on a hip, an ankle or a prop. The type is kept "
+          "in the device itself: it stays with it on any dongle (Doorman or SteamVR's), with any driver, and when its "
+          "radio firmware is flashed. Plug the device in with a USB cable.");
+  if (steamvr_.root.empty()) {
+    ImGui::TextColored(kBad, "SteamVR not found");
+    if (BigButton("Choose SteamVR folder")) askSteamVR_ = true;
+    Back(Page::FlashMenu);
+    return;
+  }
+  if (!RuntimesClosed() || !DeviceAccess()) { Back(Page::FlashMenu); return; }
+  const fs::path root = steamvr_.root;
+  const auto devices = wired_.Value();
+
+  // Each new device's type, read from its config once.
+  std::vector<std::string> unread;
+  {
+    std::lock_guard l(kindsMutex_);
+    for (const auto& d : devices)
+      if (!kinds_.count(d.serial)) unread.push_back(d.serial);
+    if (!unread.empty() && !kindJob_.Running() && !job_.Running())
+      for (const auto& s : unread) kinds_[s] = "";
+    else
+      unread.clear();
+  }
+  if (!unread.empty()) {
+    kindJob_.Start([this, unread, root](Job&) {
+      for (const auto& serial : unread) {
+        std::string text, error, kind;
+        if (ReadDeviceConfig(root, serial, &text, &error)) {
+          kind = KindName(KindOf(nlohmann::json::parse(text, nullptr, false)));
+          if (kind == "unknown") kind = "can't tell from its config";
+        } else {
+          kind = "couldn't read its config: " + error;
+        }
+        std::lock_guard l(kindsMutex_);
+        kinds_[serial] = kind;
+      }
+      return true;
+    });
+  }
+
+  ImGui::Spacing();
+  ImGui::BeginChild("types", ImVec2(0, -DeviceListReserve()), ImGuiChildFlags_Borders);
+  if (devices.empty()) ImGui::TextColored(kMuted, "Waiting for devices...");
+  for (const auto& d : devices) {
+    std::string kind;
+    {
+      std::lock_guard l(kindsMutex_);
+      kind = kinds_[d.serial];
+    }
+    ImGui::PushID(d.serial.c_str());
+    ImGui::TextUnformatted((d.model.name + "  " + d.serial).c_str());
+    ImGui::SameLine();
+    if (kind.empty()) {
+      ImGui::TextColored(kMuted, "reading...");
+    } else if (kind == "controller" || kind == "tracker") {
+      ImGui::TextColored(kGood, "%s", kind == "controller" ? "Controller" : "Tracker");
+      ImGui::SameLine();
+      const bool toTracker = kind == "controller";
+      ImGui::BeginDisabled(job_.Running() || kindJob_.Running());
+      if (ImGui::Button(toTracker ? "Make it a tracker" : "Make it a controller")) {
+        kindTarget_ = d.serial;
+        const std::string serial = d.serial;
+        const uint16_t pid = d.pid;
+        const DeviceKind to = toTracker ? DeviceKind::Tracker : DeviceKind::Controller;
+        job_.Start([this, root, serial, pid, to](Job& j) {
+          std::string error;
+          const bool ok = SetDeviceKind(root, serial, pid, to, [&](const std::string& s) { j.Log(s); }, &error);
+          if (!ok) j.Fail(error);
+          std::lock_guard l(kindsMutex_);
+          if (ok) kinds_[serial] = KindName(to);
+          else kinds_.erase(serial);  // read it again
+          return ok;
+        });
+      }
+      ImGui::EndDisabled();
+    } else if (kind == "headset") {
+      ImGui::TextColored(kMuted, "(headset, not changed here)");
+    } else {
+      ImGui::TextColored(kWarn, "%s", kind.c_str());
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+  if (!kindTarget_.empty()) {
+    if (job_.Running()) {
+      const auto log = job_.LogLines();
+      ImGui::TextColored(kWarn, "%s...", log.empty() ? "Working" : log.back().c_str());
+    } else if (job_.Finished()) {
+      const auto log = job_.LogLines();
+      if (job_.Ok()) ImGui::TextColored(kGood, "%s. Unplug it and turn it on.", log.empty() ? "Done" : log.back().c_str());
+      else ImGui::TextColored(kBad, "Failed: %s", job_.Error().c_str());
+    }
+  } else {
+    ImGui::TextColored(kMuted, "Configs are backed up to %s before they're changed.", Utf8(DeviceConfigBackups()).c_str());
+  }
+  Back(Page::FlashMenu);
 }
 
 void Ui::DoormanMenu() {

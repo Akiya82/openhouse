@@ -820,7 +820,7 @@ void Ui::DeviceTypePage() {
   {
     std::lock_guard l(kindsMutex_);
     for (const auto& d : devices)
-      if (!kinds_.count(d.serial)) unread.push_back(d.serial);
+      if (!kinds_.count(d.serial) && d.serial.rfind("LHR-", 0) == 0) unread.push_back(d.serial);
     if (!unread.empty() && !kindJob_.Running() && !job_.Running())
       for (const auto& s : unread) kinds_[s] = "";
     else
@@ -847,6 +847,7 @@ void Ui::DeviceTypePage() {
   ImGui::BeginChild("types", ImVec2(0, -DeviceListReserve()), ImGuiChildFlags_Borders);
   if (devices.empty()) ImGui::TextColored(kMuted, "Waiting for devices...");
   for (const auto& d : devices) {
+    if (d.serial.rfind("LHR-", 0) != 0) continue;  // a wand in its bootloader: no config to read there
     std::string kind;
     {
       std::lock_guard l(kindsMutex_);

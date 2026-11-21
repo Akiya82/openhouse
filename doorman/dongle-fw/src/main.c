@@ -70,9 +70,24 @@ FAULT_STUB(BusFault_Handler, 3)
 FAULT_STUB(UsageFault_Handler, 4)
 void WDT_IRQHandler(void) { crash_entry(0, 5); }   /* runs just before a watchdog reset (~2 clocks of 32k) */
 
-/* ---------- time ---------- */
+/* ---------- time, and the hang detector ---------- */
+/* The main loop and usb_service() stamp hb_ms. SysTick runs at the highest priority, so it interrupts
+   any code stuck with interrupts on (a radio wait, an ISR): stale for HANG_MS, it records the stuck
+   code's pc/lr as a "hang" crash and resets. The boot after that runs in safe mode (no radio), so a
+   dongle that hangs stays reachable over USB: its record can be read and it can still be updated. */
+#define HANG_MS 2000u
 volatile uint32_t ms_ticks;
-void SysTick_Handler(void) { ms_ticks++; }
+static volatile uint32_t hb_ms;
+static uint8_t safe_mode;
+void systick_c(uint32_t *frame)
+{
+    ms_ticks++;
+    if (ms_ticks - hb_ms > HANG_MS) { hb_ms = ms_ticks; crash_entry(frame, 6); }
+}
+__attribute__((naked)) void SysTick_Handler(void)
+{
+    __asm volatile("tst lr, #4\n ite eq\n mrseq r0, msp\n mrsne r0, psp\n b systick_c");
+}
 uint32_t board_millis(void) { return ms_ticks; }
 
 /* ---------- USB power events (no SoftDevice is ever enabled, in either variant) ---------- */
@@ -111,9 +126,22 @@ static void handle(const uint8_t *in, uint16_t len) {
         }
         d[52] = NRF_POWER->GPREGRET2;
         put32(d + 53, *(volatile uint32_t *)0x3000 == 0x51B1E5DB);   /* SoftDevice magic still in flash? */
-        d[57] = BOARD_ID;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059 (both Nordic DFU) */
+        d[57] = BOARD_ID;
+        d[58] = safe_mode;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059 (both Nordic DFU) */
         break;
     case CMD_STATS: put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks); break;
+    case 0x7E:                                  /* USB controller state, for boards whose endpoints stall */
+        put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks);
+        put32(d + 12, NRF_USBD->EPSTATUS); put32(d + 16, NRF_USBD->EPDATASTATUS);
+        put32(d + 20, NRF_USBD->EPINEN); put32(d + 24, NRF_USBD->EPOUTEN);
+        put32(d + 28, NRF_USBD->USBADDR); put32(d + 32, NRF_USBD->EVENTCAUSE);
+        d[36] = (uint8_t)NRF_USBD->SIZE.EPOUT[1]; d[37] = (uint8_t)NRF_USBD->SIZE.EPOUT[2];
+        d[38] = (uint8_t)NRF_USBD->SIZE.EPOUT[3]; d[39] = (uint8_t)NRF_USBD->SIZE.EPOUT[4];
+        d[40] = tud_mounted(); d[41] = safe_mode;
+        put32(d + 42, NRF_FICR->INFO.PART); put32(d + 46, NRF_FICR->INFO.VARIANT);
+        d[50] = (uint8_t)*(volatile uint32_t *)0x10000130ul; d[51] = (uint8_t)*(volatile uint32_t *)0x10000134ul;
+        put32(d + 52, NRF_CLOCK->HFCLKSTAT);
+        break;
     case CMD_ECHO: memcpy(d, in + 2, len - 2 > 61 ? 61 : len - 2); break;
     case CMD_DFU_UF2: case CMD_DFU_SERIAL: case CMD_RESET: case CMD_CRASH_TEST:
         pending_action = in[0]; d[0] = in[2]; break;   /* done after the reply has gone out */
@@ -138,8 +166,15 @@ static void do_action(uint8_t a, uint8_t arg) {
     }
 }
 
+/* A feature GET_REPORT on interface 0 returns the last command's reply. With SET_REPORT (which already
+   carries commands) that is a command path over the control endpoint alone: it still works when the
+   HID data endpoints don't (seen on a Kuroshin board), so such a dongle can still be read and updated. */
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t id, hid_report_type_t t, uint8_t *buf, uint16_t n) {
-    (void)itf; (void)id; (void)t; (void)buf; (void)n; return 0;
+    (void)id;
+    if (itf != 0 || t != HID_REPORT_TYPE_FEATURE || !n) return 0;
+    const uint16_t k = n < sizeof reply ? n : (uint16_t)sizeof reply;
+    memcpy(buf, reply, k);
+    return k;
 }
 void tud_hid_set_report_cb(uint8_t itf, uint8_t id, hid_report_type_t t, const uint8_t *buf, uint16_t n) {
     (void)itf; (void)t;
@@ -166,6 +201,7 @@ void tud_hid_report_complete_cb(uint8_t itf, uint8_t const *report, uint16_t len
 
 static void usb_service(void)              /* also called while the link waits inside a cycle */
 {
+    hb_ms = ms_ticks;
     tud_task();
     for (uint8_t itf = 0; itf < DONGLE_NIF; itf++) usb_send_next(itf);
 }
@@ -193,7 +229,12 @@ int main(void) {
     if (boot_resetreas & (POWER_RESETREAS_RESETPIN_Msk) || boot_resetreas == 0) NRF_POWER->GPREGRET2 = 0;
     NRF_POWER->GPREGRET = 0;
 
+    /* Safe mode: the last reset was a hang (crash type 6) right after boot. GPREGRET2 counts quick
+       crashes and is cleared at power-on, so a replug leaves safe mode. */
+    safe_mode = crash_valid() && crash->type == 6 && (NRF_POWER->GPREGRET2 & 0xFF) != 0;
+    hb_ms = 0;
     SysTick_Config(SystemCoreClock / 1000);
+    NVIC_SetPriority(SysTick_IRQn, 0);      /* above USB and everything else: the hang detector */
     NRF_P0->PIN_CNF[LED_PIN] = 1;           /* output */
     NVIC_SetPriority(USBD_IRQn, 2);
     NVIC_SetPriority(POWER_CLOCK_IRQn, 2);
@@ -220,9 +261,10 @@ int main(void) {
 #if USE_WDT
         NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 #endif
+        hb_ms = ms_ticks;
         tud_task();
-        if (ms_ticks > 10000 && NRF_POWER->GPREGRET2) NRF_POWER->GPREGRET2 = 0;   /* stable: not a quick crash */
-        link_poll();                        /* one TDMA cycle; services USB through usb_service() */
+        if (ms_ticks > 10000 && NRF_POWER->GPREGRET2 && !safe_mode) NRF_POWER->GPREGRET2 = 0;   /* stable: not a quick crash */
+        if (!safe_mode) link_poll();        /* one TDMA cycle; services USB through usb_service() */
         if (pending_scan) { pending_scan = 0; link_rssi_scan(scan_first, reply + 3, 60); reply[2] = ST_OK; pending_reply = 1; }
         usb_service();
         if (pending_action && !pending_reply) { uint8_t a = pending_action; pending_action = 0; do_action(a, reply[3]); }

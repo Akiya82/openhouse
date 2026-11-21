@@ -20,7 +20,7 @@ BUILD = os.path.join(HERE, "..", "dongle-fw", "build")
 
 def open_dev():
     for d in hid.enumerate(VID, PID):
-        if d.get("product_string") == "Doorman Dongle":
+        if (d.get("product_string") or "").startswith("Doorman Dongle"):
             return hid.Device(path=d["path"])
     sys.exit("dongle app not found (6767:0727 'Doorman Dongle')")
 
@@ -67,10 +67,11 @@ def info():
     h = open_dev(); st, d = cmd(h, 0x01)
     magic, ver, variant, wdt, base, rr, up, id0, id1 = struct.unpack_from("<4sHBBIIIII", d)
     print(f"magic {magic} fw {ver:#06x} variant {'sd' if variant else 'nosd'} wdt {wdt} app@{base:#x}")
-    print(f"resetreas {rr:#x} uptime {up/1000:.1f}s deviceid {id1:08x}{id0:08x} quick-crashes {d[52]} softdevice-in-flash {d[53]}")
+    print(f"resetreas {rr:#x} uptime {up/1000:.1f}s deviceid {id1:08x}{id0:08x} quick-crashes {d[52]} softdevice-in-flash {d[53]}"
+          f" board {d[57]}{'  SAFE MODE (radio off after a hang)' if d[58] else ''}")
     cnt, typ, pc, lr, cfsr, hfsr = struct.unpack_from("<6I", d, 28)
     if cnt:
-        names = {1: "HardFault", 2: "MemManage", 3: "BusFault", 4: "UsageFault", 5: "WDT"}
+        names = {1: "HardFault", 2: "MemManage", 3: "BusFault", 4: "UsageFault", 5: "WDT", 6: "hang"}
         print(f"last crash: {names.get(typ, typ)} pc={pc:#x} lr={lr:#x} cfsr={cfsr:#x} hfsr={hfsr:#x} (total {cnt})")
 
 def flash(arg):
@@ -90,7 +91,7 @@ def flash(arg):
         pass   # the drive disappears when the bootloader restarts into the app
     t = time.time()
     while time.time() - t < 15:
-        if any(d.get("product_string") == "Doorman Dongle" for d in hid.enumerate(VID, PID)):
+        if any((d.get("product_string") or "").startswith("Doorman Dongle") for d in hid.enumerate(VID, PID)):
             time.sleep(0.3); info(); return
         time.sleep(0.3)
     sys.exit("app did not come back within 15 s (check with bootinfo / dmesg)")

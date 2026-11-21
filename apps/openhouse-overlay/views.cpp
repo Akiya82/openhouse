@@ -208,8 +208,8 @@ void DrawBases(const State& s, Detail detail) {
 
 void DrawReceivers(const State& s) {
   if (s.receivers.empty()) { ImGui::TextDisabled("No dongles plugged in"); return; }
-  for (const auto& [serial, connected] : s.receivers)
-    ImGui::BulletText("%s: %s", serial.c_str(), connected.empty() ? "no device paired/connected" : connected.c_str());
+  for (const auto& r : s.receivers)
+    ImGui::BulletText("%s: %s", r.serial.c_str(), r.connected.empty() ? "-" : r.connected.c_str());
 }
 
 namespace {

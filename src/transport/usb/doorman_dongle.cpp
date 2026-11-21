@@ -56,7 +56,7 @@ std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list, 
   std::map<std::string, std::array<std::vector<std::string>, kDoormanInterfaces>> bySerial;
   for (const hid_device_info* d = list; d; d = d->next) {
     if (d->vendor_id != kVid || d->product_id != kPid || !d->path) continue;
-    if (Narrow(d->product_string) != "Doorman Dongle") continue;
+    if (Narrow(d->product_string).rfind("Doorman Dongle", 0) != 0) continue;   // "Doorman Dongle <board>"
     if (d->interface_number < 0 || d->interface_number >= kDoormanInterfaces) continue;
     bySerial[Narrow(d->serial_number)][size_t(d->interface_number)].push_back(d->path);
   }

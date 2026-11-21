@@ -309,9 +309,9 @@ void Ui::Poll(double now) {
       if (s.pairId.empty()) continue;
       Identity id;
       if (driver_.Connected())
-        for (const auto& [serial, connected] : driver_.Current().receivers)
-          if (serial == st.serial + "/" + std::to_string(i) && !connected.empty()) {
-            id = {connected, driverModel.count(connected) ? driverModel[connected] : "", "driver"};
+        for (const auto& r : driver_.Current().receivers)
+          if (r.serial == st.serial + "/" + std::to_string(i) && !r.connected.empty()) {
+            id = {r.connected, driverModel.count(r.connected) ? driverModel[r.connected] : "", "driver"};
           }
       const auto k = known_.find(s.pairId);
       if (id.serial.empty() && k != known_.end() && !k->second.serial.empty())

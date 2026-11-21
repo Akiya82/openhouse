@@ -22,6 +22,7 @@ using json = nlohmann::json;
 using viewer::Base;
 using viewer::Device;
 using viewer::State;
+using viewer::Receiver;
 
 // The pixel font at 2x (default), 3x (titles) and 4x (big numbers): sharp only at whole multiples.
 ImFont* g_title = nullptr;
@@ -652,33 +653,127 @@ void Ui::Bases() {
   ImGui::EndChild();
 }
 
+namespace {
+// Signal from the weaker side of the link: 4 bars at -55 dBm or better, none at -85 or worse.
+int SignalBars(const Receiver& r) {
+  const int w = std::min(r.rssiDongle ? r.rssiDongle : 0, r.rssiDevice ? r.rssiDevice : 0);
+  if (!w) return -1;
+  return w >= -55 ? 4 : w >= -65 ? 3 : w >= -75 ? 2 : w >= -85 ? 1 : 0;
+}
+void Bars(int n) {
+  const float h = ImGui::GetTextLineHeight(), bw = h * 0.22f, gap = h * 0.1f;
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec4 on = n >= 3 ? kGood : n == 2 ? kWarn : kBad;
+  for (int i = 0; i < 4; ++i) {
+    const float bh = h * (0.35f + 0.65f * (i + 1) / 4.f);
+    dl->AddRectFilled(ImVec2(p.x + i * (bw + gap), p.y + h - bh), ImVec2(p.x + i * (bw + gap) + bw, p.y + h),
+                      ImGui::GetColorU32(i < n ? on : kOff), bw * 0.3f);
+  }
+  ImGui::Dummy(ImVec2(4 * bw + 3 * gap, h));
+}
+ImVec4 LossColor(double loss) { return loss < 5 ? kGood : loss < 15 ? kWarn : kBad; }
+}  // namespace
+
 void Ui::Dongles() {
   Title("Dongles", lh::ui::Icon::Dongle);
   const State& s = client_.Current();
   if (s.receivers.empty()) { ImGui::TextDisabled("No dongles"); return; }
-  if (!ImGui::BeginTable("dongles", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) return;
-  ImGui::TableSetupColumn("Dongle");
-  ImGui::TableSetupColumn("Device");
-  ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9);
-  ImGui::TableHeadersRow();
-  for (const auto& [serial, connected] : s.receivers) {
-    ImGui::PushID(serial.c_str());
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted(serial.c_str());
-    ImGui::TableNextColumn();
-    if (connected.empty()) ImGui::TextDisabled("-");
-    else {
-      std::string name = connected;
-      for (const auto& d : s.devices) if (d.serial == connected) name = DeviceName(d) + "  " + connected;
-      ImGui::TextUnformatted(name.c_str());
-    }
-    ImGui::TableNextColumn();
-    if (ImGui::Button("Pair")) Send(json{{"cmd", "pair"}, {"receiver", serial}, {"seconds", 30}}.dump(), "Pairing on " + serial);
+  const float em = ImGui::GetFontSize();
+  auto deviceName = [&](const std::string& serial) {
+    for (const auto& d : s.devices) if (d.serial == serial) return DeviceName(d) + "  " + Short(serial);
+    return serial;
+  };
+  auto pairButton = [&](const Receiver& r) {
+    if (ImGui::SmallButton("Pair")) Send(json{{"cmd", "pair"}, {"receiver", r.serial}, {"seconds", 30}}.dump(), "Pairing on " + r.serial);
     Tip("Hold the device's power button until it blinks");
-    ImGui::PopID();
+  };
+
+  // Doorman dongles: their slots, grouped by dongle.
+  std::map<std::string, std::vector<const Receiver*>> doorman;
+  std::vector<const Receiver*> watchman;
+  for (const auto& r : s.receivers) {
+    if (r.slot >= 0) doorman[r.serial.substr(0, r.serial.rfind('/'))].push_back(&r);
+    else watchman.push_back(&r);
   }
-  ImGui::EndTable();
+  for (auto& [dongle, slots] : doorman) {
+    std::sort(slots.begin(), slots.end(), [](auto* a, auto* b) { return a->slot < b->slot; });
+    int paired = 0, linked = 0; double kbps = 0;
+    for (auto* r : slots) { paired += r->paired; linked += r->linked; kbps += r->linked ? r->kBytesPerSec : 0; }
+    ImGui::PushID(dongle.c_str());
+    ImGui::SeparatorText(("Doorman " + dongle).c_str());
+    ImGui::TextDisabled("%d connected, %d paired, %.1f kB/s", linked, paired, kbps);
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_PadOuterX;
+    if (ImGui::BeginTable("slots", 7, flags)) {
+      ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, em * 2.5f);
+      ImGui::TableSetupColumn("Device", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Signal", ImGuiTableColumnFlags_WidthFixed, em * 8.5f);
+      ImGui::TableSetupColumn("Loss", ImGuiTableColumnFlags_WidthFixed, em * 3.5f);
+      ImGui::TableSetupColumn("Drops", ImGuiTableColumnFlags_WidthFixed, em * 3.5f);
+      ImGui::TableSetupColumn("Data", ImGuiTableColumnFlags_WidthFixed, em * 5.5f);
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, em * 3.2f);
+      ImGui::TableHeadersRow();
+      for (const Receiver* r : slots) {
+        ImGui::PushID(r->slot);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", r->slot + 1);
+        ImGui::TableNextColumn();
+        if (!r->paired) ImGui::TextDisabled("Empty");
+        else if (!r->linked) { Dot(kOff, em * 0.28f); ImGui::TextDisabled("%s", r->connected.empty() ? "Off" : (deviceName(r->connected) + " (off)").c_str()); }
+        else { Dot(kGood, em * 0.28f); ImGui::TextUnformatted(r->connected.empty() ? "Connecting" : deviceName(r->connected).c_str()); }
+        ImGui::TableNextColumn();
+        const int bars = r->linked ? SignalBars(*r) : -1;
+        if (bars < 0) ImGui::TextDisabled("-");
+        else {
+          Bars(bars);
+          ImGui::SameLine();
+          ImGui::Text("%d / %d", r->rssiDongle, r->rssiDevice);
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("dBm at the dongle / at the device");
+        }
+        ImGui::TableNextColumn();
+        if (!r->linked || r->loss < 0) ImGui::TextDisabled("-");
+        else ImGui::TextColored(LossColor(r->loss), "%.1f%%", r->loss);
+        ImGui::TableNextColumn();
+        if (!r->linked) ImGui::TextDisabled("-");
+        else if (r->drops < 0.05) ImGui::TextDisabled("0");
+        else ImGui::TextColored(kBad, "%.1f/s", r->drops);
+        ImGui::TableNextColumn();
+        if (!r->linked) ImGui::TextDisabled("-");
+        else ImGui::Text("%.1f kB/s", r->kBytesPerSec);
+        ImGui::TableNextColumn();
+        pairButton(*r);
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    ImGui::PopID();
+    ImGui::Spacing();
+  }
+
+  if (!watchman.empty()) {
+    ImGui::SeparatorText("Valve and HTC dongles");
+    if (ImGui::BeginTable("watchman", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("Dongle");
+      ImGui::TableSetupColumn("Device");
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, em * 3.2f);
+      ImGui::TableHeadersRow();
+      for (const Receiver* r : watchman) {
+        ImGui::PushID(r->serial.c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(r->serial.c_str());
+        ImGui::TableNextColumn();
+        if (r->connected.empty()) ImGui::TextDisabled("-");
+        else ImGui::TextUnformatted(deviceName(r->connected).c_str());
+        ImGui::TableNextColumn();
+        pairButton(*r);
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+  }
 }
 
 void Ui::Map() {

@@ -1019,10 +1019,18 @@ void Ui::DonglePage() {
       ImGui::Spacing();
       if (seen.drives.empty() && seen.ports.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
       // It restarts as a Doorman Dongle: check it answers.
+      // A wall-clock deadline, not a pass count: a dongle that shows up but doesn't answer makes each
+      // write block ~5 s in the kernel (Linux hidraw), so 200 passes took ~17 minutes.
       static const auto verify = [](Job& j) {
-        for (int i = 0; i < 200; ++i) {
-          j.Status(0.8f + 0.2f * float(i) / 200.f, "Verifying");
-          for (const auto& d : FindDoormanDongles())
+        const auto start = std::chrono::steady_clock::now();
+        const auto limit = std::chrono::seconds(20);
+        bool seen = false;
+        for (;;) {
+          const auto elapsed = std::chrono::steady_clock::now() - start;
+          if (elapsed >= limit) break;
+          j.Status(0.8f + 0.2f * std::chrono::duration<float>(elapsed) / std::chrono::duration<float>(limit), "Verifying");
+          for (const auto& d : FindDoormanDongles()) {
+            seen = true;
             if (d.firmware) {
               char text[96];
               std::snprintf(text, sizeof text, "Dongle %s is working (firmware %04X)", d.serial.c_str(), d.firmware);
@@ -1030,9 +1038,11 @@ void Ui::DonglePage() {
               j.Status(1, "Done");
               return true;
             }
+          }
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        j.Fail("the dongle didn't show up after flashing, replug it and try again");
+        j.Fail(seen ? "the dongle showed up but doesn't answer, replug it and try again"
+                    : "the dongle didn't show up after flashing, replug it and try again");
         return false;
       };
       static const auto flashUf2 = [](Job& j, const Uf2Drive& drive) {

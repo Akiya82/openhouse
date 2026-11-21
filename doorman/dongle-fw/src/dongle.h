@@ -3,11 +3,10 @@
 
 #define DONGLE_VID         0x6767
 #define DONGLE_PID         0x0727
-#define DONGLE_FW_VERSION  0x0018
+#define DONGLE_FW_VERSION  0x001B
 /* USB data interfaces: slot s streams on interface s % DONGLE_NIF (interface 0 also carries commands) */
 #define DONGLE_NIF         4
 #define STREAM_KIND        0x80   /* IN report: [0x80][slot][n][n bytes of [len][frame]... stream] */
-#define DONGLE_PRODUCT     "Doorman Dongle"
 
 /* host <-> dongle, 64-byte HID reports (no report ID)
    OUT: [cmd][seq][args...]      IN: [cmd][seq][status][data...]   status 0 = ok */
@@ -28,6 +27,9 @@ enum { ST_OK = 0, ST_BAD_CMD = 1, ST_BAD_ARG = 2, ST_TIMEOUT = 3 };
 #endif
 #define BOARD_NORDIC_DFU (BOARD_HOLYIOT || BOARD_PCA10059)
 #define BOARD_ID (BOARD_HOLYIOT ? 1 : BOARD_PCA10059 ? 2 : 0)   /* cmd 0x01 byte 57 */
+/* USB product string: the board this image is for. Host code matches the "Doorman Dongle" prefix. */
+#define DONGLE_PRODUCT (BOARD_HOLYIOT ? "Doorman Dongle Holyiot" : BOARD_PCA10059 ? "Doorman Dongle PCA10059" \
+                                      : "Doorman Dongle Pro Micro")
 
 /* Adafruit nRF52 bootloader magic values in NRF_POWER->GPREGRET */
 #if BOARD_NORDIC_DFU

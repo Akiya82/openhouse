@@ -45,3 +45,18 @@ See `protocol.md` for the air schedule. Per-slot overhead ~450 µs (turnaround, 
 responses win: 6 devices × 120 B = 6.3 ms cycle, ~18 kB/s each against ~8 kB/s needed on air. USB is the
 other limit: one 64 B report per ms per HID interface, hence two interfaces (even/odd slots). Realistic
 ceiling ≈ 8 devices per dongle (needs `DML_SLOTS` and the USB split changed); 16–20 only with worse latency.
+
+## USB name, control path, hang detector (0x0019-0x001B)
+
+* Product string names the board: "Doorman Dongle Pro Micro" (sd/nosd UF2), "Doorman Dongle Holyiot",
+  "Doorman Dongle PCA10059". Host code (driver, dongle manager, `dongle.py`) matches the
+  "Doorman Dongle" prefix.
+* Commands also work over the control endpoint: a feature SET_REPORT carries the command (as the OUT
+  report does), a feature GET_REPORT on interface 0 returns the last reply. Kept on purpose: a dongle
+  whose interrupt endpoints don't get through (seen behind one USB hub: control worked, interrupt
+  transfers were never scheduled) can still be read and sent to DFU.
+* 0x7E: USB controller state (usb_rx/tx, EPSTATUS, EPDATASTATUS, EPIN/OUTEN, USBADDR, SIZE.EPOUT1-4,
+  mounted, safe mode, FICR part/variant, HFCLKSTAT).
+* Hang detector: SysTick (highest priority) checks a heartbeat stamped by the main loop and
+  usb_service(); stale for 2 s, it records the stuck pc/lr as crash type 6 ("hang") and resets. The boot
+  after a hang runs in safe mode (no radio, USB only; cmd 0x01 byte 58) until a power cycle.

@@ -42,6 +42,15 @@ struct Base {
   std::array<double, 4> q{1, 0, 0, 0};
 };
 
+// A Watchman dongle, or one slot of a Doorman dongle (serial "<dongle>/<slot>").
+struct Receiver {
+  std::string serial, connected, kind;
+  int slot = -1;
+  bool paired = true, linked = false;
+  double kBytesPerSec = 0, framesPerSec = 0, loss = -1, drops = 0;
+  int rssiDongle = 0, rssiDevice = 0;
+};
+
 struct Room {
   std::string id;
   bool settled = false;
@@ -55,7 +64,7 @@ struct State {
   Room room;
   std::vector<Device> devices;
   std::vector<Base> bases;
-  std::vector<std::pair<std::string, std::string>> receivers;  // serial, connected device
+  std::vector<Receiver> receivers;
   std::string settingsJson = "{}";  // the driver's settings (lh/telemetry.hpp), as sent
 };
 

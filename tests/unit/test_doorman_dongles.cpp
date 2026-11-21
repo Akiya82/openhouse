@@ -68,7 +68,7 @@ hid_device_info* HID_API_CALL hid_enumerate(unsigned short, unsigned short) {
     d.vendor_id = 0x6767;
     d.product_id = 0x0727;
     d.serial_number = const_cast<wchar_t*>(fake::plugged[i].serial.c_str());
-    d.product_string = const_cast<wchar_t*>(L"Doorman Dongle");
+    d.product_string = const_cast<wchar_t*>(L"Doorman Dongle Pro Micro");   // board-named, matched by prefix
     d.interface_number = fake::plugged[i].number;
     d.next = i + 1 < fake::listed.size() ? &fake::listed[i + 1] : nullptr;
   }

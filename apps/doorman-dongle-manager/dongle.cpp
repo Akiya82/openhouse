@@ -545,7 +545,7 @@ void DongleManager::Scan() {
     std::vector<Found> found;
     hid_device_info* list = hid_enumerate(kVid, kPid);
     for (hid_device_info* d = list; d; d = d->next)
-      if (Narrow(d->product_string) == "Doorman Dongle" && d->interface_number <= 0)
+      if (Narrow(d->product_string).rfind("Doorman Dongle", 0) == 0 && d->interface_number <= 0)
         found.push_back({d->path, "OHDG-" + Narrow(d->serial_number)});
     hid_free_enumeration(list);
     {

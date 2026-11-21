@@ -134,7 +134,17 @@ void TelemetryClient::Handle(const std::string& line) {
         x.coverage.push_back({c.value("base", ""), c.value("frames", 0), c.value("sensors", 0.0)});
       s.devices.push_back(std::move(x));
     }
-    for (const auto& r : j.value("receivers", json::array())) s.receivers.push_back({r.value("serial", ""), r.value("connected", "")});
+    for (const auto& r : j.value("receivers", json::array())) {
+      Receiver x;
+      x.serial = r.value("serial", ""); x.connected = r.value("connected", ""); x.kind = r.value("kind", "watchman");
+      x.slot = r.value("slot", -1); x.paired = r.value("paired", true); x.linked = r.value("linked", false);
+      x.kBytesPerSec = r.value("kBytesPerSec", 0.0); x.framesPerSec = r.value("framesPerSec", 0.0);
+      x.loss = r.value("loss", -1.0); x.drops = r.value("drops", 0.0);
+      if (r.contains("rssi") && r["rssi"].is_array() && r["rssi"].size() == 2) {
+        x.rssiDongle = r["rssi"][0].get<int>(); x.rssiDevice = r["rssi"][1].get<int>();
+      }
+      s.receivers.push_back(std::move(x));
+    }
     if (const auto st = j.find("settings"); st != j.end() && st->is_object()) s.settingsJson = st->dump();
     state_ = std::move(s);
     haveState_ = true;

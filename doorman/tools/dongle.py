@@ -7,7 +7,7 @@
   dongle.py scan                     RSSI per 1 MHz channel 2400..2500 MHz (pauses the link)
   dongle.py stats | link on|off | listen [SECS]   tracker link counters / frame rates
   dongle.py signal [SECS [SLOT]]     signal strength both ways + where polls get lost
-  dongle.py slots | pair [SECS] | forget SLOT|all | channels | slotstats SLOT
+  dongle.py slots | pair [SECS [SLOT [any]]] | forget SLOT|all | channels | slotstats SLOT
   dongle.py crash-test 1             deliberate HardFault (tests the crash record)
   dongle.py bank-update [DIR]        update over USB: write the bank it isn't running from
                                      DIR/doorman_dongle_<board>_a.bin / _b.bin, restart into it
@@ -207,7 +207,13 @@ def main():
             if s["polls"]: print(f"slot {k}:", s)
     elif c == "signal": signal(float(a[1]) if len(a) > 1 else 0, int(a[2]) if len(a) > 2 else 0)
     elif c == "slots": slots()
-    elif c == "pair": cmd(open_dev(), 0x24, bytes([int(a[1]) if len(a) > 1 else 30])); print("pairing open")
+    elif c == "pair":
+        secs = int(a[1]) if len(a) > 1 else 30
+        slot = int(a[2]) if len(a) > 2 else -1
+        anyd = len(a) > 3 and a[3] == "any"
+        if anyd and slot < 0: sys.exit("pair SECS SLOT any: 'any' needs a slot")
+        cmd(open_dev(), 0x24, bytes([secs, slot + 1 if slot >= 0 else 0, 1 if anyd else 0]))
+        print("pairing open" + (f" for slot {slot}" if slot >= 0 else "") + (", any unknown device" if anyd else ""))
     elif c == "forget": cmd(open_dev(), 0x26, bytes([0xFF if len(a) < 2 or a[1] == "all" else int(a[1])])); slots()
     elif c == "channels": channels()
     elif c == "codec":

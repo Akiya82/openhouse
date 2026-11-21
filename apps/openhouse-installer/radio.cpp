@@ -317,6 +317,14 @@ bool FlashWatchman(const WirelessDevice& device, const RadioImage& image, const 
 
 }  // namespace
 
+// Index controllers with the retail radio (nRF52, 1562882729): every 0x11..0009 revision, and the
+// EV2 dev kits (0x1108/0x1109..06, the same radio). Not EV1.3 (0x1105..), which has an older radio.
+static bool IndexControllerRadio(uint32_t hwid) {
+  if ((hwid >> 24) != 0x11) return false;
+  if ((hwid & 0xff) == 0x09) return true;
+  return (hwid & 0xff) == 0x06 && ((hwid >> 16) & 0xff) >= 0x08;
+}
+
 RadioModel ModelFor(uint32_t hwid) {
   struct Known { uint32_t hwid; const char* name; RadioFamily family; };
   static const Known kKnown[] = {
@@ -331,9 +339,10 @@ RadioModel ModelFor(uint32_t hwid) {
   };
   for (const auto& k : kKnown)
     if (k.hwid == hwid) return {hwid, k.name, k.family, true};
-  // Every Index controller revision (0x11..0009): SteamVR lists several without a radio file of
-  // their own; they take the same image.
-  if ((hwid >> 24) == 0x11 && (hwid & 0xff) == 0x09) return {hwid, "Valve Index Controller", RadioFamily::Newer, true};
+  // SteamVR lists several Index controller revisions without a radio file of their own: they take
+  // the same image.
+  if (IndexControllerRadio(hwid))
+    return {hwid, (hwid & 0xff) == 0x06 ? "Valve Index Controller EV2" : "Valve Index Controller", RadioFamily::Newer, true};
   // HTC's later trackers (3.0) aren't in SteamVR's manifests under their own id: an HTC
   // tracker (0x84) of the second generation or later has the same nRF52 radio.
   if ((hwid >> 24) == 0x84 && ((hwid >> 16) & 0xff) >= 0x02) return {hwid, "VIVE Tracker", RadioFamily::Newer, true};
@@ -360,7 +369,7 @@ fs::path StockRadioImageExact(const fs::path& steamvr, uint32_t hwid);
 fs::path StockRadioImage(const fs::path& steamvr, uint32_t hwid) {
   fs::path f = StockRadioImageExact(steamvr, hwid);
   // An Index controller revision SteamVR has no radio file for: the Index controller's.
-  if (f.empty() && (hwid >> 24) == 0x11 && (hwid & 0xff) == 0x09) f = StockRadioImageExact(steamvr, 0x110f0009);
+  if (f.empty() && IndexControllerRadio(hwid)) f = StockRadioImageExact(steamvr, 0x110f0009);
   // HTC's 3.0 tracker (0x84020109) isn't in SteamVR's manifests, but it runs the Index controller's
   // radio build (1562882729), so it gets that file.
   if (f.empty() && (hwid >> 24) == 0x84 && ((hwid >> 16) & 0xff) >= 0x02) f = StockRadioImageExact(steamvr, 0x110f0009);

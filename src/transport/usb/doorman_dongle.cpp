@@ -85,6 +85,7 @@ std::vector<DoormanDongleFound> ScanDoormanDongles(std::map<std::string, int>* s
 }
 
 std::optional<DoormanCarriers::Carrier> DoormanCarriers::Take(const DeviceId& device, const std::string& dongle, int slot) {
+  if (Wired(device)) return Carrier{"USB", -1};
   const auto [it, fresh] = carriers_.try_emplace(device, Carrier{dongle, slot});
   if (fresh || (it->second.dongle == dongle && it->second.slot == slot)) return std::nullopt;
   return it->second;
@@ -336,6 +337,12 @@ void DoormanDongle::Pump(double now) {
         if (config.empty()) config = UsbTransport::LoadSteamConfig(steamConfigDir_, s.serial);
         Attach(i, config);
       }
+    }
+    if (s.attached && carriers_ && carriers_->Wired(s.serial)) {   // plugged in by USB: the cable carries it
+      std::string config = s.fetchedConfig;
+      if (config.empty()) config = UsbTransport::LoadSteamConfig(steamConfigDir_, s.serial);
+      Detach(i, /*handedOver=*/true);
+      Attach(i, config);   // waits (Take says USB) until it's unplugged
     }
     if (s.waiting && s.active && !s.attached) Attach(i, s.waitConfig);   // has the other carrier let go?
     if (s.active && s.serial.empty() && s.noIdent && !s.worker.joinable() && now - s.identAskT > 5.0) {
@@ -630,9 +637,14 @@ void DoormanDongle::Attach(int slot, const std::string& configIn) {
   Slot& s = slots_[slot];
   if (carriers_) {
     if (const auto other = carriers_->Take(s.serial, serial_, slot)) {
-      if (!s.waiting)   // once per episode: it waits until the other lets go or this slot goes quiet
-        log_(LogLevel::Info, s.serial + ": also on Doorman Dongle " + serial_ + " slot " + std::to_string(slot) +
-                                 "; kept on Doorman Dongle " + other->dongle + " slot " + std::to_string(other->slot));
+      if (!s.waiting) {  // once per episode: it waits until the other lets go or this slot goes quiet
+        if (other->slot < 0)
+          log_(LogLevel::Info, s.serial + ": plugged in by USB; Doorman Dongle " + serial_ + " slot " +
+                                   std::to_string(slot) + " waits until it's unplugged");
+        else
+          log_(LogLevel::Info, s.serial + ": also on Doorman Dongle " + serial_ + " slot " + std::to_string(slot) +
+                                   "; kept on Doorman Dongle " + other->dongle + " slot " + std::to_string(other->slot));
+      }
       s.waiting = true;
       s.waitConfig = configIn;
       return;
@@ -690,14 +702,14 @@ void DoormanDongle::ResetSlot(int slot) {
   s.waitConfig.clear();
 }
 
-void DoormanDongle::Detach(int slot) {
+void DoormanDongle::Detach(int slot, bool handedOver) {
   Slot& s = slots_[slot];
   if (!s.attached) return;
   decoder_->RemoveEndpoint(s.epImu);
   decoder_->RemoveEndpoint(s.epOpt);
   decoder_->RemoveEndpoint(s.epBtn);
   if (carriers_) carriers_->Release(s.serial, serial_, slot);
-  sink_->OnDeviceDetached(s.serial);
+  if (!handedOver) sink_->OnDeviceDetached(s.serial);   // handed over: the device itself carries on (USB)
   s.attached = false;
   s.ringN = 0;
   {

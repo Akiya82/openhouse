@@ -494,9 +494,24 @@ static void gpio_request(const uint8_t *f, uint8_t n)
 }
 #endif
 
+/* The last frames from the main MCU besides the IMU/light stream and filler: [op][b1][b2][count]
+   (a repeat of the newest op is counted). Air 'X' reports them: what a main firmware sends that this
+   radio may not know, such as a host command relayed to the radio. */
+#define OPS_N 6
+static uint8_t ops_log[OPS_N][4], ops_head;
+static void ops_note(const uint8_t *f, uint32_t n)
+{
+  if (f[0] == 'p' || f[0] == 'q' || f[0] == 0x00 || f[0] == 0xFF) return;
+  uint8_t *last = ops_log[(ops_head + OPS_N - 1) % OPS_N];
+  if (last[3] && last[0] == f[0]) { if (last[3] < 255) last[3]++; return; }
+  uint8_t *e = ops_log[ops_head]; ops_head = (uint8_t)((ops_head + 1) % OPS_N);
+  e[0] = f[0]; e[1] = n > 1 ? f[1] : 0; e[2] = n > 2 ? f[2] : 0; e[3] = 1;
+}
+
 static void handle_lpc_frame(const uint8_t *f, uint32_t n)
 {
   uint8_t op = f[0];
+  ops_note(f, n);
   DG(if (op == 'Y') dg.ny++; else if (op == 'Z') dg.nz++);
   switch (op) {
   case 0x00: case 0xFF: return;                            /* filler: only clocks our reply out */
@@ -720,7 +735,10 @@ static void link_from_lpc(const uint8_t *f, uint8_t n)
   if (f[0] == 'R') { link_sleep = 0; pair_end(); return; }
 #else
   if (f[0] == 'T') { pair_start(); return; }               /* HTC link control: T pair, R connect */
-  if (f[0] == 'R') { pair_end(); return; }
+  /* 'R' doesn't end pairing: a Vive wand's main firmware sends it all the time ('R' 0 unlinked, 'R' 0xFF
+     linked), right after the 'T' of a host's "pair" too, which ended every pairing at once. Pairing ends
+     when it joins a dongle that has pairing open, or after 35 s. */
+  if (f[0] == 'R') return;
   if (f[0] == 'S') return;
 #endif
   if (!link_up) return;                                    /* like HTC: data only while connected */
@@ -931,7 +949,8 @@ static void air_update(const uint8_t *f, uint8_t n)
     memcpy(x + 36, &dg.boots, 8); x[44] = dg.cst; x[45] = dg.rr; x[46] = dg.scrub; memcpy(x + 47, &dg.zbad, 12);
     air_reply(x, 59); return;
 #else
-    air_reply(x, 36); return;
+    for (int i = 0; i < OPS_N; i++) memcpy(x + 36 + 4 * i, ops_log[(ops_head + i) % OPS_N], 4);   /* oldest first */
+    air_reply(x, 36 + 4 * OPS_N); return;
 #endif
   }
   case 'L': {                                              /* test load: [kB/s], 0 off */

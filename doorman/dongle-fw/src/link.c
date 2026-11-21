@@ -74,6 +74,10 @@ static uint32_t ch_eval_ms;
 /* pairing */
 static uint32_t pairing_until_ms;
 static uint8_t pair_target = 0xFF;   /* slot the next pairing goes to (0xFF: first free) */
+/* Pairing open for a device that isn't in pairing mode itself: one with no working buttons, or whose
+   main firmware never tells the radio to pair (a Vive wand's "pair" over USB). Only into a chosen slot,
+   only while pairing is open, and only a device this dongle doesn't know: ends with the first one. */
+static uint8_t pair_any;
 static uint8_t assign_id[8], assign_slot = 0xFF, assign_left;
 /* The device paired last: its slot and until when its join beacons still say "pairing open". Pairing
    closes here the moment the device is stored, but the device stays in pairing mode until it joins, and
@@ -355,9 +359,12 @@ static void join_beacon(void)
   if (n < DML_JREQ_LEN || r[0] != DML_JREQ) return;
   joins_heard++;
   const uint8_t *id = r + 1;
-  const int pairing = r[9] & 1;                             /* the device is in pairing mode */
+  int pairing = r[9] & 1;                                   /* the device is in pairing mode */
   int slot = -1;
   for (int i = 0; i < DML_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
+  if (!pairing && pair_any && slot < 0 && pair_target < DML_SLOTS && ms_ticks < pairing_until_ms) {
+    pairing = 1; pair_any = 0;
+  }
   /* Like stock, a new pairing takes both sides: pairing open here, and the device in pairing mode
      (its pairing buttons, or a host's pair command). Known devices just reconnect. */
   if (pairing && ms_ticks < pairing_until_ms) {
@@ -622,10 +629,11 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F; d = 6
     d[20] = (uint8_t)s->upq_hw; d[21] = (uint8_t)(s->upq_hw >> 8); s->upq_hw = 0;   /* USB queue high-water, reset on read */
     put32(d + 22, s->load_bytes);                                                    /* test load queued (0x2B) */
     return 1;
-  case 0x24:                                                /* pair SECS [SLOT+1] (0/absent: first free slot) */
+  case 0x24:                                                /* pair SECS [SLOT+1] [ANY] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;
     pair_target = in[3] >= 1 && in[3] <= DML_SLOTS ? (uint8_t)(in[3] - 1) : 0xFF;
-    d[0] = in[2]; d[1] = pair_target; return 1;
+    pair_any = in[4] == 1 && pair_target < DML_SLOTS;       /* [4] 1: any unknown device, not only pairing ones */
+    d[0] = in[2]; d[1] = pair_target; d[2] = pair_any; return 1;
   case 0x25: {                                              /* slots [first..first+5]: used, active, id x8 */
     const int first = in[2] < DML_SLOTS ? in[2] : 0;
     for (int k = first; k < DML_SLOTS && k < first + 6; k++) {

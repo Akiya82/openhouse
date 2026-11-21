@@ -639,3 +639,19 @@ TEST_F(Doorman, ATwoDongleRecordingReplaysUnambiguously) {
 }
 
 }  // namespace
+
+// A device plugged in by USB is carried by its cable: a dongle slot it's linked on waits, and takes it
+// again once every USB interface of it is closed.
+TEST(DoormanCarriers, UsbCableCarriesTheDevice) {
+  lh::usb::DoormanCarriers c;
+  c.AddWired("LHR-1");
+  c.AddWired("LHR-1");
+  const auto other = c.Take("LHR-1", "OHDG-A", 2);
+  ASSERT_TRUE(other.has_value());
+  EXPECT_EQ(other->slot, -1);
+  c.RemoveWired("LHR-1");
+  EXPECT_TRUE(c.Take("LHR-1", "OHDG-A", 2).has_value());   // one interface still open
+  c.RemoveWired("LHR-1");
+  EXPECT_FALSE(c.Take("LHR-1", "OHDG-A", 2).has_value());  // unplugged: the slot takes it
+  EXPECT_FALSE(c.Wired("LHR-1"));
+}

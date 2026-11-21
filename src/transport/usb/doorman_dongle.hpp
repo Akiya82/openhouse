@@ -71,9 +71,19 @@ class DoormanCarriers {
   // Takes `device` for dongle/slot; if another dongle or slot has it, that one (nothing taken).
   std::optional<Carrier> Take(const DeviceId& device, const std::string& dongle, int slot);
   void Release(const DeviceId& device, const std::string& dongle, int slot);
+  // A device plugged in by USB: it's carried by its cable, and a dongle slot it's also linked on lets
+  // go of it (both feeding one device doubled its light and mixed two IMU paths). Counted per open
+  // interface: a device can be opened more than once.
+  void AddWired(const DeviceId& device) { ++wired_[device]; }
+  void RemoveWired(const DeviceId& device) {
+    const auto it = wired_.find(device);
+    if (it != wired_.end() && --it->second <= 0) wired_.erase(it);
+  }
+  bool Wired(const DeviceId& device) const { return wired_.count(device) != 0; }
 
  private:
   std::map<DeviceId, Carrier> carriers_;
+  std::map<DeviceId, int> wired_;
 };
 
 class DoormanDongle {
@@ -154,7 +164,7 @@ class DoormanDongle {
   void OnFrame(int slot, double t, const uint8_t* f, int n, bool last);
   void OnIdent(int slot, const uint8_t* f, int n);
   void Attach(int slot, const std::string& config);
-  void Detach(int slot);
+  void Detach(int slot, bool handedOver = false);   // handedOver: its USB cable carries it now
   void StartConfigFetch(int slot);
   int FeatureRead(int slot, uint8_t* data, size_t size);  // worker thread
   void Downlink(int slot, const uint8_t* frame, size_t n);

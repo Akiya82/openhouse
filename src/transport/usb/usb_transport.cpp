@@ -362,6 +362,7 @@ void UsbTransport::Enumerate(bool startup) {
       capture_.WriteEndpoint(o.info);
       decoder_.AddEndpoint(o.info);
       if (o.wantVersion) RequestVersion(o);
+      if (o.info.kind == EndpointKind::Imu && o.receiver.empty()) doormanCarriers_.AddWired(o.info.serial);
       open_.push_back(o);
     } else {
       std::lock_guard lock(pendingMutex_);
@@ -847,6 +848,7 @@ void UsbTransport::Run() {
         capture_.WriteEndpoint(o.info);
         decoder_.AddEndpoint(o.info);
         if (o.wantVersion) RequestVersion(o);
+        if (o.info.kind == EndpointKind::Imu && o.receiver.empty()) doormanCarriers_.AddWired(o.info.serial);
         open_.push_back(o);
       }
     }
@@ -1025,6 +1027,7 @@ void UsbTransport::Run() {
       if (!it->receiver.empty()) DropReceiver(it->receiver);
       hid_close(it->dev);
       decoder_.RemoveEndpoint(it->info.ep);
+      if (it->info.kind == EndpointKind::Imu && it->receiver.empty()) doormanCarriers_.RemoveWired(it->info.serial);
       {
         std::lock_guard lock(pathsMutex_);
         paths_.erase(it->path);

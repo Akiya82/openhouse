@@ -49,6 +49,10 @@ def info(a):
         fr, bad = struct.unpack_from('<II', r, 11); fl = r[19]
         print(f'  SPI frames {fr}, empty {bad}, last rx {r[20]} B tx {r[21]} B: {r[22:22 + min(12, r[20])].hex(" ")}')
         print(f'  safe {fl & 1} safe_req {fl >> 1 & 1} sleep {fl >> 2 & 1} lead0 {fl >> 3 & 1}, replies queued {r[34]} B, quick boots {r[35]}')
+    if len(r) == 60:                                      # main-MCU ops log (non-diagnostic builds)
+        ops = [r[36 + 4 * i:40 + 4 * i] for i in range(6)]
+        print('  main MCU ops, oldest first: ' + (', '.join(f"{chr(o[0]) if 32 < o[0] < 127 else hex(o[0])} {o[1]:02x} {o[2]:02x} x{o[3]}" for o in ops if o[3]) or 'none'))
+        return ver
     if len(r) >= 47:
         boots, ny, nz, nc = struct.unpack_from('<HHHH', r, 36)
         print(f'  since power-on: boots {boots} (last reset reason {r[45]:#04x}), main MCU staging: Y {ny}, Z {nz}, commit {nc} (last status {r[44]})')

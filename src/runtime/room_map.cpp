@@ -576,6 +576,11 @@ constexpr double kMoveRotFloor = 0.5 * 0.017453292519943295;
 constexpr double kMoveSigmas = 5.0;
 constexpr double kRelearnVariance = 3 * 0.02 * 0.02;    // a solve this confident re-places a bumped base
 constexpr double kBumpRad = 1.2 * 0.017453292519943295; // accelerometer turn: 2-3 counts of its 1/127
+// Against the gravity saved by an earlier session: the reference followed the base's thermal drift
+// while it ran warm, and a base just woken from standby reads cold. A 1.3 deg difference on the first
+// frames re-learned a base at every first start (back after a SteamVR restart); a base moved while
+// nothing ran turns far more.
+constexpr double kBumpSavedRad = 2.5 * 0.017453292519943295;
 }  // namespace
 
 bool RoomMap::FarOff(uint32_t serial, const Eigen::Isometry3d& pose, double pv, double rv) const {
@@ -602,16 +607,19 @@ void RoomMap::CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const
     // first live frames (twice running, as any bump).
     a.ref = saved ? *saved : u;
     a.has = true;
+    a.fromSaved = saved != nullptr;
     if (!saved) return;
   }
   const double angle = std::acos(std::clamp(a.ref.dot(u), -1.0, 1.0));
-  if (angle <= kBumpRad) {
+  if (angle <= (a.fromSaved ? kBumpSavedRad : kBumpRad)) {
+    if (a.fromSaved) { a.ref = u; a.fromSaved = false; }   // this session's own reference from here on
     a.strikes = 0;
     a.ref = (0.9 * a.ref + 0.1 * u).normalized();  // follows a slow (thermal) drift
     return;
   }
   if (++a.strikes < 2) return;
   a.ref = u;
+  a.fromSaved = false;
   a.strikes = 0;
   char text[160];
   std::snprintf(text, sizeof text, "its accelerometer turned %.1f deg", angle * 57.29577951308232);

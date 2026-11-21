@@ -474,6 +474,51 @@ TEST(RoomMap, LockedBaseMovesOnlyWhenBumped) {
   EXPECT_NEAR(room.Base(2)->worldFromBase.translation().x(), away.translation().x(), 1e-6);
 }
 
+// A base's gravity at the first start of a day differs a little from the one saved warm the session
+// before (standby, temperature): 1.3 deg re-learned a base at every first start. A real turn while
+// nothing ran still counts, and within a session the tight threshold still applies.
+TEST(RoomMap, SmallTurnAgainstSavedGravityIsNotABump) {
+  const auto path = (std::filesystem::temp_directory_path() / ("lh-test-coldstart-" + std::to_string(lh::platform::ProcessId()) + ".json")).string();
+  const auto tilted = [](double deg) {
+    BaseDynamicState d;
+    const double r = deg * 0.017453292519943295;
+    d.accelDir = {0.f, float(std::cos(r)), float(std::sin(r))};
+    d.sysUnlockCount = 7;
+    return d;
+  };
+  {
+    RoomMap r;
+    r.OnBaseSeen(Config(1), tilted(0));
+    ASSERT_TRUE(r.EstablishOrigin(1, {0.0, 0.0}, 1e-6));
+    r.OnBaseSeen(Config(2), tilted(0));
+    r.ApplySolved(2, Pose(3, 0.5, -2, 40), 1e-6, 1e-7, 150, 1e-4);
+    ASSERT_TRUE(RoomMap::Locked(*r.Base(2)));
+    ASSERT_TRUE(r.Save(path));
+  }
+  const auto bumped = [](RoomMap& r) {
+    for (const auto& line : r.TakeLogs()) if (line.find("knocked") != std::string::npos) return true;
+    return false;
+  };
+  {
+    RoomMap r;  // first start: 1.3 deg off the saved gravity
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    for (int i = 0; i < 3; ++i) r.OnBaseSeen(Config(2), tilted(1.3));
+    EXPECT_FALSE(bumped(r));
+    EXPECT_TRUE(RoomMap::Locked(*r.Base(2)));
+    for (int i = 0; i < 2; ++i) r.OnBaseSeen(Config(2), tilted(3.0));   // then knocked in the session: 1.7 deg
+    EXPECT_TRUE(bumped(r));
+  }
+  {
+    RoomMap r;  // turned 5 deg while nothing ran
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    for (int i = 0; i < 2; ++i) r.OnBaseSeen(Config(2), tilted(5.0));
+    EXPECT_TRUE(bumped(r));
+  }
+  std::filesystem::remove(path);
+}
+
 TEST(RoomMap, TurnedOriginStartsANewRoom) {
   const auto path = (std::filesystem::temp_directory_path() / ("lh-test-stale-" + std::to_string(lh::platform::ProcessId()) + ".json")).string();
   const Eigen::Vector3d upright(0.024, -1.0, -0.008), mounted(0.128, -0.738, 0.663);

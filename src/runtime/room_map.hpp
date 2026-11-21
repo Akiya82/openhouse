@@ -157,7 +157,12 @@ class RoomMap {
   double levelTime_ = std::numeric_limits<double>::quiet_NaN(), advanceTime_ = std::numeric_limits<double>::quiet_NaN();
   std::map<uint32_t, Eigen::Isometry3d> solvedTarget_;
   bool levelled_ = false;  // the session's first level is applied at once
-  struct AccelTrack { Eigen::Vector3d ref = Eigen::Vector3d::Zero(); bool has = false; int strikes = 0; };
+  struct AccelTrack {
+    Eigen::Vector3d ref = Eigen::Vector3d::Zero();
+    bool has = false;
+    bool fromSaved = false;  // ref is still an earlier session's gravity (looser threshold)
+    int strikes = 0;
+  };
   std::map<uint32_t, AccelTrack> accel_;  // this session
   bool originRelearn_ = false;
   uint64_t bumps_ = 0;

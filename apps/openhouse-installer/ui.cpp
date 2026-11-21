@@ -1,6 +1,7 @@
 #include "ui.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <map>
 
@@ -182,17 +183,18 @@ struct TileSpec {
 bool Tile(const TileSpec& t, float w, float h, bool wide) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
-  const bool disabled = ImGui::GetItemFlags() & ImGuiItemFlags_Disabled;
+  const bool disabled = ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled;   // inside BeginDisabled
   const bool pressed = ImGui::InvisibleButton(t.title, ImVec2(w, h));
-  const bool hover = ImGui::IsItemHovered() && !disabled, held = ImGui::IsItemActive();
-  const ImU32 accent = TintColor(t.tint);
+  const bool hover = ImGui::IsItemHovered() && !disabled, held = ImGui::IsItemActive() && !disabled;
+  const ImU32 accent = disabled ? IM_COL32(88, 92, 102, 255) : TintColor(t.tint);
   const ImVec4 av = ImGui::ColorConvertU32ToFloat4(accent);
   const float fs = ImGui::GetFontSize(), r = fs * 1.1f;
-  dl->AddRectFilled(a, b, held ? IM_COL32(40, 44, 54, 235) : hover ? IM_COL32(44, 50, 64, 235) : IM_COL32(28, 31, 40, 225), r);
-  dl->AddRect(a, b, hover ? accent : IM_COL32(62, 68, 82, 255), r, 0, hover ? 2.f : 1.f);
+  dl->AddRectFilled(a, b, disabled ? IM_COL32(22, 24, 30, 200) : held ? IM_COL32(40, 44, 54, 235) : hover ? IM_COL32(44, 50, 64, 235) : IM_COL32(28, 31, 40, 225), r);
+  dl->AddRect(a, b, hover ? accent : disabled ? IM_COL32(44, 47, 56, 255) : IM_COL32(62, 68, 82, 255), r, 0, hover ? 2.f : 1.f);
   if (hover) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
   const ImU32 disc = ImGui::GetColorU32(ImVec4(av.x, av.y, av.z, hover ? 0.22f : 0.13f));
-  const ImU32 titleCol = IM_COL32(236, 238, 242, 255), subCol = IM_COL32(158, 163, 174, 255);
+  const ImU32 titleCol = disabled ? IM_COL32(104, 108, 118, 255) : IM_COL32(236, 238, 242, 255);
+  const ImU32 subCol = disabled ? IM_COL32(80, 84, 94, 255) : IM_COL32(158, 163, 174, 255);
   if (wide) {
     const float side = fs * 3.2f, pad = fs * 1.4f;
     const ImVec2 ic(a.x + pad + side * 0.85f, a.y + h / 2);
@@ -264,10 +266,12 @@ int Tiles(const std::vector<TileSpec>& tiles, float maxSide = 0) {
 }
 
 // A centred grid of wide tiles (icon on the left), cols per row; returns the one pressed (-1: none).
-int TileGrid(const std::vector<TileSpec>& tiles, int cols) {
+// rowWidth: the whole row's width (0: as wide as two-column tiles allow), so rows of 2 and 3 line up.
+int TileGrid(const std::vector<TileSpec>& tiles, int cols, float rowWidth = 0) {
   const float fs = ImGui::GetFontSize(), gap = fs * 1.2f;
   const float avail = ImGui::GetContentRegionAvail().x;
-  const float w = std::min(fs * 34, (avail - gap * float(cols - 1)) / float(cols));
+  const float w = rowWidth > 0 ? (std::min(rowWidth, avail) - gap * float(cols - 1)) / float(cols)
+                               : std::min(fs * 34, (avail - gap * float(cols - 1)) / float(cols));
   // text column width as Tile lays it out (wide)
   const float side = fs * 3.2f, pad = fs * 1.4f, tw = w - (pad + side * 1.7f + pad) - pad;
   float h = fs * 8;
@@ -425,6 +429,23 @@ fs::path NordicImage(int board) {
   return FirmwareFolder() / "dongle" / (board == 3 ? "doorman-kuroshin.hex" : board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
 }
 
+// The dongle firmware this package carries (firmwares/dongle/bank/version.txt), 0 if it has none.
+uint16_t PackagedDongleVersion() {
+  std::ifstream in(FirmwareFolder() / "dongle" / "bank" / "version.txt");
+  std::string text;
+  if (!(in >> text)) return 0;
+  try { return uint16_t(std::stoul(text, nullptr, 16)); } catch (...) { return 0; }
+}
+
+// A device's radio is ours but not the packaged one.
+bool RadioNeedsUpdate(const DongleSlot& s) {
+  if (!s.answered || !s.device.model.known || !IsDoormanRadio(s.device.radioVersion)) return false;
+  static std::map<RadioFamily, uint32_t> ours;
+  if (!ours.count(s.device.model.family)) ours[s.device.model.family] = OurRadioVersion(s.device.model.family);
+  const uint32_t v = ours[s.device.model.family];
+  return v && s.device.radioVersion != v;
+}
+
 fs::path DongleImage(bool softDevice) {
   return FirmwareFolder() / "dongle" / (softDevice ? "doorman-dongle-sd.uf2" : "doorman-dongle-nosd.uf2");
 }
@@ -509,6 +530,14 @@ void Ui::RefreshStatus() { status_ = steamvr_.root.empty() ? DriverStatus{} : Re
 void Ui::ShowForTest(const std::string& page) {
   if (page == "kuroshin") { Go(Page::Dongle); dongleBoard_ = 3; dongleStep_ = DongleStep::Detect; }
   else if (page == "dongle") Go(Page::Dongle);
+  else if (page == "home") Go(Page::Home);
+  else if (page == "pick") Go(Page::DongleUpdatePick);
+  else if (page == "update") {
+    testOnly_ = true;   // a snapshot never updates anything
+    const auto dongles = FindDoormanDongles();
+    if (!dongles.empty()) updateDongle_ = dongles.front();
+    Go(Page::DongleUpdate);
+  }
 }
 
 void Ui::Go(Page page) {
@@ -516,6 +545,9 @@ void Ui::Go(Page page) {
   dongleSeen_.Stop();
   wired_.Stop();
   wireless_.Stop();
+  homeDongles_.Stop();
+  homeWatching_ = false;
+  updateSlots_.Stop();
   if (!job_.Running()) job_.Reset();
   page_ = page;
   checked_.clear();
@@ -533,6 +565,14 @@ void Ui::Go(Page page) {
       radioStep_ = RadioStep::Choose;
       wired_.Start(FindWiredDevices, 2.0);
       break;
+    case Page::DongleUpdate: {
+      std::lock_guard l(updateMutex_);
+      updateResults_.clear();
+      updateSnapshot_.clear();
+      const DoormanDongleInfo dongle = updateDongle_;
+      updateSlots_.Start([dongle] { return ScanDongleSlots(dongle); }, 2.0);
+      break;
+    }
     case Page::DeviceType: {
       std::lock_guard l(kindsMutex_);
       kinds_.clear();  // read again: a device may have been switched elsewhere meanwhile
@@ -587,6 +627,8 @@ void Ui::Draw(float width, float height) {
     case Page::RestoreBase: BaseStationPage(true); break;
     case Page::RestoreRadio: RadioWiredPage(true); break;
     case Page::DeviceType: DeviceTypePage(); break;
+    case Page::DongleUpdatePick: DongleUpdatePick(); break;
+    case Page::DongleUpdate: DongleUpdatePage(); break;
   }
   ImGui::EndChild();
   Footer();
@@ -748,15 +790,50 @@ void Ui::Home() {
     install = int(tiles.size());
     tiles.push_back({Icon::Download, "Install Driver", sub.c_str(), Tint::Green});
   }
-  const int flash = int(tiles.size());
-  tiles.push_back({Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"});
-  const int restore = int(tiles.size());
-  tiles.push_back({Icon::Restore, "Restore Firmware", "Puts the original firmware back"});
   const int pressed = TileGrid(tiles, 2);
+  // Second row, as wide as the first: firmware, restore, and the dongle update (greyed out when no
+  // connected dongle runs other firmware than this package's).
+  if (!homeWatching_) {
+    homeDongles_.Start(FindDoormanDongles, 3.0);
+    homeWatching_ = true;
+  }
+  const uint16_t packaged = PackagedDongleVersion();
+  int outdated = 0;
+  for (const auto& d : homeDongles_.Value()) outdated += packaged && d.firmware != packaged;
+  static char dongleSub[64];
+  if (outdated) std::snprintf(dongleSub, sizeof dongleSub, outdated == 1 ? "A dongle has an update" : "%d dongles have an update", outdated);
+  else std::snprintf(dongleSub, sizeof dongleSub, "No update available");
+  const TileSpec row[3] = {{Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"},
+                           {Icon::Restore, "Restore Firmware", "Puts the original firmware back"},
+                           {Icon::Dongle, "Update Dongles", dongleSub, outdated ? Tint::Yellow : Tint::None}};
+  const float fs = ImGui::GetFontSize(), gap = fs * 1.2f, avail = ImGui::GetContentRegionAvail().x;
+  const float rowWidth = std::min(fs * 34, (avail - gap) / 2) * 2 + gap;
+  const float w = (std::min(rowWidth, avail) - gap * 2) / 3;
+  const float side = fs * 3.2f, pad = fs * 1.4f, tw = w - (pad + side * 1.7f + pad) - pad;
+  float h = fs * 8;
+  for (const auto& t : row) {
+    ImGui::PushFont(g_title);
+    float th = ImGui::GetFontSize() * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.title, false));
+    ImGui::PopFont();
+    if (t.subtitle) th += 4 + fs * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.subtitle, false));
+    h = std::max(h, th + fs * 2.4f);
+  }
+  ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y * 2));
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - (w * 3 + gap * 2)) / 2));
+  int second = -1;
+  for (int i = 0; i < 3; ++i) {
+    if (i) ImGui::SameLine(0, gap);
+    ImGui::PushID(100 + i);
+    ImGui::BeginDisabled(i == 2 && !outdated);
+    if (Tile(row[i], w, h, true)) second = i;
+    ImGui::EndDisabled();
+    ImGui::PopID();
+  }
+  if (second == 0) Go(Page::FlashMenu);
+  else if (second == 1) Go(Page::RestoreMenu);
+  else if (second == 2) Go(Page::DongleUpdatePick);
   if (pressed == install) Go(Page::Install);
   else if (pressed == uninstall && uninstall >= 0) Go(Page::Uninstall);
-  else if (pressed == flash) Go(Page::FlashMenu);
-  else if (pressed == restore) Go(Page::RestoreMenu);
 }
 
 // ---- install / uninstall ----
@@ -1564,6 +1641,238 @@ void Ui::RadioWirelessPage(bool restore) {
   }
   ImGui::EndDisabled();
   Back(back);
+}
+
+// ---- dongle update ----
+
+void Ui::DongleUpdatePick() {
+  Title("Update Dongles");
+  if (!homeWatching_) {
+    homeDongles_.Start(FindDoormanDongles, 2.0);
+    homeWatching_ = true;
+  }
+  const uint16_t packaged = PackagedDongleVersion();
+  Prompt("Select the dongle");
+  ImGui::Spacing();
+  int shown = 0;
+  for (const auto& d : homeDongles_.Value()) {
+    if (!packaged || d.firmware == packaged) continue;
+    ++shown;
+    char sub[96];
+    std::snprintf(sub, sizeof sub, "Firmware %04X, this package has %04X", d.firmware, packaged);
+    const std::string title = "Doorman Dongle " + d.serial;
+    ImGui::PushID(d.serial.c_str());
+    if (TileGrid({{Icon::Dongle, title.c_str(), sub, Tint::Yellow}}, 1) == 0) {   // sized to its text
+      updateDongle_ = d;
+      Go(Page::DongleUpdate);
+    }
+    ImGui::PopID();
+  }
+  if (!shown) ImGui::TextColored(kMuted, homeDongles_.Have() ? "Every dongle is up to date" : "Looking for dongles...");
+  Back(Page::Home);
+}
+
+void Ui::StartDongleUpdate(const std::vector<DongleSlot>& slots) {
+  if (testOnly_) return;
+  updateSlots_.Stop();
+  {
+    std::lock_guard l(updateMutex_);
+    updateSnapshot_ = slots;
+    updateResults_.clear();
+  }
+  const DoormanDongleInfo dongle = updateDongle_;
+  const uint16_t packaged = PackagedDongleVersion();
+  job_.Start([this, dongle, slots, packaged](Job& j) {
+    auto set = [this](int slot, int state, const std::string& text) {
+      std::lock_guard l(updateMutex_);
+      updateResults_[slot] = {state, text};
+    };
+    // The devices first: the dongle restarting can't cut one off halfway.
+    std::vector<const DongleSlot*> todo;
+    for (const auto& s : slots)
+      if (RadioNeedsUpdate(s)) todo.push_back(&s);
+    int step = 0;
+    const int steps = int(todo.size()) + 1;
+    for (const DongleSlot* s : todo) {
+      RadioImage image;
+      std::string error;
+      if (!LoadRadioImage(OurRadioImage(s->device.model.family), &image, &error)) {
+        set(s->slot, 3, "Firmware not found in the firmwares folder");
+        ++step;
+        continue;
+      }
+      bool ok = false;
+      constexpr int kTries = 3;
+      for (int attempt = 1; attempt <= kTries && !ok; ++attempt) {
+        set(s->slot, 1, attempt == 1 ? "Updating" : "Updating, try " + std::to_string(attempt) + " of " + std::to_string(kTries));
+        error.clear();
+        ok = FlashWireless(s->device, image, [&](float f, const std::string&) { j.Status((float(step) + f) / float(steps), "Updating slot " + std::to_string(s->slot + 1)); }, &error);
+        if (!ok) {
+          j.Log("Slot " + std::to_string(s->slot + 1) + ": " + error);
+          std::this_thread::sleep_for(std::chrono::seconds(3));   // let it reconnect
+        }
+      }
+      if (ok) set(s->slot, 2, "Updated, turned off");
+      else set(s->slot, 3, "Failed. Connect it with a cable and flash it from Install or Update Firmware");
+      ++step;
+    }
+    // Then the dongle.
+    if (packaged && dongle.firmware == packaged) { set(-1, 2, "Up to date"); return true; }
+    if (!dongle.Banked()) {
+      set(-1, 3, "Its firmware is too old to update here: use Install or Update Firmware > Doorman");
+      j.Fail("the dongle wasn't updated");
+      return false;
+    }
+    const fs::path file = FirmwareFolder() / "dongle" / "bank" / lh::dongle_bank::ImageName(dongle.board, dongle.softDeviceBuild, dongle.bank);
+    std::ifstream in(file, std::ios::binary);
+    const std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (image.size() < 1024) { set(-1, 3, "Firmware not found in the firmwares folder"); j.Fail("the dongle wasn't updated"); return false; }
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+      set(-1, 1, attempt == 1 ? "Updating" : "Updating, try " + std::to_string(attempt) + " of 3");
+      // Its bank changes with every update: find it again for the current one.
+      DoormanDongleInfo now = dongle;
+      for (const auto& d : FindDoormanDongles())
+        if (d.serial == dongle.serial) now = d;
+      if (now.firmware == packaged) { set(-1, 2, "Updated"); return true; }
+      std::string error;
+      const fs::path f = FirmwareFolder() / "dongle" / "bank" / lh::dongle_bank::ImageName(now.board, now.softDeviceBuild, now.bank);
+      std::ifstream fin(f, std::ios::binary);
+      std::vector<uint8_t> img((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+      if (BankUpdate(now, std::move(img), [&](float p) { j.Status((float(step) + p) / float(steps), "Updating the dongle"); }, &error)) {
+        for (int i = 0; i < 100; ++i) {   // it restarts into the new bank
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          for (const auto& d : FindDoormanDongles())
+            if (d.serial == dongle.serial && d.firmware == packaged) { set(-1, 2, "Updated"); j.Status(1, "Done"); return true; }
+        }
+        error = "it didn't come back with the new firmware";
+      }
+      j.Log("Dongle: " + error);
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    set(-1, 3, "Failed. Unplug it, plug it back in and try again");
+    j.Fail("the dongle wasn't updated");
+    return false;
+  });
+}
+
+void Ui::DongleUpdatePage() {
+  Title(("Update Doorman Dongle " + updateDongle_.serial).c_str());
+  const bool started = job_.Running() || job_.Finished();
+  std::vector<DongleSlot> slots;
+  std::map<int, SlotResult> results;
+  {
+    std::lock_guard l(updateMutex_);
+    results = updateResults_;
+    if (started) slots = updateSnapshot_;
+  }
+  if (!started) slots = updateSlots_.Value();
+  const bool have = started || updateSlots_.Have();
+  int paired = 0, off = 0, outdated = 0;
+  for (const auto& s : slots) {
+    paired += s.paired;
+    off += s.paired && !s.answered;
+    outdated += RadioNeedsUpdate(s);
+  }
+  if (!started) {
+    ImGui::TextUnformatted("Turn on all the devices paired to this dongle, so their radios are updated too.");
+    ImGui::TextColored(kMuted, "Updated devices are turned off. The dongle is updated last.");
+  } else if (job_.Running()) {
+    ImGui::TextUnformatted(job_.StatusText().c_str());
+    ImGui::ProgressBar(job_.Progress(), ImVec2(-1, 0), "");
+  }
+  ImGui::Spacing();
+
+  // The slots: a dot (green up to date, yellow needs an update, grey off or empty), the device, its state.
+  const float fs = ImGui::GetFontSize();
+  if (ImGui::BeginTable("slots", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
+    ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, fs * 5);
+    ImGui::TableSetupColumn("Device", ImGuiTableColumnFlags_WidthStretch, 1.f);
+    ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+    auto row = [&](const std::string& label, const ImVec4& dot, const std::string& device, const ImVec4& stateColor, const std::string& state) {
+      ImGui::TableNextRow(0, fs * 2.1f);
+      ImGui::TableNextColumn();
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + fs * 0.45f, p.y + fs * 0.95f), fs * 0.32f, ImGui::GetColorU32(dot), 20);
+      ImGui::SetCursorScreenPos(ImVec2(p.x + fs * 1.2f, p.y + fs * 0.35f));
+      ImGui::TextUnformatted(label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + fs * 0.35f);
+      ImGui::TextUnformatted(device.c_str());
+      ImGui::TableNextColumn();
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + fs * 0.35f);
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextColored(stateColor, "%s", state.c_str());
+      ImGui::PopTextWrapPos();
+    };
+    const ImVec4 grey = kMuted;
+    for (int i = 0; i < 8; ++i) {
+      const DongleSlot* s = i < int(slots.size()) ? &slots[size_t(i)] : nullptr;
+      const std::string label = "Slot " + std::to_string(i + 1);
+      if (!have || !s) { row(label, grey, "", grey, "..."); continue; }
+      if (!s->paired) { row(label, grey, "Empty", grey, ""); continue; }
+      const std::string name = s->answered ? s->device.model.name : "Paired device";
+      const bool needs = RadioNeedsUpdate(*s);
+      const auto r = results.find(i);
+      if (r != results.end()) {
+        const ImVec4 c = r->second.state == 2 ? kGood : r->second.state == 3 ? kBad : kWarn;
+        row(label, c, name, c, r->second.text);
+      } else if (!s->answered) {
+        row(label, grey, name, grey, started ? "Was off: not updated" : "Off: turn it on");
+      } else if (needs) {
+        char text[64];
+        std::snprintf(text, sizeof text, "Needs an update (radio %08X)", s->device.radioVersion);
+        row(label, kWarn, name, kWarn, started ? std::string("Waiting") : std::string(text));
+      } else {
+        row(label, kGood, name, kGood, "Up to date");
+      }
+    }
+    {
+      const auto r = results.find(-1);
+      char fw[64];
+      std::snprintf(fw, sizeof fw, "Firmware %04X, updates to %04X", updateDongle_.firmware, PackagedDongleVersion());
+      const bool current = updateDongle_.firmware == PackagedDongleVersion();
+      const ImVec4 c = r == results.end() ? (current ? kGood : kWarn) : r->second.state == 2 ? kGood : r->second.state == 3 ? kBad : kWarn;
+      row("Dongle", c, "Doorman Dongle", c, r != results.end() ? r->second.text : current ? std::string("Up to date") : std::string(fw));
+    }
+    ImGui::EndTable();
+  }
+  ImGui::Spacing();
+
+  if (job_.Finished()) {
+    ImGui::PushFont(g_title);
+    if (job_.Ok()) ImGui::TextColored(kGood, "Update finished");
+    else ImGui::TextColored(kBad, "Update failed");
+    ImGui::PopFont();
+    if (!job_.Ok()) ImGui::TextUnformatted(job_.Error().c_str());
+    Back(Page::Home);
+    return;
+  }
+  if (job_.Running()) return;
+
+  if (!RuntimesClosed()) { Back(Page::DongleUpdatePick); return; }
+  if (!updateDongle_.Banked()) {
+    ImGui::TextColored(kWarn, "This dongle's firmware is too old to update here: use Install or Update Firmware > Doorman");
+    Back(Page::DongleUpdatePick);
+    return;
+  }
+  // Every paired device on and up to date: only the dongle is left, so it starts on its own.
+  if (have && off == 0 && outdated == 0) {
+    StartDongleUpdate(slots);
+    return;
+  }
+  const float w = std::min(fs * 34, ImGui::GetContentRegionAvail().x);
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (ImGui::GetContentRegionAvail().x - w) / 2));
+  char sub[96];
+  if (off) std::snprintf(sub, sizeof sub, "%d of %d devices are off", off, paired);
+  else std::snprintf(sub, sizeof sub, "%d device%s, then the dongle", outdated, outdated == 1 ? "" : "s");
+  ImGui::BeginDisabled(!have);
+  const bool go = Tile({Icon::Download, "Update", sub, off ? Tint::Yellow : Tint::Green}, w, fs * 5, true);
+  ImGui::EndDisabled();
+  if (off && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("Turning on all the devices is recommended! If a device does not automatically connect after updating, "
+                      "you can update that device via a cable through the flashing menu!");
+  if (go) StartDongleUpdate(slots);
+  Back(Page::DongleUpdatePick);
 }
 
 }  // namespace openhouse::installer

@@ -74,7 +74,8 @@ int Run() {
       glClearColor(0.067f, 0.075f, 0.098f, 1);
       glClear(GL_COLOR_BUFFER_BIT);
       ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
-      if (snapshot && ++frame == 60) {
+      static const int kSnapFrame = std::getenv("OPENHOUSE_INSTALLER_SNAPSHOT_FRAMES") ? std::atoi(std::getenv("OPENHOUSE_INSTALLER_SNAPSHOT_FRAMES")) : 60;
+      if (snapshot && ++frame == kSnapFrame) {
         std::vector<unsigned char> rgb(size_t(w) * h * 3);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());

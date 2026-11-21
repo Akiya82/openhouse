@@ -336,6 +336,10 @@ static bool IndexControllerRadio(uint32_t hwid) {
   return (hwid & 0xff) == 0x06 && ((hwid >> 16) & 0xff) >= 0x08;
 }
 
+// Tundra Trackers: SteamVR lists 0xf0000109; later revisions (0xf1040009, "rev 4.0.9") report other
+// ids. Their radio is a variant of Valve's Index controller radio build (same image layout and entry).
+static bool TundraTracker(uint32_t hwid) { return (hwid >> 28) == 0xf && (hwid & 0xff) == 0x09; }
+
 RadioModel ModelFor(uint32_t hwid) {
   struct Known { uint32_t hwid; const char* name; RadioFamily family; };
   static const Known kKnown[] = {
@@ -352,6 +356,7 @@ RadioModel ModelFor(uint32_t hwid) {
     if (k.hwid == hwid) return {hwid, k.name, k.family, true};
   // SteamVR lists several Index controller revisions without a radio file of their own: they take
   // the same image.
+  if (TundraTracker(hwid)) return {hwid, "Tundra Tracker", RadioFamily::Newer, true};
   if (IndexControllerRadio(hwid))
     return {hwid, (hwid & 0xff) == 0x06 ? "Valve Index Controller EV2" : "Valve Index Controller", RadioFamily::Newer, true};
   // HTC's later trackers (3.0) aren't in SteamVR's manifests under their own id: an HTC
@@ -381,6 +386,8 @@ fs::path StockRadioImage(const fs::path& steamvr, uint32_t hwid) {
   fs::path f = StockRadioImageExact(steamvr, hwid);
   // An Index controller revision SteamVR has no radio file for: the Index controller's.
   if (f.empty() && IndexControllerRadio(hwid)) f = StockRadioImageExact(steamvr, 0x110f0009);
+  // A Tundra revision SteamVR has no entry for: Tundra's own radio file.
+  if (f.empty() && TundraTracker(hwid)) f = StockRadioImageExact(steamvr, 0xf0000109);
   // HTC's 3.0 tracker (0x84020109) isn't in SteamVR's manifests, but it runs the Index controller's
   // radio build (1562882729), so it gets that file.
   if (f.empty() && (hwid >> 24) == 0x84 && ((hwid >> 16) & 0xff) >= 0x02) f = StockRadioImageExact(steamvr, 0x110f0009);
@@ -599,43 +606,61 @@ std::vector<WirelessDevice> FindWirelessDevices() {
   }
   hid_free_enumeration(list);
   // Doorman Dongles: the devices in their slots that are connected now, running our radio.
-  for (const auto& dongle : FindDoormanDongles()) {
-    DoormanDongle d(dongle.path);
-    if (!d.Ok()) continue;
-    uint8_t r[62];
-    for (int slot = 0; slot < 8; ++slot) {
-      const uint8_t first = uint8_t(slot / 6 * 6);   // 6 slots per reply
-      if (slot == first && !d.Command(0x25, &first, 1, r)) { slot = first + 5; continue; }
-      const uint8_t* e = r + 1 + (slot - first) * 10;  // [used][active][8-byte id]
-      if (!e[0] || !e[1]) continue;
-      const std::string info = AirRequest(d, slot, 'X', "");
-      if (info.size() < 6) continue;
-      WirelessDevice w;
-      w.route = Route::Doorman;
-      w.dongle = dongle.serial;
-      w.donglePath = dongle.path;
-      w.slot = slot;
-      w.radioVersion = Rd32(reinterpret_cast<const uint8_t*>(info.data()) + 2);
-      const uint32_t family = w.radioVersion >> 24;
-      w.model.family = family == 0x6A ? RadioFamily::Newer : family == 0x0A ? RadioFamily::Tracker10 : RadioFamily::Unsupported;
-      w.model.name = family == 0x6A ? "Controller / tracker (2.0)" : family == 0x0A ? "VIVE Tracker 1.0 / VIVE Controller" : "Unknown device";
-      w.model.known = family == 0x6A || family == 0x0A;
-      w.model.hwid = w.radioVersion;
-      // The main MCU behind our radio still answers feature 0x05: its hardware id at [41].
-      const uint8_t req[2] = {'P', 0x05};
-      if (d.Send(slot, req, 2)) {
-        const std::string f = d.Await(slot, [](const std::string& x) { return x.size() >= 45 && uint8_t(x[0]) == 'P'; }, 1.5);
-        const uint32_t hwid = f.size() >= 45 ? Rd32(reinterpret_cast<const uint8_t*>(f.data()) + 41) : 0;
-        const RadioModel m = hwid ? ModelFor(hwid) : RadioModel{};
-        if (m.known && m.family == w.model.family) w.model = m;
-      }
-      char id[24];
-      std::snprintf(id, sizeof id, "slot %d", slot + 1);
-      w.serial = id;
-      out.push_back(w);
+  for (const auto& dongle : FindDoormanDongles())
+    for (const auto& s : ScanDongleSlots(dongle))
+      if (s.answered) out.push_back(s.device);
+  return out;
+}
+
+std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle) {
+  std::vector<DongleSlot> out(8);
+  for (int i = 0; i < 8; ++i) out[size_t(i)].slot = i;
+  DoormanDongle d(dongle.path);
+  if (!d.Ok()) return out;
+  uint8_t r[62];
+  for (int slot = 0; slot < 8; ++slot) {
+    const uint8_t first = uint8_t(slot / 6 * 6);   // 6 slots per reply
+    if (slot == first && !d.Command(0x25, &first, 1, r)) { slot = first + 5; continue; }
+    const uint8_t* e = r + 1 + (slot - first) * 10;  // [used][active][8-byte id]
+    DongleSlot& s = out[size_t(slot)];
+    s.paired = e[0] != 0;
+    s.on = e[0] && e[1];
+    if (!s.on) continue;
+    const std::string info = AirRequest(d, slot, 'X', "");
+    if (info.size() < 6) continue;
+    WirelessDevice& w = s.device;
+    s.answered = true;
+    w.route = Route::Doorman;
+    w.dongle = dongle.serial;
+    w.donglePath = dongle.path;
+    w.slot = slot;
+    w.radioVersion = Rd32(reinterpret_cast<const uint8_t*>(info.data()) + 2);
+    const uint32_t family = w.radioVersion >> 24;
+    w.model.family = family == 0x6A ? RadioFamily::Newer : family == 0x0A ? RadioFamily::Tracker10 : RadioFamily::Unsupported;
+    w.model.name = family == 0x6A ? "Controller / tracker (2.0)" : family == 0x0A ? "VIVE Tracker 1.0 / VIVE Controller" : "Unknown device";
+    w.model.known = family == 0x6A || family == 0x0A;
+    w.model.hwid = w.radioVersion;
+    // The main MCU behind our radio still answers feature 0x05: its hardware id at [41].
+    const uint8_t req[2] = {'P', 0x05};
+    if (d.Send(slot, req, 2)) {
+      const std::string f = d.Await(slot, [](const std::string& x) { return x.size() >= 45 && uint8_t(x[0]) == 'P'; }, 1.5);
+      const uint32_t hwid = f.size() >= 45 ? Rd32(reinterpret_cast<const uint8_t*>(f.data()) + 41) : 0;
+      const RadioModel m = hwid ? ModelFor(hwid) : RadioModel{};
+      if (m.known && m.family == w.model.family) w.model = m;
     }
+    char id[24];
+    std::snprintf(id, sizeof id, "slot %d", slot + 1);
+    w.serial = id;
   }
   return out;
+}
+
+void PowerOffDevice(const WirelessDevice& device) {
+  DoormanDongle d(device.donglePath);
+  if (!d.Ok()) return;
+  const uint8_t off[] = {'P', 0x9f, 4, 'o', 'f', 'f', '!'};
+  d.Send(device.slot, off, sizeof off);
+  Sleep(500);
 }
 
 bool FlashWireless(const WirelessDevice& device, const RadioImage& image, const Progress& progress, std::string* error) {

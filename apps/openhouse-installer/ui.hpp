@@ -108,7 +108,8 @@ class Ui {
  private:
   enum class Page {
     Home, Install, Uninstall, FlashMenu, BaseStation, DoormanMenu, Dongle, RadioMenu, RadioWired, RadioWireless,
-    RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless, DeviceType
+    RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless, DeviceType,
+    DongleUpdatePick, DongleUpdate
   };
   void Go(Page page);
   void Header();
@@ -130,6 +131,9 @@ class Ui {
   void RadioWirelessPage(bool restore);
   void RestoreRadioMenu();
   void DeviceTypePage();
+  void DongleUpdatePick();
+  void DongleUpdatePage();
+  void StartDongleUpdate(const std::vector<DongleSlot>& slots);
 
   void RefreshStatus();
 
@@ -187,6 +191,17 @@ class Ui {
   std::mutex kindsMutex_;
   std::map<std::string, std::string> kinds_;  // serial -> "controller", "tracker", "headset", or why it's unreadable
   std::string kindTarget_;                    // the device being switched
+
+  // Dongle update (Home's "Update Dongles"): the devices' radios first, then the dongle.
+  Watcher<std::vector<DoormanDongleInfo>> homeDongles_;   // Home: is any dongle on other firmware?
+  bool homeWatching_ = false;
+  bool testOnly_ = false;   // ShowForTest("update"): draws the page, never starts the update
+  Watcher<std::vector<DongleSlot>> updateSlots_;
+  DoormanDongleInfo updateDongle_;
+  struct SlotResult { int state = 0; std::string text; };   // state: 0 waiting, 1 working, 2 done, 3 failed
+  std::mutex updateMutex_;
+  std::map<int, SlotResult> updateResults_;                // slot -> what happened (-1: the dongle)
+  std::vector<DongleSlot> updateSnapshot_;                 // the slots as they were when it started
 };
 
 }  // namespace openhouse::installer

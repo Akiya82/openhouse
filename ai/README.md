@@ -61,7 +61,7 @@ Goals and constraints (from the owner):
 | `scripts/` | Release builds (`build-linux.sh`, `build-windows.sh`, `build-firmware.sh`, `build-doorman.sh`) and the packagers they call (`package-linux.sh`, `package-driver.py`, `package-windows.py`), and `stage-firmwares.py` (every firmware image into a package's `firmwares/`, for openhouse-installer) |
 | `basestation_firmware` | the firmware (`src/`, `test/`, `Makefile`); `tools/lpcsum.py` (boot checksum, run by the Makefile); `installer/` the end-user installers (Linux sh, Windows ps1/bat). `fw/`, `patches/`, `re/`, `bsfirmwares/`, `backups/` are local only |
 | `doorman` | doorman wireless: `dongle-fw/`, `radio-fw/`, `common/` (shared protocol headers), `tools/` (Python: dongle CLI, air/OTA updaters, radio emulator), `third_party/` (the tinyusb/nrfx/CMSIS files the builds use) |
-| `re/ghidra_scripts` | headless Ghidra scripts. The rest of `re/` (project, decompiles) is local only |
+| `re/` | local only: headless Ghidra scripts, project, decompiles |
 
 Not in git, on purpose: Valve's binaries, decompiled code, HTC firmware images and flash
 dumps, `libsurvive/` (reference only: LH2 polynomials and decode), recordings.

@@ -97,6 +97,17 @@ struct DoormanDongleInfo {
 };
 std::vector<DoormanDongleInfo> FindDoormanDongles();
 bool RebootToBootloader(const DoormanDongleInfo& d);  // its UF2 drive appears (Nordic DFU boards: its serial port)
+// One slot of a Doorman Dongle: paired or not, its device on or not, and the device (radio version,
+// model) when it's on and answers.
+struct DongleSlot {
+  int slot = 0;
+  bool paired = false, on = false, answered = false;
+  WirelessDevice device;
+};
+std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle);   // all 8 slots
+// Turns a device on a Doorman Dongle off (its main MCU's power-off command, as the driver sends it).
+void PowerOffDevice(const WirelessDevice& device);
+
 // A banked dongle writes `image` (the firmware for the bank it isn't running) and restarts into it.
 bool BankUpdate(const DoormanDongleInfo& d, std::vector<uint8_t> image, const std::function<void(float)>& progress,
                 std::string* error);

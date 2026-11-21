@@ -90,9 +90,11 @@ static uint8_t max_resp = DML_MAXLEN;
 static void (*idle_hook)(void);
 /* Where USB is serviced inside a radio exchange (cmd 0x2C, for A/B tests): bit 0 while the POLL goes
    out, bit 1 while listening for the answer, bit 2 between decoded frames. Measured with six devices:
-   0 -> ~500 reports/s per interface, 3 -> 1021/s (the USB limit), loss 2.2% either way; bit 2 delays
-   the next POLL and loss went to ~18%, so it's off. */
-static uint8_t usb_in_radio = 3;
+   0 -> ~500 reports/s per interface, 2 or 3 -> 1021/s (the USB limit). Bit 0 is off: while the packet
+   goes out, the shortcuts turn the radio around to receive on their own, and USB work there can outlast
+   the whole answer, which is then missed. Join requests got lost that way (Tracker 1.0s couldn't pair).
+   Bit 2 delays the next POLL and loss went to ~18%, so it's off too. */
+static uint8_t usb_in_radio = 2;
 /* Exchange timing (POLL out, answer in): the 90th percentile of each 32 cycles sizes the slots; a longer
    exchange just starts the next POLL a little late (the slowest one alone kept every slot at the bound). */
 #define EX_BUCKETS 50                         /* 50 us each, up to 2.5 ms */

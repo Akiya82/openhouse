@@ -42,5 +42,6 @@ bool HaveProgram(const char* name);  // on PATH (Linux)
 // A folder picker; "" when cancelled or none is available.
 std::string PickFolder(const std::string& title);
 void OpenInFileManager(const fs::path& p);
+void StartApp(const fs::path& exe);  // starts a program and doesn't wait for it
 
 }  // namespace openhouse::installer

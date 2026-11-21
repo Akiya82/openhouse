@@ -118,7 +118,13 @@ bool WriteFileAtomic(const fs::path& p, const std::string& data) {
     if (!out) return false;
   }
 #ifdef _WIN32
-  return MoveFileExW(temp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+  // Steam or a virus scanner can hold the file for a moment: tried for a few seconds.
+  for (int i = 0; i < 20; ++i) {
+    if (MoveFileExW(temp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  fs::remove(temp, ec);
+  return false;
 #else
   fs::rename(temp, p, ec);
   return !ec;
@@ -134,10 +140,24 @@ void CopyOver(const fs::path& from, const fs::path& to) {
       SetFileAttributesW(to.c_str(), attrs & ~DWORD(FILE_ATTRIBUTE_READONLY));
     if (CopyFileW(from.c_str(), to.c_str(), FALSE)) return;
     const DWORD err = GetLastError();
-    const bool locked = err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION;
+    // ERROR_USER_MAPPED_FILE: a program has the DLL loaded.
+    const bool locked = err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION || err == ERROR_USER_MAPPED_FILE;
     if (locked && i < 20) {
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
       continue;
+    }
+    // Still held: a loaded DLL can't be written over, but it can be renamed. The old copy is moved
+    // aside (deleted at the next restart, or by the next install), and the new one goes in its place.
+    if (locked) {
+      fs::path aside = to;
+      aside += ".old-" + std::to_string(GetTickCount64());
+      if (MoveFileExW(to.c_str(), aside.c_str(), 0)) {
+        if (CopyFileW(from.c_str(), to.c_str(), FALSE)) {
+          if (!DeleteFileW(aside.c_str())) MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+          return;
+        }
+        MoveFileExW(aside.c_str(), to.c_str(), 0);   // put the old one back
+      }
     }
     if (locked) throw std::runtime_error("Couldn't write " + Utf8(to) + ": a program still has it open. Close Steam and SteamVR completely, then try again.");
     if (err == ERROR_ACCESS_DENIED) throw std::runtime_error("Couldn't write " + Utf8(to) + ": access denied. Run the installer as administrator.");
@@ -377,6 +397,14 @@ std::string PickFolder(const std::string& title) {
   if (HaveProgram("zenity") && run({"zenity", "--file-selection", "--directory", "--title=" + title})) return chosen;
   if (HaveProgram("kdialog") && run({"kdialog", "--getexistingdirectory", HomeDirectory().string(), "--title", title})) return chosen;
   return {};
+#endif
+}
+
+void StartApp(const fs::path& exe) {
+#ifdef _WIN32
+  ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, exe.parent_path().c_str(), SW_SHOWNORMAL);
+#else
+  std::thread([exe] { RunProcess({exe.string()}, nullptr); }).detach();
 #endif
 }
 

@@ -109,7 +109,7 @@ class Ui {
   enum class Page {
     Home, Install, Uninstall, FlashMenu, BaseStation, DoormanMenu, Dongle, RadioMenu, RadioWired, RadioWireless,
     RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless, DeviceType,
-    DongleUpdatePick, DongleUpdate
+    DongleUpdatePick, DongleUpdate, Tools
   };
   void Go(Page page);
   void Header();
@@ -132,6 +132,7 @@ class Ui {
   void RestoreRadioMenu();
   void DeviceTypePage();
   void DongleUpdatePick();
+  void ToolsPage();
   void DongleUpdatePage();
   void StartDongleUpdate(const std::vector<DongleSlot>& slots);
 

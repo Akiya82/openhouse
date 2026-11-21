@@ -532,6 +532,7 @@ void Ui::ShowForTest(const std::string& page) {
   else if (page == "dongle") Go(Page::Dongle);
   else if (page == "home") Go(Page::Home);
   else if (page == "pick") Go(Page::DongleUpdatePick);
+  else if (page == "tools") Go(Page::Tools);
   else if (page == "update") {
     testOnly_ = true;   // a snapshot never updates anything
     const auto dongles = FindDoormanDongles();
@@ -629,6 +630,7 @@ void Ui::Draw(float width, float height) {
     case Page::DeviceType: DeviceTypePage(); break;
     case Page::DongleUpdatePick: DongleUpdatePick(); break;
     case Page::DongleUpdate: DongleUpdatePage(); break;
+    case Page::Tools: ToolsPage(); break;
   }
   ImGui::EndChild();
   Footer();
@@ -771,28 +773,42 @@ bool Ui::RuntimesClosed() {
 
 // ---- home ----
 
+// Two rows of three wide tiles, all as high as the tallest; disabled[i] greys tile i out. Returns
+// the one pressed (-1: none).
+int TileRows(const std::vector<TileSpec>& tiles, const std::vector<bool>& disabled) {
+  const float fs = ImGui::GetFontSize(), gap = fs * 1.2f, avail = ImGui::GetContentRegionAvail().x;
+  const float rowWidth = std::min(fs * 34, (avail - gap) / 2) * 2 + gap;
+  const float w = (std::min(rowWidth, avail) - gap * 2) / 3;
+  const float side = fs * 3.2f, pad = fs * 1.4f, tw = w - (pad + side * 1.7f + pad) - pad;
+  float h = fs * 8;
+  for (const auto& t : tiles) {
+    ImGui::PushFont(g_title);
+    float th = ImGui::GetFontSize() * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.title, false));
+    ImGui::PopFont();
+    if (t.subtitle) th += 4 + fs * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.subtitle, false));
+    h = std::max(h, th + fs * 2.4f);
+  }
+  const float x0 = ImGui::GetCursorPosX() + std::max(0.f, (avail - (w * 3 + gap * 2)) / 2);
+  int pressed = -1;
+  for (size_t i = 0; i < tiles.size(); ++i) {
+    if (i % 3) ImGui::SameLine(0, gap);
+    else {
+      if (i) ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y * 2));
+      ImGui::SetCursorPosX(x0);
+    }
+    ImGui::PushID(int(i));
+    ImGui::BeginDisabled(i < disabled.size() && disabled[i]);
+    if (Tile(tiles[i], w, h, true)) pressed = int(i);
+    ImGui::EndDisabled();
+    ImGui::PopID();
+  }
+  return pressed;
+}
+
 void Ui::Home() {
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 2));
   Prompt("What would you like to do?");
-  std::vector<TileSpec> tiles;
-  int install = -1, uninstall = -1;
-  static std::string sub;
-  if (status_.openhouse) {
-    const bool older = PackageNewer();
-    sub = std::string(older ? "Updates openhouse to v" : "Installs openhouse v") + lh::kVersion + (older ? "" : " again");
-    install = int(tiles.size());
-    tiles.push_back({older ? Icon::Download : Icon::Refresh, older ? "Update Driver" : "Reinstall Driver", sub.c_str(),
-                     older ? Tint::Green : Tint::Yellow});
-    uninstall = int(tiles.size());
-    tiles.push_back({Icon::Trash, "Uninstall Driver", "Puts the SteamVR Lighthouse driver back", Tint::Red});
-  } else {
-    sub = std::string("Installs openhouse v") + lh::kVersion + " to SteamVR";
-    install = int(tiles.size());
-    tiles.push_back({Icon::Download, "Install Driver", sub.c_str(), Tint::Green});
-  }
-  const int pressed = TileGrid(tiles, 2);
-  // Second row, as wide as the first: firmware, restore, and the dongle update (greyed out when no
-  // connected dongle runs other firmware than this package's).
+  // Doorman Dongles on other firmware than this package's.
   if (!homeWatching_) {
     homeDongles_.Start(FindDoormanDongles, 3.0);
     homeWatching_ = true;
@@ -800,40 +816,51 @@ void Ui::Home() {
   const uint16_t packaged = PackagedDongleVersion();
   int outdated = 0;
   for (const auto& d : homeDongles_.Value()) outdated += packaged && d.firmware != packaged;
+  static std::string installSub;
   static char dongleSub[64];
+  const bool installed = status_.openhouse;
+  const bool newer = installed && PackageNewer();
+  if (!installed) installSub = std::string("Installs openhouse v") + lh::kVersion + " to SteamVR";
+  else installSub = std::string(newer ? "Updates openhouse to v" : "Installs openhouse v") + lh::kVersion + (newer ? "" : " again");
   if (outdated) std::snprintf(dongleSub, sizeof dongleSub, outdated == 1 ? "A dongle has an update" : "%d dongles have an update", outdated);
   else std::snprintf(dongleSub, sizeof dongleSub, "No update available");
-  const TileSpec row[3] = {{Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"},
-                           {Icon::Restore, "Restore Firmware", "Puts the original firmware back"},
-                           {Icon::Dongle, "Update Dongles", dongleSub, outdated ? Tint::Yellow : Tint::None}};
-  const float fs = ImGui::GetFontSize(), gap = fs * 1.2f, avail = ImGui::GetContentRegionAvail().x;
-  const float rowWidth = std::min(fs * 34, (avail - gap) / 2) * 2 + gap;
-  const float w = (std::min(rowWidth, avail) - gap * 2) / 3;
-  const float side = fs * 3.2f, pad = fs * 1.4f, tw = w - (pad + side * 1.7f + pad) - pad;
-  float h = fs * 8;
-  for (const auto& t : row) {
-    ImGui::PushFont(g_title);
-    float th = ImGui::GetFontSize() * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.title, false));
-    ImGui::PopFont();
-    if (t.subtitle) th += 4 + fs * 1.25f * float(WrapText(nullptr, {}, tw, 0, t.subtitle, false));
-    h = std::max(h, th + fs * 2.4f);
+  const std::vector<TileSpec> tiles{
+      {installed ? (newer ? Icon::Download : Icon::Refresh) : Icon::Download,
+       installed ? (newer ? "Update Driver" : "Reinstall Driver") : "Install Driver", installSub.c_str(),
+       installed && !newer ? Tint::Yellow : Tint::Green},
+      {Icon::Trash, "Uninstall Driver", installed ? "Puts the SteamVR Lighthouse driver back" : "openhouse isn't installed", Tint::Red},
+      {Icon::Settings, "Tools", "Dongle manager and device converter"},
+      {Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"},
+      {Icon::Restore, "Restore Firmware", "Puts the original firmware back"},
+      {Icon::Dongle, "Update Dongles", dongleSub, outdated ? Tint::Yellow : Tint::None}};
+  switch (TileRows(tiles, {false, !installed, false, false, false, outdated == 0})) {
+    case 0: Go(Page::Install); break;
+    case 1: Go(Page::Uninstall); break;
+    case 2: Go(Page::Tools); break;
+    case 3: Go(Page::FlashMenu); break;
+    case 4: Go(Page::RestoreMenu); break;
+    case 5: Go(Page::DongleUpdatePick); break;
+    default: break;
   }
-  ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y * 2));
-  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (avail - (w * 3 + gap * 2)) / 2));
-  int second = -1;
-  for (int i = 0; i < 3; ++i) {
-    if (i) ImGui::SameLine(0, gap);
-    ImGui::PushID(100 + i);
-    ImGui::BeginDisabled(i == 2 && !outdated);
-    if (Tile(row[i], w, h, true)) second = i;
-    ImGui::EndDisabled();
-    ImGui::PopID();
+}
+
+// ---- tools ----
+
+void Ui::ToolsPage() {
+  Title("Tools");
+  ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
+#ifdef _WIN32
+  static const fs::path manager = ExeDirectory() / "apps" / "doorman-dongle-manager.exe";
+#else
+  static const fs::path manager = ExeDirectory() / "tools" / "doorman-dongle-manager";
+#endif
+  switch (Tiles({{Icon::Dongle, "Dongle Manager", "Pair devices and see your Doorman dongles"},
+                 {Icon::Tracker, "Device Type", "Convert your devices into trackers and vice versa"}})) {
+    case 0: StartApp(manager); break;
+    case 1: Go(Page::DeviceType); break;
+    default: break;
   }
-  if (second == 0) Go(Page::FlashMenu);
-  else if (second == 1) Go(Page::RestoreMenu);
-  else if (second == 2) Go(Page::DongleUpdatePick);
-  if (pressed == install) Go(Page::Install);
-  else if (pressed == uninstall && uninstall >= 0) Go(Page::Uninstall);
+  Back(Page::Home);
 }
 
 // ---- install / uninstall ----
@@ -940,11 +967,9 @@ void Ui::FlashMenu() {
   ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
   Prompt("What do you want to flash?");
   switch (Tiles({{Icon::BaseStation, "1.0 Base Stations", "Flashes lhbs to your 1.0 base stations"},
-                 {Icon::Wireless, "Doorman", "Flashes your dongle or your devices"},
-                 {Icon::Tracker, "Device Type", "Turns a controller into a tracker and back"}})) {
+                 {Icon::Wireless, "Doorman", "Flashes your dongle or your devices"}})) {
     case 0: Go(Page::BaseStation); break;
     case 1: Go(Page::DoormanMenu); break;
-    case 2: Go(Page::DeviceType); break;
   }
   Back(Page::Home);
 }
@@ -953,16 +978,14 @@ void Ui::FlashMenu() {
 
 void Ui::DeviceTypePage() {
   Title("Device Type");
-  Wrapped("Switches a controller to a tracker and back, for a Vive wand on a hip, an ankle or a prop. The type is kept "
-          "in the device itself: it stays with it on any dongle (Doorman or SteamVR's), with any driver, and when its "
-          "radio firmware is flashed. Plug the device in with a USB cable.");
+  Wrapped("Plug the device in with a USB cable.");
   if (steamvr_.root.empty()) {
     ImGui::TextColored(kBad, "SteamVR not found");
     if (BigButton("Choose SteamVR folder")) askSteamVR_ = true;
-    Back(Page::FlashMenu);
+    Back(Page::Tools);
     return;
   }
-  if (!RuntimesClosed() || !DeviceAccess()) { Back(Page::FlashMenu); return; }
+  if (!RuntimesClosed() || !DeviceAccess()) { Back(Page::Tools); return; }
   const fs::path root = steamvr_.root;
   const auto devices = wired_.Value();
 
@@ -1050,7 +1073,7 @@ void Ui::DeviceTypePage() {
   } else {
     ImGui::TextColored(kMuted, "Configs are backed up to %s before they're changed.", Utf8(DeviceConfigBackups()).c_str());
   }
-  Back(Page::FlashMenu);
+  Back(Page::Tools);
 }
 
 void Ui::DoormanMenu() {

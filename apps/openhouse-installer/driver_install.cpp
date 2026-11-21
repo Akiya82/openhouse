@@ -212,6 +212,21 @@ void RemoveOldUpdateCheck(const Paths& p, const std::function<void(const std::st
   }
 #endif
 }
+// Old copies CopyOver moved aside because a program still had them loaded (Windows).
+void RemoveMovedAside(const Paths& p) {
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(p.directory, ec))
+    if (e.path().filename().string().find(".old-") != std::string::npos) RemoveFile(e.path());
+}
+
+// A step after the driver itself: its failure is logged, it doesn't undo or stop the rest.
+void Try(const std::function<void(const std::string&)>& log, const char* what, const std::function<void()>& step) {
+  try {
+    step();
+  } catch (const std::exception& e) {
+    log(std::string(what) + ": " + e.what());
+  }
+}
 }  // namespace
 
 bool IsSteamVRFolder(const fs::path& root) {
@@ -361,6 +376,7 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
   std::error_code ec;
   if (!fs::exists(ours, ec)) throw std::runtime_error("The package's driver is missing (" + Utf8(ours) + "). Extract the whole package and run the installer from there.");
   if (!fs::exists(p.target, ec)) throw std::runtime_error("SteamVR's lighthouse driver isn't at " + Utf8(p.target) + ". Check the SteamVR folder.");
+  RemoveMovedAside(p);
   const bool isOurs = Contents(p.target).find(kMarker) != std::string::npos;
   if (!isOurs) {
     CopyOver(p.target, p.backup);
@@ -432,11 +448,34 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
 void UninstallDriver(const fs::path& steamvr, const std::function<void(const std::string&)>& log) {
   const Paths p = MakePaths(steamvr);
   std::error_code ec;
-  // These first, so they go even when there's no driver backup.
-  RemoveOldSettingsPage(p);
-  RemoveOldUpdateCheck(p, log);
-  SetRegistration(p, p.data / "update-checker.vrmanifest", kCheckKey, false, log);
-  SetRegistration(p, p.data / "openhouse-overlay.vrmanifest", kOverlayKey, false, log);
+  // The driver first: if anything after it fails, SteamVR still has its own driver back. (Steam's
+  // appconfig.json held by Steam or a virus scanner used to stop uninstall before the driver.)
+  RemoveMovedAside(p);
+  if (!fs::exists(p.target, ec)) throw std::runtime_error("SteamVR's lighthouse driver isn't at " + Utf8(p.target) + ".");
+  if (Contents(p.target).find(kMarker) == std::string::npos) {
+    // A SteamVR update put its own, newer driver in place of ours: the backup is older, and
+    // moving it back would undo the update, so it goes instead.
+    RemoveFile(p.backup);
+    log("SteamVR's own driver was already in place (a SteamVR update put it back)");
+  } else {
+    if (!fs::exists(p.backup, ec))
+      throw std::runtime_error("SteamVR's own driver isn't kept next to openhouse's (" + Utf8(p.backup.filename()) +
+                               "). Verify SteamVR's files in Steam (Properties > Installed Files) to get it back.");
+    const std::string stock = Contents(p.backup);
+    CopyOver(p.backup, p.target);
+    // Checked before the backup goes: it's the only copy of SteamVR's driver.
+    if (Contents(p.target) != stock)
+      throw std::runtime_error("SteamVR's driver couldn't be put back over openhouse's. Close Steam and SteamVR completely, then try again.");
+    RemoveFile(p.backup);
+    log("Put SteamVR's own driver back");
+  }
+#ifndef _WIN32
+  fs::remove_all(p.directory / "lh-libs", ec);
+#endif
+  Try(log, "Old settings page not removed", [&] { RemoveOldSettingsPage(p); });
+  Try(log, "Old update check not removed", [&] { RemoveOldUpdateCheck(p, log); });
+  Try(log, "Update check not unregistered", [&] { SetRegistration(p, p.data / "update-checker.vrmanifest", kCheckKey, false, log); });
+  Try(log, "Overlay not unregistered", [&] { SetRegistration(p, p.data / "openhouse-overlay.vrmanifest", kOverlayKey, false, log); });
 #ifndef _WIN32
   RemoveMonadoCheck();
 #endif
@@ -449,26 +488,6 @@ void UninstallDriver(const fs::path& steamvr, const std::function<void(const std
 #ifndef _WIN32
   if (std::string error; !RemoveDeviceAccess(&error)) log("Device access rule not removed: " + error);
 #endif
-  if (!fs::exists(p.target, ec)) throw std::runtime_error("SteamVR's lighthouse driver isn't at " + Utf8(p.target) + ".");
-  if (Contents(p.target).find(kMarker) == std::string::npos) {
-    // A SteamVR update put its own, newer driver in place of ours: the backup is older, and
-    // moving it back would undo the update, so it goes instead.
-    RemoveFile(p.backup);
-#ifndef _WIN32
-    fs::remove_all(p.directory / "lh-libs", ec);
-#endif
-    log("SteamVR's own driver was already in place (a SteamVR update put it back)");
-    return;
-  }
-  if (!fs::exists(p.backup, ec))
-    throw std::runtime_error("SteamVR's own driver isn't kept next to openhouse's (" + Utf8(p.backup.filename()) +
-                             "). Verify SteamVR's files in Steam (Properties > Installed Files) to get it back.");
-  CopyOver(p.backup, p.target);
-  RemoveFile(p.backup);
-#ifndef _WIN32
-  fs::remove_all(p.directory / "lh-libs", ec);
-#endif
-  log("Put SteamVR's own driver back");
 }
 
 }  // namespace openhouse::installer

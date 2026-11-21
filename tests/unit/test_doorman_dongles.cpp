@@ -202,6 +202,7 @@ class Doorman : public testing::Test {
   double t = 0;
 
   void SetUp() override {
+    lh::usb::g_doormanInlineWrites = true;   // what was written is checked right after each pass
     fake::Reset();
     configs = fs::temp_directory_path() / ("lh-doorman-dongles-test-" + std::to_string(uint64_t(Now() * 1e6)));
     for (uint32_t id : {kA1, kA2, kB1}) {   // the fake Steam config cache: no config is read over the radio

@@ -117,6 +117,7 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
     hid_set_nonblocking(devs_[size_t(i)], 1);
   }
   dev_ = devs_[0];
+  if (!g_doormanInlineWrites) StartWriter(found.paths[0]);
   {
     std::lock_guard lock(mutex_);
     opened_ = true;
@@ -127,8 +128,46 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
   return true;
 }
 
+bool g_doormanInlineWrites = false;
+
+void DoormanDongle::StartWriter(const std::string& path) {
+  writeDev_ = hid_open_path(path.c_str());   // blocking: the thread waits in hid_write, not the reader
+  if (!writeDev_) return;                    // then Send writes from the reader thread, as before
+  writerStop_ = false;
+  writeFailed_ = false;
+  writer_ = std::thread([this] {
+    for (;;) {
+      std::array<uint8_t, 65> buf;
+      {
+        std::unique_lock lock(writeMutex_);
+        writeCv_.wait(lock, [&] { return writerStop_ || !writes_.empty(); });
+        if (writerStop_) return;
+        buf = writes_.front();
+        writes_.pop_front();
+      }
+      if (hid_write(writeDev_, buf.data(), buf.size()) < 0) { writeFailed_ = true; return; }
+    }
+  });
+}
+
+void DoormanDongle::StopWriter() {
+  if (writer_.joinable()) {
+    {
+      std::lock_guard lock(writeMutex_);
+      writerStop_ = true;
+    }
+    writeCv_.notify_all();
+    writer_.join();
+  }
+  if (writeDev_) hid_close(writeDev_);
+  writeDev_ = nullptr;
+  std::lock_guard lock(writeMutex_);
+  writes_.clear();
+}
+
 void DoormanDongle::Drop() {
   if (!dev_) return;
+  StopWriter();
   // Each slot is forgotten as when its device turns off: plugged back in, the dongle's devices are
   // identified and attached again. Keeping the serial meant nothing re-attached them (listed in
   // SteamVR, never tracked).
@@ -171,9 +210,17 @@ void DoormanDongle::Send(uint8_t cmd, const uint8_t* args, size_t n) {
   // commands 1..127, the tools (dongle manager, installer, scripts) 128..255, so a reply to one
   // is never taken for the other's (the manager's slots 6-7 read as the driver's 0-5 dropped them all).
   seq_ = uint8_t(seq_ % 127 + 1);
-  uint8_t buf[65] = {0, cmd, seq_};
-  std::memcpy(buf + 3, args, std::min<size_t>(n, 62));
-  if (hid_write(dev_, buf, sizeof buf) < 0) Drop();
+  std::array<uint8_t, 65> buf{0, cmd, seq_};
+  std::memcpy(buf.data() + 3, args, std::min<size_t>(n, 62));
+  if (writeDev_) {
+    {
+      std::lock_guard lock(writeMutex_);
+      writes_.push_back(buf);
+    }
+    writeCv_.notify_one();
+  } else if (hid_write(dev_, buf.data(), buf.size()) < 0) {
+    Drop();
+  }
 }
 
 void DoormanDongle::Downlink(int slot, const uint8_t* frame, size_t n) {
@@ -184,6 +231,7 @@ void DoormanDongle::Downlink(int slot, const uint8_t* frame, size_t n) {
 
 void DoormanDongle::Pump(double now) {
   if (!dev_) return;   // the transport opens it again when it's listed again
+  if (writeFailed_) { Drop(); return; }   // unplugged: the writer saw it first
   if (now >= nextLive_) {
     nextLive_ = now + 0.25;
     for (int page = 0; page < 2; ++page) {   // 6 slots per reply

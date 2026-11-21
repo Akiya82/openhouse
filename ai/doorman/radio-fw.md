@@ -95,3 +95,9 @@ later). It's polled (`addr_check`), so nothing may block longer than that: the c
 (= `addr_check`) before every coded field. Before that, a coded frame took ~400 us (max 1.15 ms) on the
 Tracker 1.0's nRF51 and its loss was 16-25 % (83 % alone on a 2.15 ms cycle); after, 1.5-9 % and the
 worst lateness is ~70 us. The bit writer also writes a byte at a time (output unchanged, checked bit for bit).
+
+### Test load ('L', 0x6A000020 / 0x0A000011)
+Air op `'L' [kB/s]` (reply `[F0]['L'][kB/s]`): the radio sends filler `'Z'` frames up at that rate, as if
+the main MCU sent more, so a few devices load the radio cycle like many. 0 stops it; not kept across a
+reboot. `doorman/tools/load.py radio SLOT KBPS`.
+

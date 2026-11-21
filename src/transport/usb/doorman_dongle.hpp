@@ -41,6 +41,10 @@ namespace lh::usb {
 
 class ReportDecoder;
 
+// Tests: DoormanDongle writes its commands from the calling thread (no writer thread), so what was
+// written can be checked right after a reader pass.
+extern bool g_doormanInlineWrites;
+
 // The dongle's USB data interfaces: interface 0 carries commands and replies, slot s streams on
 // interface s % kDoormanInterfaces (dongle-fw usb_descriptors.c).
 constexpr int kDoormanInterfaces = 4;
@@ -167,6 +171,19 @@ class DoormanDongle {
 
   hid_device_* dev_ = nullptr;
   std::array<hid_device_*, kDoormanInterfaces> devs_{};   // every interface; dev_ is devs_[0]
+  // Commands go out on a thread of their own, through a second handle on interface 0: a write waits
+  // until the dongle takes it (busy with eight devices, several ms), and written from the reader
+  // thread a config read's stream of commands kept it from reading; the dongle's queues filled and
+  // dropped the config replies themselves, so the read failed and was retried, over and over.
+  hid_device_* writeDev_ = nullptr;
+  std::thread writer_;
+  std::mutex writeMutex_;
+  std::condition_variable writeCv_;
+  std::deque<std::array<uint8_t, 65>> writes_;
+  bool writerStop_ = false;
+  std::atomic<bool> writeFailed_{false};
+  void StartWriter(const std::string& path);
+  void StopWriter();
   double nextOpen_ = 0, nextLive_ = 0, nextStats_ = 0, nextLinkLog_ = 0;
   int statsSlot_ = 0, statsSeq_ = -1;
   int idsSeq_[2] = {-1, -1};    // the slots (0x25) requests in flight

@@ -131,7 +131,12 @@ and `doorman_link.py`. Older two-interface firmware isn't supported.
 | 0x25 | slots `[first]`: 10 B per slot for slots first..first+5 (0 and 6): used, active, id x8. `d[60] = pairing \| (target+1) << 1`. The driver reads it every second: a slot whose id changes (re-paired to another device with no gap) is identified afresh |
 | 0x26 | forget slot (0xFF = all) |
 | 0x27 | channels: mask, loss % per hop channel, joins, net base |
-| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each); bytes 20-21: most bytes waiting for USB since the last read (u16) |
+| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each); bytes 20-21: most bytes waiting for USB since the last read (u16); 22-25: test-load bytes queued (u32) |
+| 0x2B | test load `[slot mask][kB/s]`: filler `'Z'` frames queued for USB on those slots (empty ones too), as if devices sent them. `0 0` stops it. `doorman/tools/load.py dongle` |
+| 0x2C | USB inside radio exchanges `[bits, 0xFF keeps]`: 1 while the POLL goes out, 2 while listening, 4 between decoded frames. Default 3 (4 delays the next POLL: loss ~18%) |
+| 0x2D | timing `[adaptive 0/1, 0xFF keeps]`: reply period, slot, slot budget, exchange avg/max (u32 us), adaptive, max resp, decode avg/max (u32 us at 22/26); counters reset on read |
+| 0x2E | deferred decode `[0/1, 0xFF keeps]` (default 1) |
+| 0x2F | re-poll missed slots in the same cycle `[0/1, 0xFF keeps]`, then re-polls and answered (u32). Default 0 |
 | 0x29 | live `[first]` (6 slots per reply, as 0x25): per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 
@@ -160,3 +165,23 @@ Downlink frames (`0x21` command):
 The **sensor type** (the hardware ID's low byte, e.g. tracker 4, Index 9) decides how openhouse
 decodes OOTX. A stock-LPC device doesn't put it in its config, so the host reads feature 0x05
 (byte 41) over the downlink.
+
+## Dongle firmware 0x0010-0x0018: throughput and latency (measured with six devices)
+
+* **Replies are never crowded out.** A slot's USB queue keeps its last 256 bytes for replies (`P`,
+  `H`, tagged 0xC4, radio-update 0xF0): IMU, light and filler may only fill the rest. With the queue
+  full, config and update replies used to be dropped like data; config reads then failed and were
+  retried for minutes (eight 3.0 trackers on one dongle), and air updates stalled.
+* **USB serviced during radio exchanges** (while the POLL goes out and while listening): each interface
+  went from ~470 to 1021 reports/s (the full-speed limit) with the link busy. Measured with the link
+  off: 1021/s, so the radio code had been starving USB.
+* **Answers decoded off the critical path**: kept per slot and decoded one frame at a time while the
+  radio receives the next answer (and in idle time); a slot's answer is always finished before it's
+  polled again. Exchanges 912 -> ~620 us.
+* **Adaptive slots**: each slot's share is the 90th percentile of the last 32 cycles' exchanges plus
+  120 us, bounded by the old worst case (450 + 4 x max resp). Six devices: ~160 -> 164-168 polls/s.
+* **Load tests** (`doorman/tools/load.py`): dongle filler (0x2B) loads queues, USB and the host;
+  radio filler (air op `'L'` [kB/s], radio 0x6A000020 / 0x0A000011) loads the air. With six devices
+  at ~23 kB/s each (air saturated) plus 20 kB/s on slots 6-7, all six read their configs in 0.55-1.3 s
+  with 0 drops; dongle 0x000D under the same load: 19 failed config reads in a minute, 170-300 drops/s.
+

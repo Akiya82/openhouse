@@ -755,6 +755,20 @@ static void drops_report(void)
   uplink_push(f, sizeof f);
 }
 
+/* Test load (air op 'L' [kB/s]): filler 'Z' frames sent up as if the main MCU sent more, so a few
+   devices load the radio cycle like many. 0 = off (the default; not kept across a reboot). */
+static uint8_t load_kbps;
+static uint32_t load_at, load_budget;
+static void load_tick(void)
+{
+  const uint32_t now = now_us(), dt = now - load_at;
+  load_at = now;
+  if (!link_up || !load_kbps || dt > 100000u) return;
+  load_budget += (uint32_t)load_kbps * dt / 1000u;             /* kB/s x us / 1000 = bytes */
+  static uint8_t z[40] = { 'Z' };
+  while (load_budget >= sizeof z) { load_budget -= sizeof z; z[1]++; uplink_push(z, sizeof z); }
+}
+
 static void set_addr(uint32_t base, uint8_t prefix)
 {
   NRF_RADIO->BASE0 = base; NRF_RADIO->PREFIX0 = prefix;
@@ -905,6 +919,11 @@ static void air_update(const uint8_t *f, uint8_t n)
 #else
     air_reply(x, 36); return;
 #endif
+  }
+  case 'L': {                                              /* test load: [kB/s], 0 off */
+    load_kbps = n > 2 ? f[2] : 0; load_budget = 0;
+    uint8_t x[3] = { DML_AIR_UPD, 'L', load_kbps };
+    air_reply(x, 3); return;
   }
   case 'T': {                                              /* link timing (lt) */
     uint8_t x[40] = { DML_AIR_UPD, 'T' };
@@ -1063,6 +1082,7 @@ int main(void)
 #endif
     if (pair_mode && now_us() - pair_since > 35000000u) pair_end();   /* the main MCU gives up at 30 s */
     drops_report();
+    load_tick();
     if (air_reset_at && (int32_t)(now_us() - air_reset_at) > 0) reset_now();
     if (boot_rec.quick_boots && now_us() - t0 > 5000000) boot_stable();
 #ifdef DML_IDX

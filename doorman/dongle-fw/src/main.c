@@ -146,15 +146,28 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t id, hid_report_type_t t, const u
     if (id == 0 && n) handle(buf, n);
 }
 
+/* The next report for an interface: on interface 0 a reply first; slot s's stream
+   [0x80][slot][n][bytes] on interface s % DONGLE_NIF. */
+static void usb_send_next(uint8_t itf)
+{
+    static uint8_t rep[DONGLE_NIF][64];
+    if (!tud_mounted() || !tud_hid_n_ready(itf)) return;
+    if (itf == 0 && pending_reply) { tud_hid_n_report(0, 0, reply, 64); usb_tx++; pending_reply = 0; return; }
+    if (link_stream_pop(rep[itf], itf)) tud_hid_n_report(itf, 0, rep[itf], 64);
+}
+/* A report went out: queue the next one right away. Queued only from the main loop, the endpoint sat
+   empty when the host came back for it the next millisecond, and every interface topped out at one
+   report per 2 ms (~30 kB/s): two busy devices on one filled the dongle's queue and lost data. */
+void tud_hid_report_complete_cb(uint8_t itf, uint8_t const *report, uint16_t len)
+{
+    (void)report; (void)len;
+    if (itf < DONGLE_NIF) usb_send_next(itf);
+}
+
 static void usb_service(void)              /* also called while the link waits inside a cycle */
 {
     tud_task();
-    if (!tud_mounted()) return;
-    /* replies first on interface 0; slot s's stream [0x80][slot][n][bytes] on interface s % DONGLE_NIF */
-    if (pending_reply && tud_hid_n_ready(0)) { tud_hid_n_report(0, 0, reply, 64); usb_tx++; pending_reply = 0; }
-    static uint8_t rep[DONGLE_NIF][64];
-    for (int itf = 0; itf < DONGLE_NIF; itf++)
-        if (tud_hid_n_ready(itf) && link_stream_pop(rep[itf], itf)) tud_hid_n_report(itf, 0, rep[itf], 64);
+    for (uint8_t itf = 0; itf < DONGLE_NIF; itf++) usb_send_next(itf);
 }
 
 int main(void) {

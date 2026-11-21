@@ -24,12 +24,15 @@ namespace lh::usb {
 
 // A message for the sink (the session: its event log, the driver's log, the viewer).
 void UsbTransport::Log(LogLevel level, const char* format, ...) {
-  char text[512];
-  va_list args;
+  // Any length: an eight-slot link line runs past 512 characters (slot 7 was cut off).
+  va_list args, again;
   va_start(args, format);
-  std::vsnprintf(text, sizeof text, format, args);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
   va_end(args);
-  std::string line = text;
+  std::string line(size_t(std::max(n, 0)), '\0');
+  if (n > 0) std::vsnprintf(line.data(), line.size() + 1, format, again);
+  va_end(again);
   while (!line.empty() && line.back() == '\n') line.pop_back();
   sink_->OnTransportLog(level, line);
 }

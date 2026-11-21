@@ -414,24 +414,21 @@ class Device : public ITrackedDeviceServerDriver {
     if (pose.valid) {
       held_ = p;
       haveHeld_ = true;
-    } else if (p.deviceIsConnected && !IsHmd()) {
-      // Lost: reported lost, as SteamVR's own driver does, so the host hides it until light
-      // finds it again (a held pose reported valid looked tracked to apps). The headset is
-      // still held: a lost headset would show SteamVR's grey tracking-lost screen.
-      p.result = TrackingResult_Running_OutOfRange;
-      p.poseIsValid = false;
-      p.poseTimeOffset = 0;
     } else if (haveHeld_ && p.deviceIsConnected) {
-      // Lost headset: held where it was last seen until light finds it again. liblh's lost
-      // record is an identity pose, which a host shows at the origin.
+      // Lost: held where it was last seen until light finds it again, reported out of range.
+      // liblh's lost record is an identity pose, which a host would show at the origin.
+      // SteamVR hides a controller or tracker whose pose is invalid, as with its own driver;
+      // Monado and WiVRn show an invalid pose at the origin instead, so there it stays valid.
+      // The headset is always held: SteamVR shows its grey tracking-lost screen otherwise.
+      static const bool hostHides = HostName().rfind("vrserver", 0) == 0;
       p = held_;
       for (int i = 0; i < 3; ++i) p.vecVelocity[i] = p.vecAngularVelocity[i] = p.vecAcceleration[i] = p.vecAngularAcceleration[i] = 0;
       p.qWorldFromDriverRotation = {rawRotation.w(), rawRotation.x(), rawRotation.y(), rawRotation.z()};
       for (int i = 0; i < 3; ++i) p.vecWorldFromDriverTranslation[i] = rawFromWorld_.translation()[i];
       p.poseTimeOffset = 0;
       p.result = TrackingResult_Running_OutOfRange;
-      p.poseIsValid = true;
-      held = true;
+      p.poseIsValid = IsHmd() || !hostHides;
+      held = p.poseIsValid;
     } else if (!p.deviceIsConnected) {
       haveHeld_ = false;  // switched off: it comes back wherever it is
     }

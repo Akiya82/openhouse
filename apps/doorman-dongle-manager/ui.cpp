@@ -417,9 +417,6 @@ void Ui::Sidebar(float height) {
   ImGui::TextUnformatted(open ? "Dongle connected" : "No dongle");
   Dot(driver_.Connected() ? kGood : kOff);
   ImGui::TextUnformatted(driver_.Connected() ? "Driver running" : "Driver not running");
-  Tip(driver_.Connected() ? "Device names come from the running openhouse driver"
-                          : "The openhouse driver isn't running: names come from what this app remembers, "
-                            "or from reading the device (Identify)");
   ImGui::EndChild();
 }
 
@@ -432,10 +429,10 @@ void Ui::StatusBar() {
 
 void Ui::NoDongle() {
   Title("No Doorman Dongle");
-  ImGui::TextWrapped("Plug in a Doorman Dongle. It shows up here within a couple of seconds.");
+  ImGui::TextWrapped("Plug in a Doorman Dongle");
 #ifndef _WIN32
   ImGui::Spacing();
-  ImGui::TextDisabled("On Linux it needs access to /dev/hidraw*: the openhouse udev rule gives it (see the README).");
+  ImGui::TextDisabled("Needs the openhouse udev rule (see the README)");
 #endif
 }
 
@@ -481,7 +478,7 @@ void Ui::PairBar(const DongleState& d) {
     ImGui::BeginDisabled();
     BigButton("All slots paired", ImGui::GetFontSize() * 12);
     ImGui::EndDisabled();
-    Tip("Pair into a slot from its card: that replaces the device on it");
+    Tip("Pairing from a slot's card replaces its device");
   }
 }
 
@@ -612,10 +609,10 @@ void Ui::SlotCard(const DongleState& d, int i, float width) {
   ImGui::BeginDisabled(d.pairing);
   if (BigButton("Replace", bw)) { pendingSlot_ = i; ImGui::OpenPopup("Replace?"); }
   ImGui::EndDisabled();
-  Tip("Pair another device into this slot: the one on it now is forgotten");
+  Tip("Replaces the device in this slot");
   ImGui::SameLine();
   if (TintButton("Unpair", kBad, bw)) { pendingSlot_ = i; ImGui::OpenPopup("Unpair?"); }
-  Tip("Forget this device: it can't connect until it's paired again");
+  
   ImGui::SameLine();
   if (BigButton("More...", bw)) {
     pendingSlot_ = i;
@@ -635,7 +632,7 @@ void Ui::SlotCard(const DongleState& d, int i, float width) {
       knownDirty_ = true;
       ImGui::CloseCurrentPopup();
     }
-    ImGui::TextDisabled("Enter saves it (empty: no name)");
+    ImGui::TextDisabled("Enter to save");
     ImGui::EndPopup();
   }
   char text[160];
@@ -657,7 +654,7 @@ void Ui::Slots(const DongleState& d) {
     if (TintButton("Unpair all", kBad, ImGui::GetFontSize() * 10)) ImGui::OpenPopup("Unpair all?");
     ImGui::EndDisabled();
   }
-  if (Confirm("Unpair all?", "Forget every device paired to this dongle? They can't connect until they're paired again."))
+  if (Confirm("Unpair all?", "Every device will need to be paired again"))
     Current()->Forget(-1, Report("Unpair all"));
   ImGui::Spacing();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -756,8 +753,7 @@ void Ui::Radio(const DongleState& d) {
 
 void Ui::Channels(const DongleState& d) {
   Title("Channels", lh::ui::Icon::Channels);
-  ImGui::TextWrapped("The radio hops over 16 channels and leaves out the ones losing too much (Wi-Fi, other "
-                     "2.4 GHz gear). The bars are each channel's loss; grey ones are off for now.");
+  ImGui::TextWrapped("Loss per channel. Grey ones are skipped for now");
   ImGui::Spacing();
   // hop channels: loss bars
   {
@@ -794,11 +790,11 @@ void Ui::Channels(const DongleState& d) {
   ImGui::Spacing();
   ImGui::SeparatorText("2.4 GHz band");
   if (BigButton("Scan the band", ImGui::GetFontSize() * 12)) Current()->Scan(Report("Scan"));
-  Tip("Listens on every 1 MHz channel from 2400 to 2480: the link pauses for a moment");
+  Tip("Devices pause for a moment");
   ImGui::SameLine();
   ImGui::AlignTextToFramePadding();
   if (d.scan.empty()) ImGui::TextDisabled("Not scanned yet");
-  else ImGui::TextDisabled("Scanned %.0f s ago. Taller is busier; Wi-Fi channels 1, 6 and 11 are marked", Now() - d.scanTime);
+  else ImGui::TextDisabled("Scanned %.0f s ago. Wi-Fi channels 1, 6 and 11 are marked", Now() - d.scanTime);
   if (!d.scan.empty()) {
     const float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFontSize() * 9;
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -835,7 +831,7 @@ void Ui::Channels(const DongleState& d) {
       dl->AddText(ImVec2(p.x + mhz * bw, base + 10), U32(kOff), t);
     }
     ImGui::Dummy(ImVec2(w, h + ImGui::GetTextLineHeight()));
-    ImGui::TextDisabled("Blue marks: the channels the radio hops over");
+    ImGui::TextDisabled("Blue: channels in use");
   }
 }
 
@@ -869,21 +865,19 @@ void Ui::Firmware(const DongleState& d) {
   }
   ImGui::Spacing();
   if (BigButton("Restart dongle", ImGui::GetFontSize() * 12)) ImGui::OpenPopup("Restart?");
-  Tip("The devices reconnect by themselves in a second or two");
   if (d.crashCount) {
     ImGui::SameLine();
     if (BigButton("Clear crash record", ImGui::GetFontSize() * 12)) dongle->ClearCrash(Report("Clear crash record"));
   }
-  if (Confirm("Restart?", "Restart the dongle? Every device drops for a moment and reconnects.")) dongle->Reset(Report("Restart"));
+  if (Confirm("Restart?", "Every device drops for a moment")) dongle->Reset(Report("Restart"));
 
   ImGui::Spacing();
   ImGui::SeparatorText("Update");
   if (d.NordicDfu())
-    ImGui::TextWrapped("Pick %s. The dongle restarts into its DFU bootloader and the file is sent over USB.",
+    ImGui::TextWrapped("Pick %s",
                        d.board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
   else
-    ImGui::TextWrapped("Pick the .uf2 file for this dongle (%s). The dongle restarts into update mode and shows up "
-                       "as a USB drive; the file is copied onto it and the dongle starts the new firmware by itself.",
+    ImGui::TextWrapped("Pick %s",
                        d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
   ImGui::InputTextWithHint("##uf2", d.NordicDfu() ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
@@ -892,7 +886,7 @@ void Ui::Firmware(const DongleState& d) {
   ImGui::BeginDisabled(!exists || updating_);
   if (TintButton(updating_ ? "Updating..." : "Update", kAccent, -1)) ImGui::OpenPopup("Update?");
   ImGui::EndDisabled();
-  if (Confirm("Update?", "Update the dongle's firmware? Every device drops until it's done (about 10 s)."))
+  if (Confirm("Update?", "Every device drops for about 10 s"))
     StartUpdate(dongle, firmwarePath_, d.NordicDfu());
   {
     std::lock_guard lock(updateMutex_);
@@ -969,14 +963,9 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bo
 
 void Ui::About() {
   Title("About", lh::ui::Icon::About);
-  ImGui::TextWrapped("Doorman Dongle Manager: the openhouse wireless dongle's slots, pairing and radio.");
+  ImGui::TextWrapped("Doorman Dongle Manager");
   ImGui::Spacing();
-  ImGui::TextWrapped("A dongle has eight slots, one device each. Pairing puts a device into a slot; it then "
-                     "reconnects to that slot by itself whenever it's on. SteamVR's own pairing page also pairs "
-                     "into Doorman Dongles while the openhouse driver runs: it picks a free slot, or one whose "
-                     "device is off.");
-  ImGui::Spacing();
-  ImGui::TextWrapped("The driver doesn't need to be stopped to use this: both can talk to the dongle.");
+  ImGui::TextWrapped("Eight slots, one device each. SteamVR's pairing page works too while the openhouse driver runs");
   ImGui::Spacing();
   ImGui::TextDisabled("openhouse %s", lh::kVersion);
   if (ImGui::Button("Release page")) overlay::UpdateCheck::OpenReleasesPage();

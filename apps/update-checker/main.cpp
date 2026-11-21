@@ -47,9 +47,8 @@ constexpr const char* kMarker = "liblh session started";
 
 const char* kTitle = "openhouse";
 const char* kText =
-    "A SteamVR update replaced the openhouse driver with SteamVR's own lighthouse driver.\n\n"
-    "SteamVR's driver is being used right now. To get openhouse back, close SteamVR and run "
-    "the openhouse installer again.";
+    "A SteamVR update replaced the openhouse driver.\n\n"
+    "Close SteamVR and run the openhouse installer again.";
 
 #ifdef _WIN32
 void Log(const std::string&) {}
@@ -188,7 +187,7 @@ void CheckForUpdate() {
   Log("update check: latest " + tag + ", this is " + lh::kVersion +
       (state == lh::UpdateState::Newer ? ": newer" : state == lh::UpdateState::Unknown ? ": can't compare this build" : ": up to date"));
   if (state != lh::UpdateState::Newer) return;
-  ShowUpdate("There's a new version of openhouse available! (" + tag + ", you have v" + lh::kVersion +
+  ShowUpdate("openhouse " + tag + " is available (you have v" + std::string(lh::kVersion) +
              ")\n\nClose SteamVR before installing it.");
 }
 }  // namespace

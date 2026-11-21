@@ -69,7 +69,7 @@ void DrawConnection(const TelemetryClient& client) {
   } else {
     ImGui::TextColored(kBad, "Not connected");
     ImGui::SameLine();
-    ImGui::TextDisabled("Start SteamVR (or Monado) with the openhouse driver; retrying on port %d", client.Port());
+    ImGui::TextDisabled("Waiting for the driver (port %d)", client.Port());
   }
 }
 
@@ -85,7 +85,7 @@ void DrawRoom(const State& s) {
   }
   if (visible == 0) {
     ImGui::TextColored(kWarn, "No base stations seen yet");
-    ImGui::TextDisabled("Turn the base stations on and point a tracked device at them.");
+    ImGui::TextDisabled("No base stations seen yet");
     return;
   }
   if (s.room.settled) {
@@ -97,8 +97,7 @@ void DrawRoom(const State& s) {
     if (worst) {
       ImGui::SameLine();
       ImGui::TextDisabled("- waiting for %s", BaseLabel(s, worst->serial).c_str());
-      ImGui::TextWrapped("Move a controller or tracker where that base station and another one both see it, "
-                         "slowly, for a minute.");
+      ImGui::TextWrapped("Move a device slowly where it and another base station both see it");
     }
   }
 }
@@ -208,7 +207,7 @@ void DrawBases(const State& s, Detail detail) {
 }
 
 void DrawReceivers(const State& s) {
-  if (s.receivers.empty()) { ImGui::TextDisabled("No wireless receivers (dongles) plugged in"); return; }
+  if (s.receivers.empty()) { ImGui::TextDisabled("No dongles plugged in"); return; }
   for (const auto& [serial, connected] : s.receivers)
     ImGui::BulletText("%s: %s", serial.c_str(), connected.empty() ? "no device paired/connected" : connected.c_str());
 }

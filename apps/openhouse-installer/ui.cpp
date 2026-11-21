@@ -44,7 +44,7 @@ void Wrapped(const char* text) {
 }
 
 void Step(int n, const char* text) {
-  ImGui::TextColored(kWarn, "%d.", n);
+  ImGui::TextColored(kWarn, "%d", n);
   ImGui::SameLine();
   Wrapped(text);
 }
@@ -285,7 +285,7 @@ bool UnknownDevice(uint32_t hwid, RadioFamily family, const std::string& key, st
   ImGui::Indent();
   ImGui::TextColored(kWarn, "Unknown device (ID %08X). Device type: %s", hwid,
                      family == RadioFamily::Tracker10 ? "older hardware (VIVE 1.0, neo)" : "newer hardware (wm3)");
-  ImGui::TextColored(kWarn, "The firmware might not work on it. Please report the device ID on GitHub.");
+  ImGui::TextColored(kWarn, "It might not work. Report the ID on GitHub");
   if (ImGui::SmallButton(("Report on GitHub##" + key).c_str())) {
     char url[160];
     std::snprintf(url, sizeof url, "https://github.com/YusufOzmen01/openhouse/issues/new?title=New%%20device%%20ID%%3A%%20%08X", hwid);
@@ -565,7 +565,7 @@ void Ui::SteamVRPrompt() {
   ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 44, 0));
   if (!ImGui::BeginPopupModal("SteamVR folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
   if (steamvr_.root.empty()) {
-    ImGui::TextColored(kWarn, "SteamVR couldn't be found. Please pick the folder SteamVR is installed in.");
+    ImGui::TextColored(kWarn, "SteamVR not found. Pick its folder");
   }
   ImGui::TextColored(kMuted, "Usually Steam/steamapps/common/SteamVR");
   ImGui::Spacing();
@@ -605,7 +605,7 @@ bool Ui::DeviceAccess() {
     accessChecked_ = Now();
   }
   if (haveAccess_) return true;
-  ImGui::TextColored(kWarn, "Device access isn't set up.");
+  ImGui::TextColored(kWarn, "Device access isn't set up");
   ImGui::BeginDisabled(closeJob_.Running());
   if (BigButton(closeJob_.Running() ? "Setting up..." : "Set up device access")) {
     closeJob_.Start([](Job& j) {
@@ -694,12 +694,11 @@ void Ui::InstallPage(bool install) {
   if (job_.Finished()) {
     if (job_.Ok()) {
       ImGui::PushFont(g_title);
-      ImGui::TextColored(kGood, "%s", install ? (std::string("openhouse has been ") + kDone[a] + ".").c_str() : "openhouse has been uninstalled.");
+      ImGui::TextColored(kGood, "%s", install ? (std::string("openhouse has been ") + kDone[a]).c_str() : "openhouse has been uninstalled");
       ImGui::PopFont();
-      ImGui::TextUnformatted(install ? "You can start SteamVR now." : "SteamVR's own driver has been restored.");
     } else {
       ImGui::PushFont(g_title);
-      ImGui::TextColored(kBad, "%s", install ? (std::string(kActions[a]) + " failed.").c_str() : "Uninstall failed.");
+      ImGui::TextColored(kBad, "%s", install ? (std::string(kActions[a]) + " failed").c_str() : "Uninstall failed");
       ImGui::PopFont();
       ImGui::TextUnformatted(job_.Error().c_str());
     }
@@ -718,23 +717,23 @@ void Ui::InstallPage(bool install) {
   }
   if (install) {
     if (!PackageHasDriver()) {
-      ImGui::TextColored(kBad, "Driver not found next to the installer. Extract the whole package first.");
+      ImGui::TextColored(kBad, "Driver not found next to the installer. Extract the whole package first");
       Back(Page::Home);
       return;
     }
     const std::string installed = status_.version.empty() ? "1.0.3 or older" : "v" + status_.version;
-    if (a == 1) ImGui::Text("Updates openhouse %s to v%s.", installed.c_str(), lh::kVersion);
-    else if (a == 2) ImGui::Text("openhouse %s is installed. Reinstalls v%s.", installed.c_str(), lh::kVersion);
-    else ImGui::Text("Installs openhouse v%s.", lh::kVersion);
+    if (a == 1) ImGui::Text("Updates openhouse %s to v%s", installed.c_str(), lh::kVersion);
+    else if (a == 2) ImGui::Text("openhouse %s is installed. Reinstalls v%s", installed.c_str(), lh::kVersion);
+    else ImGui::Text("Installs openhouse v%s", lh::kVersion);
 #ifndef _WIN32
     ImGui::Spacing();
     ImGui::Checkbox("Update check for Monado / WiVRn", &monadoCheck_);
 #endif
   } else {
     if (!status_.openhouse) {
-      ImGui::TextColored(kMuted, "openhouse isn't installed.");
+      ImGui::TextColored(kMuted, "openhouse isn't installed");
     }
-    ImGui::TextUnformatted("Restores SteamVR's own driver. Your room and settings are kept.");
+    ImGui::TextUnformatted("Your room and settings are kept");
   }
   ImGui::Spacing();
   if (!RuntimesClosed()) { Back(Page::Home); return; }
@@ -970,9 +969,9 @@ void Ui::BaseStationPage(bool restore) {
       ImGui::Spacing();
       if (job_.Ok()) {
         ImGui::PushFont(g_title);
-        ImGui::TextColored(kGood, alreadyInstalled_ ? "This firmware is already installed." : restore ? "Stock firmware has been restored." : "lhbs has been installed.");
+        ImGui::TextColored(kGood, alreadyInstalled_ ? "This firmware is already installed" : restore ? "Stock firmware has been restored" : "lhbs has been installed");
         ImGui::PopFont();
-        ImGui::TextUnformatted("Unplug the USB cable and power cycle the base station.");
+        ImGui::TextUnformatted("Unplug the USB cable and power cycle the base station");
       } else {
         ImGui::TextColored(kBad, "Failed: %s", job_.Error().c_str());
       }
@@ -1111,7 +1110,7 @@ void Ui::DonglePage() {
       ImGui::Spacing();
       if (job_.Ok()) {
         ImGui::PushFont(g_title);
-        ImGui::TextColored(kGood, "Flashed!");
+        ImGui::TextColored(kGood, "Flashed");
         ImGui::PopFont();
       } else {
         ImGui::TextColored(kBad, "Failed: %s", job_.Error().c_str());
@@ -1147,9 +1146,9 @@ void Ui::RadioWiredPage(bool restore) {
     ImGui::Spacing();
     if (job_.Ok()) {
       ImGui::PushFont(g_title);
-      ImGui::TextColored(kGood, "Flashed!");
+      ImGui::TextColored(kGood, "Flashed");
       ImGui::PopFont();
-      ImGui::TextUnformatted("Unplug the devices and turn them on.");
+      ImGui::TextUnformatted("Unplug the devices and turn them on");
     } else {
       ImGui::TextColored(kBad, "Failed: %s", job_.Error().c_str());
     }
@@ -1159,7 +1158,7 @@ void Ui::RadioWiredPage(bool restore) {
     if (ImGui::Button("< Home")) Go(Page::Home);
     return;
   }
-  ImGui::TextUnformatted("Plug your devices in with a USB cable and select the ones to flash.");
+  ImGui::TextUnformatted("Plug your devices in with a USB cable and pick the ones to flash");
   if (!RuntimesClosed() || !DeviceAccess()) { Back(back); return; }
   const auto devices = wired_.Value();
   ImGui::Spacing();
@@ -1251,9 +1250,9 @@ void Ui::RadioWirelessPage(bool restore) {
     ImGui::Spacing();
     if (job_.Ok()) {
       ImGui::PushFont(g_title);
-      ImGui::TextColored(kGood, "Flashed!");
+      ImGui::TextColored(kGood, "Flashed");
       ImGui::PopFont();
-      ImGui::TextUnformatted(restore ? "Turn the devices back on. Pair them to their original dongle again." : "Turn the devices back on. You can pair them to a Doorman Dongle now.");
+      ImGui::TextUnformatted(restore ? "Turn the devices back on. Pair them to their original dongle again" : "Turn the devices back on. You can pair them to a Doorman Dongle now");
     } else {
       ImGui::TextColored(kBad, "Failed: %s", job_.Error().c_str());
     }
@@ -1263,7 +1262,7 @@ void Ui::RadioWirelessPage(bool restore) {
     if (ImGui::Button("< Home")) Go(Page::Home);
     return;
   }
-  ImGui::TextUnformatted("Turn on your devices. If they aren't paired, pair them to one of your dongles first.");
+  ImGui::TextUnformatted("Turn your devices on. They need to be paired to a dongle");
   if (!RuntimesClosed() || !DeviceAccess()) { Back(back); return; }
   const auto devices = wireless_.Value();
   ImGui::Spacing();

@@ -332,7 +332,6 @@ void Ui::RoomActions() {
   if (recording) ImGui::PopStyleColor(2);
   Tip(recording ? "Stops and saves a bug report with the recording" : "Records the raw tracking data for a bug report");
   if (BigButton("Reset room", -1)) ImGui::OpenPopup("Reset the room?");
-  Tip("Forgets where the base stations are and learns them again");
   ImGui::EndDisabled();
   if (Confirm("Reset the room?", "All base stations will be learned again.")) Send(R"({"cmd":"resetRoom"})", "Reset room");
 }
@@ -348,7 +347,7 @@ void Ui::CopyServerLog() {
     logCopyResult_ = "vrserver.txt not found";
   } else {
     ImGui::SetClipboardText(text.c_str());
-    logCopyResult_ = "vrserver.txt contents copied to clipboard!";
+    logCopyResult_ = "Copied vrserver.txt";
   }
   showLogCopy_ = true;
 }
@@ -397,10 +396,10 @@ void Ui::StatusBar() {
   bool any = false;
   if (update_.Done() && update_.Newer()) {
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(kAccent, "An update for openhouse (%s) is available! You can update from this button", update_.Latest().c_str());
+    ImGui::TextColored(kAccent, "Update available: %s", update_.Latest().c_str());
     ImGui::SameLine();
     if (ImGui::Button("Update")) update_.OpenLatestRelease();
-    Tip("Opens the release page. Close SteamVR before installing it");
+    Tip("Close SteamVR before installing");
     any = true;
   }
   if (!toast_.empty() && now_ < toastUntil_) {
@@ -525,7 +524,6 @@ void Ui::Overview() {
 
   ImGui::Spacing();
   if (BigButton("Copy vrserver logs")) CopyServerLog();
-  Tip("Copies SteamVR's vrserver.txt, to paste into a bug report or a message");
 }
 
 void Ui::Devices() {
@@ -584,17 +582,15 @@ void Ui::Devices() {
   const bool canBuzz = d->role != "hmd" && d->connected;
   ImGui::BeginDisabled(!canBuzz);
   if (BigButton("Vibrate")) Send(json{{"cmd", "identify"}, {"serial", d->serial}}.dump(), "Identify " + d->serial);
-  Tip("Buzzes the device so you can tell which one it is");
   ImGui::SameLine();
   if (DangerButton("Power off")) ImGui::OpenPopup("Power off?");
-  Tip("Turns the device off");
   ImGui::EndDisabled();
   if (Confirm("Power off?", ("Turn " + d->serial + " off?").c_str()))
     Send(json{{"cmd", "powerOff"}, {"serial", d->serial}}.dump(), "Power off " + d->serial);
   ImGui::SameLine();
   bool enabled = d->enabled;
   const bool changed = ImGui::Checkbox("Enabled", &enabled);
-  Tip("Off: the device stays connected but isn't tracked");
+  Tip("Not tracked while off");
   if (changed)
     Send(json{{"cmd", "enable"}, {"serial", d->serial}, {"enabled", enabled}}.dump(), (enabled ? "Enable " : "Disable ") + d->serial);
   ImGui::EndChild();
@@ -679,7 +675,7 @@ void Ui::Dongles() {
     }
     ImGui::TableNextColumn();
     if (ImGui::Button("Pair")) Send(json{{"cmd", "pair"}, {"receiver", serial}, {"seconds", 30}}.dump(), "Pairing on " + serial);
-    Tip("Pairing mode for 30 s. Hold the device's power button until it blinks");
+    Tip("Hold the device's power button until it blinks");
     ImGui::PopID();
   }
   ImGui::EndTable();
@@ -718,7 +714,7 @@ void Ui::Map() {
   }
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !available) {
-    if (steamvr) ImGui::SetTooltip("Not available under SteamVR, please use Room Setup or OVR Advanced Settings to adjust the floor level!");
+    if (steamvr) ImGui::SetTooltip("Use SteamVR's Room Setup instead");
     else if (client_.Connected()) ImGui::SetTooltip("The room isn't ready yet");
   }
   FloorCalibration();
@@ -729,7 +725,7 @@ void Ui::FloorCalibration() {
   if (!ImGui::IsPopupOpen("Calibrate floor")) ImGui::OpenPopup("Calibrate floor");
   if (ImGui::BeginPopupModal("Calibrate floor", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
     const int left = std::max(0, int(std::ceil(floorAt_ - now_)));
-    ImGui::TextUnformatted("Put your controllers down on the floor.");
+    ImGui::TextUnformatted("Put your controllers on the floor");
     ImGui::PushFont(g_huge);
     ImGui::Text("%d", left);
     ImGui::PopFont();
@@ -769,21 +765,21 @@ void Ui::SettingsPage() {
   ImGui::SeparatorText("Output");
   slider("positionSmoothingMs", "Position smoothing", "Higher is steadier, lower reacts faster");
   slider("rotationSmoothingMs", "Rotation smoothing", "Higher is steadier, lower reacts faster");
-  toggle("predictWithAcceleration", "Acceleration prediction", "Uses acceleration to predict motion. Less lag on fast moves");
+  toggle("predictWithAcceleration", "Acceleration prediction", "Less lag on fast moves");
   ImGui::SeparatorText("Mixed basestations (experimental)");
-  toggle("mixedLight", "Enabled", "Track with 1.0 and 2.0 base stations at the same time");
+  toggle("mixedLight", "Enabled");
   ImGui::BeginDisabled(!st.value("mixedLight", false));
   ImGui::Indent();
-  toggle("mixedLightControllers", "Controllers use both kinds", "Controllers use 1.0 and 2.0 light");
-  toggle("mixedLightTrackers", "Trackers use both kinds", "Trackers use 1.0 and 2.0 light");
-  toggle("mixedLightScout", "Headset times the 2.0 stations", "The headset keeps the 2.0 timing. Fewer blips");
+  toggle("mixedLightControllers", "Controllers use both kinds");
+  toggle("mixedLightTrackers", "Trackers use both kinds");
+  toggle("mixedLightScout", "Headset times the 2.0 stations", "Fewer blips");
   toggle("mixedLightRotorReference", "Rotor reference", "The headset measures the 2.0 rotor wobble for the other devices");
   toggle("mixedLightPreferLh2", "1.0 as fallback only", "Use 1.0 light only when 2.0 doesn't see a device well");
   ImGui::Unindent();
   ImGui::EndDisabled();
   ImGui::SeparatorText("Room");
   ImGui::BeginDisabled(!steamvr);
-  toggle("useSteamVRRooms", "Use SteamVR's rooms", "Uses SteamVR's Room Setup and its rooms. Restart SteamVR after changing it");
+  toggle("useSteamVRRooms", "Use SteamVR's rooms", "Restart SteamVR after changing it");
   ImGui::EndDisabled();
 }
 

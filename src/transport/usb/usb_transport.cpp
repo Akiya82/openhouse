@@ -863,7 +863,14 @@ void UsbTransport::Run() {
         capture_.Close();
         if (!path->empty()) {
           if (!capture_.Open(*path)) Log(LogLevel::Error, "cannot open capture %s\n", path->c_str());
-          else for (const auto& o : open_) capture_.WriteEndpoint(o.info);
+          else {
+            for (const auto& o : open_) capture_.WriteEndpoint(o.info);
+            // Doorman Dongle devices too: they wrote theirs when they attached, before this
+            // file existed, and without them every report of theirs in it was unreadable (a
+            // recording started mid-session had no Doorman devices at all).
+            for (const auto& dongle : DoormanDongles())
+              for (const auto& e : dongle->Endpoints()) capture_.WriteEndpoint(e);
+          }
         }
       }
     }

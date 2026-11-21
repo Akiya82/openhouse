@@ -583,6 +583,20 @@ static void spis_poll(void)
   addr_check();
 }
 
+/* A reply queued while the bus is idle: take the semaphore and load it now, so the reply line (ATTN)
+   rises at once, like stock (the tail of its queue function, 0x868c: ACQUIRE when SEMSTAT is free,
+   load, RELEASE). Without it a reply waited for the main MCU's next transfer. That is soon while the
+   main MCU streams, but a 3.0 tracker in pairing mode sends nothing and waits for the reply line: its
+   0x52 sat unread, so its pairing never completed (LED blinking blue until its pairing timed out). */
+static void spis_kick(void)
+{
+#ifdef DML_IDX                     /* only the nRF52 side has the reply line; the Tracker 1.0 is unchanged */
+  /* SEMSTAT 0: free. Taken by a transfer, or by us (acquire pending), it isn't: no second kick. */
+  if (tx_loaded || !rq_used() || NRF_SPIS1->SEMSTAT != 0) return;
+  NRF_SPIS1->TASKS_ACQUIRE = 1;   /* spis_poll() takes the ACQUIRED (no END): loads the reply, releases */
+#endif
+}
+
 /* ---------------- radio link v1 (tracker side, see common/doorman_link.h) ---------------- */
 #define UQ_BYTES 1024                  /* uplink frames from the LPC, [len][frame] */
 static uint8_t uq[UQ_BYTES];
@@ -1067,6 +1081,7 @@ int main(void)
   for (;;) {
     wdt_feed();
     spis_poll();                                           /* updater lives here: always first */
+    spis_kick();                                           /* a reply queued on an idle bus: raise ATTN now */
     if (!link_enabled && !safe_mode && !link_safe_request && !link_sleep && !(stg_open && !stg_air) && now_us() - t0 > 1000000) {
       radio_setup(); link_enabled = 1; go_unjoined();
     }

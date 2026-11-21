@@ -986,6 +986,12 @@ void UsbTransport::Run() {
                 o.disconnected = true;
                 break;
               }
+              // The check's device-info request leaves the device sending no light until its
+              // protocol version is requested again, as it is after the same request when a
+              // device is first set up. Without this an Index controller switched off and on
+              // was located for half a second, then had no optical samples for the rest of the
+              // session, its buttons still working.
+              if (o.wantVersion) RequestVersion(o);
             }
           }
           if (data && o.checkDevice && !o.checkPending && reps[i].t >= o.nextCheck) {

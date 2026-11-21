@@ -11,6 +11,12 @@
   config `device_serial_number`). Config: SteamVR's lighthouse config cache first, else read over the radio
   (0x10/0x11, ~0.3 s) on a worker thread. Sensor type from feature 0x05 byte 41 when the config lacks it.
 * Haptics, power off go down as `P` frames. Captures (`.lhraw`) replay like wired devices.
+* Stream reassembly: a `0x80` report carries whole `[len][frame]` items and discards an unfinished
+  fragment for its slot; consecutive `0x81` reports carry the raw bytes of `[len][frame]` and are
+  buffered in `frag_[slot]` until the first byte (the length) says the frame is complete. A fragment
+  that brings no bytes at all — its start was lost, or a short report — leaves the accumulator empty
+  and is ignored: reading its first byte for the length was an access violation (a 3-byte
+  `[0x81][slot][0]` crashed the driver), covered by `Doorman.AZeroLengthFragmentWithNothingBufferedIsIgnored`.
 
 ## Receivers and pairing
 * The dongle is receiver `OHDG-<usb serial>`, each slot `OHDG-<serial>/<n>` (n 0–5); they show in

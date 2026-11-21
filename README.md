@@ -99,7 +99,7 @@ After installing, just start SteamVR. That's it. The first time, the room takes 
 Install it into SteamVR's folder like above, and start Monado with its `steamvr_lh` driver (`STEAMVR_LH_ENABLE=1`).
 
 ### openhouse-overlay
-`openhouse-overlay` is the main overlay/manager for openhouse. The installer adds it to SteamVR, so it starts with SteamVR and you'll find an openhouse button in the SteamVR dashboard. Under Monado/WiVRn (or without SteamVR running) you can open it as a normal window, it's in the `tools` folder on Linux and the `apps` folder on Windows. It has:
+`openhouse-overlay` is the main overlay/manager for openhouse. The installer adds it to SteamVR, so it starts with SteamVR and you'll find an openhouse button in the SteamVR dashboard. Under Monado/WiVRn (or without SteamVR running) you can open it as a normal window, it's in the package's `apps` folder. It has:
 - **Overview:** the room status, your devices (tracking state, battery, how many basestations see them) and your basestations (placed, learning, locked etc)
 - **Devices:** details for each device, along with the ability to power them off or vibrate them
 - **Base stations:** where each basestation is, how well it's placed and which devices see it
@@ -165,6 +165,7 @@ You can also record without SteamVR with `lhcapture` (close SteamVR first). Whil
 ### Tools and the library
 - `lhcapture` records your devices' raw data.
 - `lhtool session FILE.lhraw` replays a recording through the whole tracking and prints what happened (`--trace OUT.jsonl` for every pose, `--from`/`--to` for a part of it). `lhtool stats` shows per device data rates, `lhtool haptics SERIAL` tests a controller's vibration, `lhtool configs DIR` saves every connected device's config to `DIR`.
+- `openhouse-viewer` shows the running driver's status and log in a window
 - `lhviz` is a 3D viewer that runs its own tracking without SteamVR, mostly for development or testing
 
 All of the tracking is in a C++ library (`liblh`), separate from the SteamVR driver, so you can use it in your own app without SteamVR: `lh::Session` (`include/lh/session.hpp`) opens the devices, tracks them and gives you their poses, inputs and the basestations. The tools above are built on it, so you can look at them to see how the library can be used.

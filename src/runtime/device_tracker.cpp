@@ -24,6 +24,19 @@ constexpr double kOutOfRangeAge = 0.25;                         // 0x1a9bc8 (sta
 // Prior variance (trace) for room-map bases entering a filter. Tuned on the static
 // controller recording: 1e-6 -> 0.34 mm std, 4e-4 -> 0.13 mm, 1e-3 -> 0.10 mm.
 constexpr double kAltPriorVariance = 4e-4;
+// The floor for the other bases' rotation (rad^2) once both bases of the pair are locked in the room
+// (or the origin): 1e-5, 0.1 deg per axis. kAltPriorVariance, the position floor (12 mm per axis), was
+// used for rotation too: 0.66 deg per axis let a weakly lit frame (5-8 sensor rows) explain its
+// mismatch by turning a whole base 1-2 deg, over the alternate-base limit: the frame was refused and
+// the device twitched between bases (a seat under a base: refusals 149 -> 5, jumps > 5 cm 27 -> 2;
+// vrchat-01 in its locked room: refusals 448 -> 72, reacquires 14 -> 4). Still 7x the room's own
+// uncertainty, so the filter keeps refining. A room still being learned keeps the loose floor: its
+// poses aren't sure yet (fastmotionindex, learning its room, went 216 -> 415 jumps > 2 cm with it).
+constexpr double kAltRotFloorLocked = 1e-5;
+double AltRotFloor(const RoomBase* a, const RoomBase* b) {
+  const auto sure = [](const RoomBase* x) { return x && (x->origin || RoomMap::Locked(*x)); };
+  return sure(a) && sure(b) ? kAltRotFloorLocked : kAltPriorVariance;
+}
 constexpr int kRejectStreak = 20;  // ~0.3 s of a base's well-lit frames all rejected
 // Reacquire throttling (not stock). A reacquire is a hard reset, so repeating it every
 // few hundred ms turns one bad stretch into a permanent ping-pong, and the reset cannot
@@ -251,7 +264,7 @@ void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
       uint32_t replaced = 0;
       if (filter_->AddKnownAltBase(frame.baseSerial, altFromPrimary,
                                    std::max(alt->positionVariance + primary->positionVariance, kAltPriorVariance),
-                                   std::max(alt->rotationVariance + primary->rotationVariance, kAltPriorVariance),
+                                   std::max(alt->rotationVariance + primary->rotationVariance, AltRotFloor(alt, primary)),
                                    frame.samples.size() >= 3, &replaced)) {
         char text[128];
         if (replaced)
@@ -573,7 +586,7 @@ void DeviceTracker::SyncRoom() {
       if (apply) disagreeing_[e.serial] = 0;
       if (apply)
         filter_->SetKnownAltBase(e.serial, target, std::max(roomVariance, kAltPriorVariance),
-                                 std::max(p->rotationVariance + a->rotationVariance, kAltPriorVariance));
+                                 std::max(p->rotationVariance + a->rotationVariance, AltRotFloor(p, a)));
     }
   }
   if (!calibrated) return;

@@ -318,6 +318,12 @@ if(LH_BUILD_VIEWER)
       target_link_libraries(lhviz PRIVATE advapi32)
     endif()
     install(TARGETS lhviz RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # openhouse-viewer: the running driver's status and log (telemetry over loopback)
+    add_executable(openhouse-viewer WIN32 apps/openhouse-viewer/main.cpp apps/openhouse-viewer/telemetry_client.cpp
+                   apps/openhouse-viewer/log_view.cpp apps/openhouse-viewer/views.cpp)
+    target_include_directories(openhouse-viewer PRIVATE src)
+    target_link_libraries(openhouse-viewer PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json)
+    install(TARGETS openhouse-viewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # openhouse-overlay: the management app, a SteamVR dashboard overlay or a window. SteamVR's
     # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
     if(OPENVR_INCLUDE_DIR)

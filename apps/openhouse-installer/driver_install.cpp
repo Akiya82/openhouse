@@ -407,11 +407,7 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
   RemoveOldSettingsPage(p);
   RemoveOldUpdateCheck(p, log);
   // The update check (warns when a SteamVR update replaced openhouse) and the overlay.
-#ifdef _WIN32
   const fs::path tools = here / "apps";
-#else
-  const fs::path tools = here / "tools";
-#endif
   fs::create_directories(p.data, ec);
   const fs::path check = tools / (std::string("update-checker") + kExe);
   if (fs::exists(check, ec)) {

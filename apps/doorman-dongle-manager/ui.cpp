@@ -904,8 +904,7 @@ void Ui::Firmware(const DongleState& d) {
   }
 }
 
-// The package's firmwares/dongle/bank/<name>: this app runs from the package's tools/ (Linux) or apps/
-// (Windows), or its root.
+// The package's firmwares/dongle/bank/<name>: this app runs from the package's apps/, or its root.
 fs::path Ui::PackagedBankImage(const std::string& name) {
   std::error_code ec;
 #ifdef _WIN32

@@ -852,7 +852,7 @@ void Ui::ToolsPage() {
 #ifdef _WIN32
   static const fs::path manager = ExeDirectory() / "apps" / "doorman-dongle-manager.exe";
 #else
-  static const fs::path manager = ExeDirectory() / "tools" / "doorman-dongle-manager";
+  static const fs::path manager = ExeDirectory() / "apps" / "doorman-dongle-manager";
 #endif
   switch (Tiles({{Icon::Dongle, "Dongle Manager", "Pair devices and see your Doorman dongles"},
                  {Icon::Tracker, "Device Type", "Convert your devices into trackers and vice versa"}})) {

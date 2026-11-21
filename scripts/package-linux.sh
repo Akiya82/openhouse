@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages the Linux driver and tools from a release build:
+# Packages the Linux driver and apps from a release build:
 #   scripts/package-linux.sh [BUILD_DIR]     (default build-release)
 # Output: dist/openhouse-linux-x64/ and dist/openhouse-linux-x64.tar.gz
 set -euo pipefail
@@ -7,7 +7,7 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 build="${1:-$repo/build-release}"
 out="$repo/dist/openhouse-linux-x64"
 rm -rf "$out"
-mkdir -p "$out/tools"
+mkdir -p "$out/apps"
 python3 "$repo/scripts/package-driver.py" "$build/openvr/lighthouse/bin/linux64/driver_lighthouse.so" "$out" | tail -n1
 # The installer (driver and firmware) and the firmware it flashes.
 cp "$build/openhouse-installer" "$out/"
@@ -28,13 +28,13 @@ for package in openvr glfw systemd; do
   [[ -d /usr/share/licenses/$package ]] && { cp -rL "/usr/share/licenses/$package" "$out/lh-licenses/" 2>/dev/null || true; }
 done
 find "$out/lh-licenses" -xtype l -delete  # a link whose target wasn't there
-# Every tool stands alone (liblh's code is built in); none keeps the build directory as its RUNPATH.
-for tool in lhtool lhcapture update-checker openhouse-overlay doorman-dongle-manager; do
-  cp "$build/$tool" "$out/tools/"
-  strip "$out/tools/$tool"
-  patchelf --remove-rpath "$out/tools/$tool"
+# Every app stands alone (liblh's code is built in); none keeps the build directory as its RUNPATH.
+for app in lhtool lhcapture lhviz openhouse-viewer update-checker openhouse-overlay doorman-dongle-manager; do
+  cp "$build/$app" "$out/apps/"
+  strip "$out/apps/$app"
+  patchelf --remove-rpath "$out/apps/$app"
 done
 # Runnable straight out of the archive.
-chmod 755 "$out/openhouse-installer" "$out"/tools/*
+chmod 755 "$out/openhouse-installer" "$out"/apps/*
 tar czf "$repo/dist/openhouse-linux-x64.tar.gz" -C "$repo/dist" openhouse-linux-x64
 echo "Packaged $repo/dist/openhouse-linux-x64.tar.gz"

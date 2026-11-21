@@ -512,13 +512,24 @@ void DoormanDongle::StartConfigFetch(int slot) {
     std::string json, error;
     const auto t0 = std::chrono::steady_clock::now();
     auto read = [&](uint8_t* data, size_t size) { return FeatureRead(slot, data, size); };
+    // The config first: its read retries until the main MCU answers. Right after a device joins
+    // (Index controller just switched on) the main MCU doesn't answer feature reads yet, and one
+    // early try for the IMU ranges left them unknown: every IMU sample was then dropped
+    // (ImuEmitter::Emit) and the device stayed "not tracked" for good.
+    const bool ok = ReadDeviceConfig(read, &json, &error);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (serial.empty()) {          // unidentified device: IMU ranges from feature 0x01 (as wired)
-      uint8_t r[64] = {0x01};
-      if (read(r, sizeof r) >= 3 && r[0] == 0x01) { w.fetchedGyro = int8_t(r[1]); w.fetchedAccel = int8_t(r[2]); }
+      w.fetchedGyro = w.fetchedAccel = -1;
+      for (int a = 0; a < 10 && w.fetchedGyro < 0; ++a) {
+        if (a) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        uint8_t r[64] = {0x01};
+        if (read(r, sizeof r) >= 3 && r[0] == 0x01) { w.fetchedGyro = int8_t(r[1]); w.fetchedAccel = int8_t(r[2]); }
+      }
     }
     w.fetchedSensorType = -1;
     if (w.sensorType < 0) {        // sensor type: hardware id low byte in feature 0x05 at [41] (as wired:
-      for (int a = 0; a < 3 && w.fetchedSensorType < 0; ++a) {   // without it, OOTX decoding guesses)
+      for (int a = 0; a < 5 && w.fetchedSensorType < 0; ++a) {   // without it, OOTX decoding guesses)
+        if (a) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         uint8_t r[64] = {0x05};
         if (read(r, sizeof r) >= 45 && r[0] == 0x05) {
           const uint32_t build = Rd32(r + 1), hw = Rd32(r + 41);
@@ -529,14 +540,22 @@ void DoormanDongle::StartConfigFetch(int slot) {
       log_(LogLevel::Info, who + ": sensor type " + (w.fetchedSensorType < 0 ? std::string("unavailable") :
                                std::to_string(w.fetchedSensorType)) + " (feature 0x05)");
     }
-    const bool ok = ReadDeviceConfig(read, &json, &error);
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (ok) {
       w.fetchedConfig = json;
-      if (serial.empty()) w.fetchedSerial = ConfigSerial(json);
+      if (serial.empty()) {
+        if (w.fetchedGyro < 0 || w.fetchedAccel < 0) {
+          // without the ranges its IMU can't be used: don't attach it yet, read again in 5 s
+          log_(LogLevel::Warn, who + ": IMU ranges unavailable (feature 0x01): reading again in 5 s");
+        } else {
+          w.fetchedSerial = ConfigSerial(json);
+        }
+      }
       log_(LogLevel::Info, who + ": read device config (" + std::to_string(json.size()) + " bytes) in " +
                                std::to_string(int(ms)) + " ms" +
-                               (serial.empty() ? ", serial " + (w.fetchedSerial.empty() ? "missing" : w.fetchedSerial) : ""));
+                               (serial.empty() ? ", serial " + (!w.fetchedSerial.empty() ? w.fetchedSerial : w.fetchedGyro < 0 || w.fetchedAccel < 0 ? "not yet" : "missing") +
+                                                     ", IMU ranges gyro " + std::to_string(w.fetchedGyro) + " accel " +
+                                                     std::to_string(w.fetchedAccel)
+                                               : ""));
     } else {
       log_(LogLevel::Warn, who + ": device config unavailable (" + error + ")");
     }

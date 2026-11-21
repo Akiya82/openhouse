@@ -5,7 +5,8 @@
 // manifest.vrfirmware): each device's hardware id (feature report 0x05, bytes 41-44) with the
 // arguments SteamVR's lighthouse_watchman_update takes for its radio. Every 2.0-era device
 // (nRF52 radio) takes the same image with --target=nrf52; the Vive Tracker 1.0 (nRF51) its own
-// with -rnt. Anything else (headsets, Vive wands, base stations) is never flashed here.
+// with -rnt, the Vive wand (nRF51 too) with -rn from its bootloader. Anything else (headsets,
+// base stations) is never flashed here.
 #pragma once
 #include <atomic>
 #include <cstdint>

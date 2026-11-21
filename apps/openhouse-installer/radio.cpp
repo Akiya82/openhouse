@@ -22,6 +22,17 @@ void Sleep(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 
 constexpr uint16_t kValve = 0x28de;
 constexpr uint16_t kWired2 = 0x2300, kTracker10 = 0x2022, kWand = 0x2012, kWatchman = 0x2101, kWatchmanV2 = 0x2102;
+// The Vive wand's LPC bootloader (its application is kWand): where its radio is updated from.
+constexpr uint16_t kWandBootloader = 0x2011;
+constexpr uint32_t kWandHwid = 0x81010500;
+constexpr const char* kWandBootloaderSerial = "(controller in bootloader)";
+
+bool HidPresent(uint16_t vid, uint16_t pid) {
+  hid_device_info* list = hid_enumerate(vid, pid);
+  const bool any = list != nullptr;
+  hid_free_enumeration(list);
+  return any;
+}
 constexpr uint16_t kDoormanVid = 0x6767, kDoormanPid = 0x0727;
 
 std::string Narrow(const wchar_t* w) {
@@ -460,6 +471,18 @@ std::vector<WiredDevice> FindWiredDevices() {
   std::vector<WiredDevice> out;
   hid_device_info* list = hid_enumerate(kValve, 0);
   for (hid_device_info* d = list; d; d = d->next) {
+    if (d->product_id == kWandBootloader) {
+      // A wand left in its bootloader (an update that didn't finish): it has no serial and no
+      // hardware id there, but it can still be flashed, or restored.
+      if (std::none_of(out.begin(), out.end(), [](const WiredDevice& o) { return o.pid == kWandBootloader; })) {
+        WiredDevice w;
+        w.serial = kWandBootloaderSerial;
+        w.pid = kWandBootloader;
+        w.model = ModelFor(kWandHwid);
+        out.push_back(w);
+      }
+      continue;
+    }
     if (d->product_id != kWired2 && d->product_id != kTracker10 && d->product_id != kWand) continue;
     if (d->interface_number > 0) continue;  // one interface per device
     WiredDevice w;
@@ -496,9 +519,26 @@ bool FlashWired(const fs::path& steamvr, const WiredDevice& device, const fs::pa
   std::vector<std::string> args{Utf8(tool)};
   if (device.model.family == RadioFamily::Newer) {
     args.insert(args.end(), {"-s", device.serial, "--target=nrf52", Utf8(image)});
-  } else if (device.model.hwid == 0x81010500) {
-    // The wand: "-r" radio, "v" its VRC module.
-    args.insert(args.end(), {"-rv", Utf8(image)});
+  } else if (device.model.hwid == kWandHwid) {
+    // The wand: "-r" radio, "n" its NEO VRC (28de:2012; "v" is 28de:2010, not a wand). The tool
+    // restarts it into its LPC bootloader (28de:2011), which relays the radio update. In one
+    // go it looks for the bootloader at once, before Windows has it (the first time it even sets
+    // up its driver) and fails with "unable to open device"; so the wand is restarted into the
+    // bootloader first ("-bn") and waited for, and then the tool finds it there already. Its
+    // type (controller or tracker) is in its config, which none of this touches.
+    if (!HidPresent(kValve, kWandBootloader)) {
+      for (int attempt = 0; attempt < 2 && !HidPresent(kValve, kWandBootloader); ++attempt) {
+        progress(0, "Restarting the controller into its bootloader");
+        RunProcess({Utf8(tool), "-bn"}, [&](const std::string& line) { progress(0, line); });
+        for (int i = 0; i < 100 && !HidPresent(kValve, kWandBootloader); ++i) Sleep(100);
+      }
+      if (!HidPresent(kValve, kWandBootloader)) {
+        *error = "the controller didn't restart into its bootloader; unplug it, plug it back in and try again";
+        return false;
+      }
+      Sleep(1000);  // let Windows finish setting it up
+    }
+    args.insert(args.end(), {"-rn", Utf8(image)});
   } else if (device.model.family == RadioFamily::Tracker10) {
     // The Tracker 1.0's radio: "-r" radio, "n"+"t" device type 6. The tool opens it by USB id,
     // so only one may be plugged in (the installer checks).

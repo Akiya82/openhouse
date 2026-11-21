@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "device_type.hpp"
 #include "drives.hpp"
 #include "driver_install.hpp"
 #include "radio.hpp"
@@ -107,7 +108,7 @@ class Ui {
  private:
   enum class Page {
     Home, Install, Uninstall, FlashMenu, BaseStation, DoormanMenu, Dongle, RadioMenu, RadioWired, RadioWireless,
-    RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless
+    RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless, DeviceType
   };
   void Go(Page page);
   void Header();
@@ -128,6 +129,7 @@ class Ui {
   void RadioWiredPage(bool restore);
   void RadioWirelessPage(bool restore);
   void RestoreRadioMenu();
+  void DeviceTypePage();
 
   void RefreshStatus();
 
@@ -179,6 +181,12 @@ class Ui {
   std::vector<std::pair<std::string, std::string>> results_;  // device, result
   std::atomic<int> current_{0};
   int total_ = 0;
+
+  // Device type flow: each wired device's type, read once from its config (kindJob_).
+  Job kindJob_;
+  std::mutex kindsMutex_;
+  std::map<std::string, std::string> kinds_;  // serial -> "controller", "tracker", "headset", or why it's unreadable
+  std::string kindTarget_;                    // the device being switched
 };
 
 }  // namespace openhouse::installer

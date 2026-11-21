@@ -341,7 +341,7 @@ if(LH_BUILD_VIEWER)
     add_executable(openhouse-installer WIN32 apps/openhouse-installer/main.cpp apps/openhouse-installer/ui.cpp
                    apps/openhouse-installer/system.cpp apps/openhouse-installer/driver_install.cpp
                    apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp
-                   src/common/nordic_dfu.cpp)
+                   apps/openhouse-installer/device_type.cpp src/common/nordic_dfu.cpp)
     target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
     target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
     if(WIN32)

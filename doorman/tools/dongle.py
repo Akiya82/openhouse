@@ -9,6 +9,9 @@
   dongle.py signal [SECS [SLOT]]     signal strength both ways + where polls get lost
   dongle.py slots | pair [SECS] | forget SLOT|all | channels | slotstats SLOT
   dongle.py crash-test 1             deliberate HardFault (tests the crash record)
+  dongle.py bank-update [DIR]        update over USB: write the bank it isn't running from
+                                     DIR/doorman_dongle_<board>_a.bin / _b.bin, restart into it
+  DONGLE=Kuroshin dongle.py ...      with several dongles: the one whose name or serial has this
 Only touches 6767:0727 devices and UF2 drives with INFO_UF2.TXT; never Valve dongles (28de:*).
 """
 import glob, os, shutil, struct, subprocess, sys, time
@@ -19,8 +22,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "..", "dongle-fw", "build")
 
 def open_dev():
+    want = os.environ.get("DONGLE", "")   # pick one of several: part of its name or serial
     for d in hid.enumerate(VID, PID):
-        if (d.get("product_string") or "").startswith("Doorman Dongle"):
+        name, serial = d.get("product_string") or "", d.get("serial_number") or ""
+        if name.startswith("Doorman Dongle") and d.get("interface_number", 0) <= 0 and (want in name or want in serial):
             return hid.Device(path=d["path"])
     sys.exit("dongle app not found (6767:0727 'Doorman Dongle')")
 
@@ -159,6 +164,37 @@ def channels():
         print(f"  {2400+d[2+k]} MHz  {'on ' if m >> k & 1 else 'OFF'}  loss {d[18+k]:3d}%")
     print("join requests heard", struct.unpack_from("<I", d, 34)[0], " network base", hex(struct.unpack_from("<I", d, 38)[0]))
 
+def bank_update(folder):
+    """Self-update of a two-bank board (dongle-fw/src/banks.h): no bootloader, no reset pin."""
+    import zlib
+    h = open_dev()
+    st, d = cmd(h, 0x01)
+    if d[59] not in (1, 2): sys.exit("older firmware without banks: update it through its bootloader (flash)")
+    running = "a" if d[59] == 1 else "b"
+    target = "b" if running == "a" else "a"
+    board = {1: "holyiot", 2: "pca10059", 3: "kuroshin"}.get(d[57], "sd" if d[6] else "nosd")
+    img = open(os.path.join(folder, f"doorman_dongle_{board}_{target}.bin"), "rb").read()
+    img += b"\xff" * (-len(img) % 4)
+    print(f"{board}: fw {d[4] | d[5] << 8:#06x} in bank {running.upper()}; writing {len(img)} bytes to bank {target.upper()}")
+    st, r = cmd(h, 0x40, struct.pack("<II", len(img), zlib.crc32(img)), timeout=15000)   # erases first
+    if st: sys.exit(f"begin failed ({st})")
+    for off in range(0, len(img), 56):
+        chunk = img[off:off + 56]
+        st, _ = cmd(h, 0x41, struct.pack("<IB", off, len(chunk)) + chunk)
+        if st: sys.exit(f"write failed at {off} ({st})")
+    st, r = cmd(h, 0x42)
+    if st: sys.exit(f"commit failed ({st}): the CRC didn't match")
+    print(f"committed (sequence {struct.unpack_from('<I', r)[0]}), restarting")
+    h.close()
+    for _ in range(50):
+        time.sleep(0.2)
+        try:
+            h = open_dev(); st, d = cmd(h, 0x01)
+            print(f"back: fw {d[4] | d[5] << 8:#06x} in bank {'A' if d[59] == 1 else 'B'}"); return
+        except (SystemExit, TimeoutError, OSError, hid.HIDException):
+            pass
+    sys.exit("the dongle didn't come back")
+
 def main():
     a = sys.argv[1:] or ["info"]
     c = a[0]
@@ -192,6 +228,7 @@ def main():
         print(open(os.path.join(d, "INFO_UF2.TXT")).read() if d else "no UF2 drive mounted")
     elif c == "flash": flash(a[1])
     elif c == "scan": scan()
+    elif c == "bank-update": bank_update(a[1] if len(a) > 1 else BUILD)
     else: print(__doc__)
 
 if __name__ == "__main__":

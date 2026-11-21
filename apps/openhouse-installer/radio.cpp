@@ -1,4 +1,5 @@
 #include "radio.hpp"
+#include "common/dongle_bank.hpp"
 
 #include <hidapi/hidapi.h>
 #include <nlohmann/json.hpp>
@@ -606,12 +607,33 @@ std::vector<DoormanDongleInfo> FindDoormanDongles() {
     if (dev.Ok() && dev.Command(0x01, nullptr, 0, r) && std::memcmp(r + 1, "OHDG", 4) == 0) {
       o.firmware = uint16_t(r[5] | r[6] << 8);
       o.softDeviceBuild = r[7] != 0;
-      o.board = r[58] <= 2 ? r[58] : 0;
+      o.board = r[58] <= 3 ? r[58] : 0;
+      o.bank = r[60] <= 2 ? r[60] : 0;
     }
     out.push_back(o);
   }
   hid_free_enumeration(list);
   return out;
+}
+
+bool BankUpdate(const DoormanDongleInfo& d, std::vector<uint8_t> image, const std::function<void(float)>& progress,
+                std::string* error) {
+  namespace bank = lh::dongle_bank;
+  DoormanDongle dev(d.path);
+  if (!dev.Ok()) { *error = "couldn't open the dongle, close SteamVR and doorman-dongle-manager"; return false; }
+  image.resize((image.size() + 3) & ~size_t(3), 0xFF);
+  const uint32_t size = uint32_t(image.size()), crc = bank::Crc32(image);
+  uint8_t args[62];
+  std::memcpy(args, &size, 4); std::memcpy(args + 4, &crc, 4);
+  if (!dev.Command(bank::kBegin, args, 8, nullptr, 15000)) { *error = "the dongle didn't start the update"; return false; }  // erases first
+  for (uint32_t off = 0; off < size; off += bank::kChunk) {
+    const uint8_t n = uint8_t(std::min<uint32_t>(bank::kChunk, size - off));
+    std::memcpy(args, &off, 4); args[4] = n; std::memcpy(args + 5, image.data() + off, n);
+    if (!dev.Command(bank::kWrite, args, 5u + n, nullptr, 1000)) { *error = "writing the firmware failed"; return false; }
+    if (progress) progress(float(off + n) / float(size));
+  }
+  if (!dev.Command(bank::kCommit, nullptr, 0, nullptr, 2000)) { *error = "the new firmware didn't check out"; return false; }
+  return true;
 }
 
 bool RebootToBootloader(const DoormanDongleInfo& d) {

@@ -60,3 +60,35 @@ ceiling ≈ 8 devices per dongle (needs `DML_SLOTS` and the USB split changed); 
 * Hang detector: SysTick (highest priority) checks a heartbeat stamped by the main loop and
   usb_service(); stale for 2 s, it records the stuck pc/lr as crash type 6 ("hang") and resets. The boot
   after a hang runs in safe mode (no radio, USB only; cmd 0x01 byte 58) until a power cycle.
+
+## Kuroshin dongle (nRF52840, Nordic SDK open USB bootloader)
+
+* Runs the PCA10059 image. Pads: shorting pad 1 and pad 5 (RESET P0.18 and GND, the 5-pad row on the
+  chip side) enters DFU (1915:521F); then flash like a PCA10059.
+* Its bootloader only enters DFU on a pin reset or an invalid app: GPREGRET entry is compiled out, and
+  before starting the app it ACL-locks the MBR, the app image, itself and its settings. So DFU can't be
+  requested from software: the app can't invalidate itself, and driving P0.18 as a GPIO bus-faults.
+  Every update needs the pads.
+* Behind one USB hub its interrupt endpoints never got through (control worked); on another port it
+  works. After flashing, the host sometimes doesn't see it again until it's replugged.
+
+## Two-bank layout and self-update (0x0020, every board)
+
+* Flash: a boot stub at the app start (0x1000; 0x26000 for the Pro Micro "sd" build), with bank A's image
+  as payload; then bank A and bank B, each a 4 KB header page + image (`src/banks.h`):
+  "std" A 0x10000 / B 0x70000 (0x60000 each), "sd" A 0x30000 / B 0x8E000 (0x5E000 each, to the pairing
+  page). Header: magic "OHBK", sequence, size, CRC32, origin (CRC of the stub payload the chain started from).
+* The stub boots the valid bank with the highest sequence. With no valid bank, or when the newest bank's
+  origin isn't its payload (a bootloader just installed a new one), it installs its payload into bank A
+  first (sequence + 1). So a bootloader flash always takes effect (rescue, downgrade).
+* Self-update (no bootloader): 0x40 [size][crc] erases the other bank (header page first), 0x41
+  [offset][n][bytes] writes into it, 0x42 checks the CRC, writes the header (sequence + 1, origin copied)
+  and restarts. A failed or interrupted update leaves the running bank as it was. `dongle.py bank-update`,
+  the dongle manager's Update button and the installer do this; the bootloader is only for a first
+  install or a rescue.
+* Build outputs: `doorman_dongle_<board>.hex/.uf2` (stub + payload, for bootloaders) and
+  `doorman_dongle_<board>_a.bin / _b.bin` (bank images); packages: `firmwares/dongle/bank/<board>-a.bin`.
+  Boards: sd, nosd, holyiot, pca10059, kuroshin. cmd 0x01 byte 59: the running bank (1 A, 2 B).
+* Verified 2026-11-21: Pro Micro (sd) converted through UF2, two bank updates both ways, a bootloader
+  flash of a different build won over the banks and a second one brought the first back; Kuroshin bank
+  updates both ways; an update interrupted after the erase and half the writes left the old bank running.

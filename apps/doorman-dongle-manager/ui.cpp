@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "common/dongle_bank.hpp"
 #include "common/nordic_dfu.hpp"
 #include "common/ui_theme.hpp"
 #include "lh/telemetry.hpp"
@@ -847,7 +848,7 @@ void Ui::Firmware(const DongleState& d) {
     char t[96];
     row("Dongle", d.serial);
     std::snprintf(t, sizeof t, "%d (%s build%s)", d.firmware,
-                  d.board == 1 ? "Holyiot 21017" : d.board == 2 ? "PCA10059" : d.softdeviceVariant ? "Nordic bootloader" : "bare",
+                  d.board == 1 ? "Holyiot 21017" : d.board == 2 ? "PCA10059" : d.board == 3 ? (d.bank == 2 ? "Kuroshin, bank B" : "Kuroshin, bank A") : d.softdeviceVariant ? "Nordic bootloader" : "bare",
                   d.watchdog ? ", watchdog" : "");
     row("Firmware", t);
     row("Up for", Uptime(d.uptimeMs));
@@ -873,25 +874,72 @@ void Ui::Firmware(const DongleState& d) {
 
   ImGui::Spacing();
   ImGui::SeparatorText("Update");
-  if (d.NordicDfu())
-    ImGui::TextWrapped("Pick %s",
-                       d.board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
-  else
-    ImGui::TextWrapped("Pick %s",
-                       d.softdeviceVariant ? "doorman_dongle_sd.uf2" : "doorman_dongle_nosd.uf2");
-  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
-  ImGui::InputTextWithHint("##uf2", d.NordicDfu() ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
-  ImGui::SameLine();
-  const bool exists = firmwarePath_[0] && fs::exists(fs::u8path(firmwarePath_));
-  ImGui::BeginDisabled(!exists || updating_);
-  if (TintButton(updating_ ? "Updating..." : "Update", kAccent, -1)) ImGui::OpenPopup("Update?");
-  ImGui::EndDisabled();
-  if (Confirm("Update?", "Every device drops for about 10 s"))
-    StartUpdate(dongle, firmwarePath_, d.NordicDfu());
+  if (d.Banked()) {
+    // Updates itself: the packaged firmware for the bank that isn't running.
+    const fs::path image = PackagedBankImage(lh::dongle_bank::ImageName(d.board, d.softdeviceVariant, d.bank));
+    if (image.empty()) ImGui::TextColored(kWarn, "Firmware not found next to the app");
+    else ImGui::TextDisabled("%s", image.filename().string().c_str());
+    ImGui::BeginDisabled(image.empty() || updating_);
+    if (TintButton(updating_ ? "Updating..." : "Update", kAccent, ImGui::GetFontSize() * 12)) ImGui::OpenPopup("Update?");
+    ImGui::EndDisabled();
+    if (Confirm("Update?", "Every device drops for a few seconds")) StartBankUpdate(dongle, image);
+  } else {
+    // Older firmware: through its bootloader, from a file.
+    if (d.NordicDfu())
+      ImGui::TextWrapped("Pick %s", d.board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
+    else
+      ImGui::TextWrapped("Pick %s", d.softdeviceVariant ? "doorman-dongle-sd.uf2" : "doorman-dongle-nosd.uf2");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize() * 13);
+    ImGui::InputTextWithHint("##uf2", d.NordicDfu() ? "path to the .hex file" : "path to the .uf2 file", firmwarePath_, sizeof firmwarePath_);
+    ImGui::SameLine();
+    const bool exists = firmwarePath_[0] && fs::exists(fs::u8path(firmwarePath_));
+    ImGui::BeginDisabled(!exists || updating_);
+    if (TintButton(updating_ ? "Updating..." : "Update", kAccent, -1)) ImGui::OpenPopup("Update?");
+    ImGui::EndDisabled();
+    if (Confirm("Update?", "Every device drops for about 10 s")) StartUpdate(dongle, firmwarePath_, d.NordicDfu());
+  }
   {
     std::lock_guard lock(updateMutex_);
     if (!updateStatus_.empty()) ImGui::TextColored(updateError_ ? kBad : updating_ ? kInfo : kGood, "%s", updateStatus_.c_str());
   }
+}
+
+// The package's firmwares/dongle/bank/<name>: this app runs from the package's tools/ (Linux) or apps/
+// (Windows), or its root.
+fs::path Ui::PackagedBankImage(const std::string& name) {
+  std::error_code ec;
+#ifdef _WIN32
+  wchar_t self[MAX_PATH * 2]{};
+  GetModuleFileNameW(nullptr, self, DWORD(std::size(self)));
+  const fs::path dir = fs::path(self).parent_path();
+#else
+  fs::path dir = fs::read_symlink("/proc/self/exe", ec).parent_path();
+  if (ec) dir = fs::current_path();
+#endif
+  for (const fs::path& base : {dir, dir.parent_path()}) {
+    const fs::path p = base / "firmwares" / "dongle" / "bank" / name;
+    if (fs::exists(p, ec)) return p;
+  }
+  return {};
+}
+
+// Updates itself: the image for the bank that isn't running goes over USB (lh/dongle_bank.hpp).
+void Ui::StartBankUpdate(std::shared_ptr<Dongle> dongle, const fs::path& file) {
+  if (updating_) return;
+  if (updater_.joinable()) updater_.join();
+  const auto set = [this](const std::string& s, bool error = false) {
+    std::lock_guard lock(updateMutex_);
+    updateStatus_ = s;
+    updateError_ = error;
+  };
+  std::ifstream in(file, std::ios::binary);
+  std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (image.size() < 1024) { set("Can't read " + file.string(), true); return; }
+  updating_ = true;
+  set("Writing the firmware...");
+  dongle->BankUpdate(std::move(image),
+                     [set](float f) { char t[48]; std::snprintf(t, sizeof t, "Writing the firmware... %d%%", int(f * 100)); set(t); },
+                     [this, set](bool ok, const std::string& message) { set(ok ? message : "Update failed: " + message, !ok); updating_ = false; });
 }
 
 void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bool nordicDfu) {

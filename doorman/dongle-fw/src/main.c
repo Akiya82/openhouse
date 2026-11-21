@@ -5,6 +5,7 @@
 #include "dongle.h"
 #include "doorman_link.h"
 #include "link.h"
+#include "banks.h"
 
 #ifndef VARIANT_SD
 #error "build with -DVARIANT_SD=0 or 1"
@@ -40,6 +41,10 @@ static uint32_t crash_sum(void) {
 }
 static int crash_valid(void) { return crash->magic == CRASH_MAGIC && crash->sum == crash_sum(); }
 
+/* Nordic DFU boards: GPREGRET 0xB1 asks the bootloader for DFU. Some SDK bootloaders are built without
+   that (a Kuroshin dongle's: only pin reset or an invalid app enter DFU). There the app can't help: the
+   bootloader ACL-locks the app's flash, and the reset pin (P0.18) can't be driven as a GPIO (bus
+   fault). Such a dongle enters DFU only by shorting RESET to GND. */
 static void enter_bootloader(uint8_t magic) {
     __disable_irq();
     NRF_POWER->GPREGRET = magic;
@@ -105,6 +110,31 @@ static uint8_t reply[64], pending_reply, pending_action, pending_scan, scan_firs
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 
+/* Self-update (banks.h): this image runs in one bank, updates go into the other. */
+static uint32_t upd_size, upd_crc;
+static uint8_t upd_open;
+static uint32_t running_bank(void) { return (uint32_t)__isr_vector - BANK_IMAGE_OFS; }
+static uint32_t other_bank(void) { return running_bank() == BANK_A ? BANK_B : BANK_A; }
+static void nvmc_ready(void) { while (!NRF_NVMC->READY) {} }
+static void nvmc_erase(uint32_t addr, uint32_t len)
+{
+    for (uint32_t a = addr; a < addr + len; a += 0x1000) {
+        NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een; nvmc_ready();
+        NRF_NVMC->ERASEPAGE = a; nvmc_ready();          /* ~85 ms each: the CPU waits */
+        NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren; nvmc_ready();
+        hb_ms = ms_ticks;                               /* not a hang */
+    }
+}
+static void nvmc_write(uint32_t addr, const uint8_t *src, uint32_t n)
+{
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen; nvmc_ready();
+    for (uint32_t i = 0; i < n; i += 4) {
+        uint32_t w; memcpy(&w, src + i, 4);
+        *(volatile uint32_t *)(addr + i) = w; nvmc_ready();
+    }
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren; nvmc_ready();
+}
+
 static void handle(const uint8_t *in, uint16_t len) {
     usb_rx++;
     if (len < 2) return;
@@ -126,10 +156,50 @@ static void handle(const uint8_t *in, uint16_t len) {
         }
         d[52] = NRF_POWER->GPREGRET2;
         put32(d + 53, *(volatile uint32_t *)0x3000 == 0x51B1E5DB);   /* SoftDevice magic still in flash? */
-        d[57] = BOARD_ID;
-        d[58] = safe_mode;   /* board: 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059 (both Nordic DFU) */
+        d[57] = BOARD_ID;    /* 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU) */
+        d[58] = safe_mode;
+        d[59] = running_bank() == BANK_A ? 1 : 2;   /* which bank runs (banks.h) */
         break;
     case CMD_STATS: put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks); break;
+    case CMD_BANK_BEGIN: {
+        uint32_t size, crc; memcpy(&size, in + 2, 4); memcpy(&crc, in + 6, 4);
+        if (!size || size > BANK_IMAGE_MAX || (size & 3)) { st = ST_BAD_ARG; break; }
+        const uint32_t b = other_bank();
+        nvmc_erase(b, BANK_IMAGE_OFS + ((size + 0xFFFu) & ~0xFFFu));   /* header page first: invalid until commit */
+        upd_size = size; upd_crc = crc; upd_open = 1;
+        put32(d, b);
+        break;
+    }
+    case CMD_BANK_WRITE: {
+        uint32_t off; memcpy(&off, in + 2, 4);
+        const uint8_t n = in[6];
+        if (!upd_open || n > 56 || (n & 3) || (off & 3) || off + n > upd_size || len < 7u + n) { st = ST_BAD_ARG; break; }
+        const uint32_t a = other_bank() + BANK_IMAGE_OFS + off;
+        nvmc_write(a, in + 7, n);
+        if (memcmp((const void *)a, in + 7, n)) st = ST_TIMEOUT;   /* didn't stick */
+        break;
+    }
+    case CMD_BANK_COMMIT: {
+        const uint32_t b = other_bank();
+        if (!upd_open || bank_crc32((const uint8_t *)(b + BANK_IMAGE_OFS), upd_size) != upd_crc) { st = ST_BAD_ARG; break; }
+        const bank_header_t *cur = (const bank_header_t *)running_bank();
+        const bank_header_t h = { BANK_MAGIC, cur->seq + 1, upd_size, upd_crc, cur->origin };   /* same stub payload chain */
+        nvmc_write(b, (const uint8_t *)&h, sizeof h);
+        if (!bank_valid(b)) { st = ST_TIMEOUT; break; }
+        upd_open = 0;
+        pending_action = CMD_RESET;                 /* the stub boots the newest valid bank */
+        put32(d, h.seq);
+        break;
+    }
+    case 0x7D: {                                /* read memory: [addr u32][n <= 56]; flash, UICR, FICR, RAM */
+        uint32_t a; memcpy(&a, in + 2, 4);
+        uint8_t n = in[6] > 56 ? 56 : in[6];
+        const int ok = (a < 0x100000u && a + n <= 0x100000u) || (a >= 0x10000000u && a + n <= 0x10002000u) ||
+                       (a >= 0x20000000u && a + n <= 0x20040000u);
+        if (!ok) { st = ST_BAD_ARG; break; }
+        put32(d, a); d[4] = n; memcpy(d + 5, (const void *)a, n);
+        break;
+    }
     case 0x7E:                                  /* USB controller state, for boards whose endpoints stall */
         put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks);
         put32(d + 12, NRF_USBD->EPSTATUS); put32(d + 16, NRF_USBD->EPDATASTATUS);

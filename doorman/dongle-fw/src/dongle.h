@@ -3,7 +3,7 @@
 
 #define DONGLE_VID         0x6767
 #define DONGLE_PID         0x0727
-#define DONGLE_FW_VERSION  0x001B
+#define DONGLE_FW_VERSION  0x0020
 /* USB data interfaces: slot s streams on interface s % DONGLE_NIF (interface 0 also carries commands) */
 #define DONGLE_NIF         4
 #define STREAM_KIND        0x80   /* IN report: [0x80][slot][n][n bytes of [len][frame]... stream] */
@@ -14,6 +14,9 @@ enum {
     CMD_INFO = 0x01, CMD_STATS = 0x02, CMD_ECHO = 0x03,
     CMD_DFU_UF2 = 0x10, CMD_DFU_SERIAL = 0x11, CMD_RESET = 0x12, CMD_CRASH_TEST = 0x13, CMD_CLEAR_CRASH = 0x14,
     CMD_LINK = 0x20, CMD_DOWN = 0x21, CMD_RADIO_RSSI_SCAN = 0x22, CMD_LINKSTATS = 0x23,
+    /* self-update (banks.h): [size u32][crc u32] erases the other bank; [offset u32][n][n bytes] writes
+       into it; commit checks the CRC, writes its header (next sequence number) and restarts into it */
+    CMD_BANK_BEGIN = 0x40, CMD_BANK_WRITE = 0x41, CMD_BANK_COMMIT = 0x42,
 };
 enum { ST_OK = 0, ST_BAD_CMD = 1, ST_BAD_ARG = 2, ST_TIMEOUT = 3 };
 
@@ -25,11 +28,16 @@ enum { ST_OK = 0, ST_BAD_CMD = 1, ST_BAD_ARG = 2, ST_TIMEOUT = 3 };
 #ifndef BOARD_PCA10059
 #define BOARD_PCA10059 0
 #endif
-#define BOARD_NORDIC_DFU (BOARD_HOLYIOT || BOARD_PCA10059)
-#define BOARD_ID (BOARD_HOLYIOT ? 1 : BOARD_PCA10059 ? 2 : 0)   /* cmd 0x01 byte 57 */
+/* Kuroshin: PCA10059-like; its bootloader can't be entered from software (pin reset only). Every board
+   updates itself over USB anyway (banks.h, commands 0x40-0x42). */
+#ifndef BOARD_KUROSHIN
+#define BOARD_KUROSHIN 0
+#endif
+#define BOARD_NORDIC_DFU (BOARD_HOLYIOT || BOARD_PCA10059 || BOARD_KUROSHIN)
+#define BOARD_ID (BOARD_HOLYIOT ? 1 : BOARD_PCA10059 ? 2 : BOARD_KUROSHIN ? 3 : 0)   /* cmd 0x01 byte 57 */
 /* USB product string: the board this image is for. Host code matches the "Doorman Dongle" prefix. */
 #define DONGLE_PRODUCT (BOARD_HOLYIOT ? "Doorman Dongle Holyiot" : BOARD_PCA10059 ? "Doorman Dongle PCA10059" \
-                                      : "Doorman Dongle Pro Micro")
+                        : BOARD_KUROSHIN ? "Doorman Dongle Kuroshin" : "Doorman Dongle Pro Micro")
 
 /* Adafruit nRF52 bootloader magic values in NRF_POWER->GPREGRET */
 #if BOARD_NORDIC_DFU

@@ -2,6 +2,7 @@
 // pairing into a slot, unpairing), the radio's live performance, its channels and firmware.
 // Same look as openhouse-overlay (pixel font, sidebar pages, status bar).
 #pragma once
+#include <filesystem>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -72,6 +73,8 @@ class Ui {
   std::string updateStatus_;
   bool updateError_ = false;
   void StartUpdate(std::shared_ptr<Dongle> d, const std::string& file, bool nordicDfu);
+  void StartBankUpdate(std::shared_ptr<Dongle> d, const std::filesystem::path& file);
+  static std::filesystem::path PackagedBankImage(const std::string& name);
 };
 
 }  // namespace openhouse::dongle

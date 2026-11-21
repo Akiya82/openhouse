@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "common/dongle_bank.hpp"
 #include "device_config.hpp"
 
 namespace openhouse::dongle {
@@ -256,7 +257,8 @@ void Dongle::Poll(double now) {
       std::lock_guard lock(mutex_);
       state_.firmware = d[4] | d[5] << 8;
       state_.softdeviceVariant = d[6];
-      state_.board = d[57] <= 2 ? d[57] : 0;
+      state_.board = d[57] <= 3 ? d[57] : 0;
+      state_.bank = d[59];
       state_.watchdog = d[7];
       state_.resetReason = Rd32(d + 12);
       state_.uptimeMs = Rd32(d + 16);
@@ -507,6 +509,26 @@ void Dongle::EnterBootloader(Done done) {
   Queue([=, this] {
     const bool ok = Command(kBootloader, nullptr, 0, nullptr);
     if (done) done(ok, ok ? "Dongle in update mode" : "the dongle didn't answer");
+  });
+}
+
+void Dongle::BankUpdate(std::vector<uint8_t> image, std::function<void(float)> progress, Done done) {
+  Queue([=, this, image = std::move(image)]() mutable {
+    image.resize((image.size() + 3) & ~size_t(3), 0xFF);
+    const uint32_t crc = lh::dongle_bank::Crc32(image);
+    uint8_t args[61];
+    const uint32_t size = uint32_t(image.size());
+    std::memcpy(args, &size, 4); std::memcpy(args + 4, &crc, 4);
+    Reply r;
+    if (!Command(lh::dongle_bank::kBegin, args, 8, &r, 15000) || r.status) { if (done) done(false, "the dongle didn't start the update"); return; }  // erases first
+    for (uint32_t off = 0; off < size; off += lh::dongle_bank::kChunk) {
+      const uint8_t n = uint8_t(std::min<uint32_t>(lh::dongle_bank::kChunk, size - off));
+      std::memcpy(args, &off, 4); args[4] = n; std::memcpy(args + 5, image.data() + off, n);
+      if (!Command(lh::dongle_bank::kWrite, args, 5u + n, &r, 1000) || r.status) { if (done) done(false, "writing failed"); return; }
+      if (progress) progress(float(off + n) / float(size));
+    }
+    if (!Command(lh::dongle_bank::kCommit, nullptr, 0, &r, 2000) || r.status) { if (done) done(false, "the new firmware didn't check out"); return; }
+    if (done) done(true, "Done: the dongle restarts with the new firmware");
   });
 }
 

@@ -9,8 +9,10 @@
 #include <cmath>
 #include <ctime>
 #include <cstdio>
+#include <fstream>
 #include <cstdlib>
 
+#include "common/dongle_bank.hpp"
 #include "common/nordic_dfu.hpp"
 #include "common/ui_theme.hpp"
 #include "lh/github.hpp"
@@ -352,7 +354,7 @@ float DeviceListReserve() {
 
 // The image for a board on Nordic's DFU bootloader (DoormanDongleInfo::board).
 fs::path NordicImage(int board) {
-  return FirmwareFolder() / "dongle" / (board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
+  return FirmwareFolder() / "dongle" / (board == 3 ? "doorman-kuroshin.hex" : board == 2 ? "doorman-pca10059.hex" : "doorman-holyiot.hex");
 }
 
 fs::path DongleImage(bool softDevice) {
@@ -1005,7 +1007,8 @@ void Ui::DonglePage() {
       };
       const int board = Tiles({{Icon::Dongle, "ProMicro nRF52840", "Adafruit bootloader"},
                                {Icon::Dongle, "Holyiot 21017", "Nordic bootloader"},
-                               {Icon::Dongle, "Nordic PCA10059", "nRF52840 Dongle"}}, ImGui::GetFontSize() * 15);
+                               {Icon::Dongle, "Nordic PCA10059", "nRF52840 Dongle"},
+                               {Icon::Dongle, "Kuroshin", "Nordic bootloader"}}, ImGui::GetFontSize() * 15);
       if (board >= 0) watch(board);
       Back(Page::DoormanMenu);
       return;
@@ -1014,7 +1017,8 @@ void Ui::DonglePage() {
       const DongleSeen seen = dongleSeen_.Value();
       if (!DeviceAccess()) { Back(Page::DoormanMenu); return; }
       Step(1, "Plug the dongle in");
-      Step(2, dongleBoard_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
+      Step(2, dongleBoard_ == 3 ? "If it doesn't show up, short its reset pads (the first and the last) to put it in DFU mode"
+              : dongleBoard_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
                              : "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
       ImGui::Spacing();
       if (seen.drives.empty() && seen.ports.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
@@ -1081,8 +1085,23 @@ void Ui::DonglePage() {
         char label[128];
         std::snprintf(label, sizeof label, "Doorman Dongle %s", d.serial.c_str());
         if (!BigButton(label, ImGui::GetFontSize() * 34)) continue;
-        // Restarts it in its update mode, then flashes what appears.
         const DoormanDongleInfo dongle = d;
+        if (dongle.Banked()) {   // updates itself: the firmware for the bank it isn't running
+          start([dongle](Job& j) {
+            const fs::path file = FirmwareFolder() / "dongle" / "bank" /
+                                  lh::dongle_bank::ImageName(dongle.board, dongle.softDeviceBuild, dongle.bank);
+            j.Log("Firmware: " + Utf8(file.filename()));
+            std::ifstream in(file, std::ios::binary);
+            std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (image.size() < 1024) { j.Fail("firmware not found in the firmwares folder"); return false; }
+            std::string error;
+            if (!BankUpdate(dongle, std::move(image), [&](float f) { j.Status(f * 0.8f, "Flashing"); }, &error)) { j.Fail(error); return false; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));   // it restarts into the new bank
+            return verify(j);
+          });
+          continue;
+        }
+        // Older firmware: restarts it in its update mode, then flashes what appears.
         start([dongle](Job& j) {
           const auto drivesBefore = FindUf2Drives();
           const auto portsBefore = lh::dfu::FindBootloaderPorts();

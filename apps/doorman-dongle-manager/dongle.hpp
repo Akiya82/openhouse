@@ -56,8 +56,10 @@ struct DongleState {
   // CMD_INFO
   int firmware = 0;          // 0x0004
   bool softdeviceVariant = false, watchdog = false;
-  int board = 0;  // 0 UF2, 1 Holyiot 21017, 2 PCA10059: the last two update through Nordic's DFU bootloader
+  int board = 0;  // 0 UF2 (Pro Micro), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU)
+  int bank = 0;   // 1 A, 2 B: the bank running (0: older firmware, updates through its bootloader)
   bool NordicDfu() const { return board == 1 || board == 2; }
+  bool Banked() const { return bank != 0; }   // runs the two-bank layout: updates itself
   uint32_t uptimeMs = 0, resetReason = 0;
   uint32_t crashCount = 0, crashType = 0, crashPc = 0;
   bool linkOn = true;
@@ -101,6 +103,9 @@ class Dongle {
   void Scan(Done done);                         // RSSI over 2400..2480 MHz (pauses the link ~0.2 s)
   void Reset(Done done);
   void EnterBootloader(Done done);              // UF2 drive (firmware update)
+  // Writes `image` (built for the bank not running) and restarts into it (lh/dongle_bank.hpp).
+  // progress gets 0..1 while it writes; done ends it.
+  void BankUpdate(std::vector<uint8_t> image, std::function<void(float)> progress, Done done);
   void ClearCrash(Done done);
   void SetNickname(int slot, const std::string& name);
   // Names learned elsewhere (the driver's telemetry, the remembered list), by pairing id.

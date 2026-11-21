@@ -89,10 +89,15 @@ struct DoormanDongleInfo {
   std::string serial, path;
   uint16_t firmware = 0;
   bool softDeviceBuild = false;  // running the "_sd" build
-  int board = 0;                 // 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059 (both Nordic DFU)
-  bool NordicDfu() const { return board == 1 || board == 2; }
+  int board = 0;                 // 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU)
+  int bank = 0;                  // the bank it runs from (1 A, 2 B); 0: older firmware without banks
+  bool NordicDfu() const { return board >= 1 && board <= 3; }
+  bool Banked() const { return bank != 0; }   // updates itself over USB, no bootloader
 };
 std::vector<DoormanDongleInfo> FindDoormanDongles();
 bool RebootToBootloader(const DoormanDongleInfo& d);  // its UF2 drive appears (Nordic DFU boards: its serial port)
+// A banked dongle writes `image` (the firmware for the bank it isn't running) and restarts into it.
+bool BankUpdate(const DoormanDongleInfo& d, std::vector<uint8_t> image, const std::function<void(float)>& progress,
+                std::string* error);
 
 }  // namespace openhouse::installer

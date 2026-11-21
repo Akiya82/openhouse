@@ -100,7 +100,7 @@ static uint16_t ex_hist[EX_BUCKETS]; static uint32_t ex_hn;
 #define SLOT_GUARD_US 120u
 static uint8_t adaptive = 1, repoll = 0;   /* repoll: tried, ~8% of re-polls were answered (a miss repeats on the same channel) */
 static uint32_t repolls, repolls_ok;
-static uint32_t ex_win, ex_budget, ex_cycles, ex_sum, ex_n, ex_max;
+static uint32_t ex_budget, ex_cycles, ex_sum, ex_n, ex_max;
 void link_set_idle_hook(void (*f)(void)) { idle_hook = f; }
 static int decode_some(void);
 static uint8_t defer_decode = 1;           /* cmd 0x2E: 0 decodes each answer at once (A/B) */

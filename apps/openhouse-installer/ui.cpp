@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <cfloat>
 #include <cstdio>
 #include <fstream>
 #include <cstdlib>
@@ -49,6 +50,73 @@ void Step(int n, const char* text) {
   ImGui::TextColored(kWarn, "%d", n);
   ImGui::SameLine();
   Wrapped(text);
+}
+
+// The Kuroshin dongle's board as it looks with the case open, chip side up and the USB plug at the bottom:
+// the row of five pads at the top right, above the chip; the first and the last (RESET and GND) are
+// shorted for DFU mode. Proportions measured from a photo of the board.
+void KuroshinPads() {
+  const float fs = ImGui::GetFontSize(), u = fs * 1.6f;   // drawing unit
+  const float bw = u * 6, bh = u * 12.4f;                  // the board (photo: 2.07 tall per wide)
+  const float top = fs * 1.6f;                             // room for "Short"
+  const float w = bw + u * 0.4f, h = top + bh + u * 2.4f;
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  ImFont* font = ImGui::GetFont();
+  const ImU32 board = IM_COL32(52, 58, 72, 255), edge = IM_COL32(120, 128, 145, 255), metal = IM_COL32(170, 175, 185, 255);
+  const ImU32 pad = IM_COL32(150, 155, 165, 255), chip = IM_COL32(22, 24, 30, 255), part = IM_COL32(95, 100, 112, 255);
+  const ImU32 hot = ImGui::GetColorU32(kWarn), text = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
+  const auto centred = [&](float size, float x, float y, ImU32 col, const char* str) {
+    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, str);
+    dl->AddText(font, size, ImVec2(x - ts.x / 2, y), col, str);
+  };
+  const ImVec2 b0(o.x + u * 0.2f, o.y + top), b1(b0.x + bw, b0.y + bh);
+  const auto X = [&](float f) { return b0.x + bw * f; };   // fractions of the board, as in the photo
+  const auto Y = [&](float f) { return b0.y + bh * f; };
+
+  // USB plug, then the board (rounded top like the case)
+  const float cx = X(0.5f);
+  dl->AddRectFilled(ImVec2(cx - u * 1.7f, b1.y - u * 0.3f), ImVec2(cx + u * 1.7f, o.y + h), metal, u * 0.12f);
+  dl->AddRect(ImVec2(cx - u * 1.7f, b1.y - u * 0.3f), ImVec2(cx + u * 1.7f, o.y + h), edge, u * 0.12f);
+  dl->AddRectFilled(b0, b1, board, u * 0.9f, ImDrawFlags_RoundCornersTop);
+  dl->AddRect(b0, b1, edge, u * 0.9f, ImDrawFlags_RoundCornersTop, 1.5f);
+
+  // the four larger holes below the chip, on the left, and a few parts around the chip
+  for (int i = 0; i < 4; ++i) {
+    dl->AddCircleFilled(ImVec2(X(0.17f + 0.15f * float(i)), Y(0.74f)), u * 0.32f, metal);
+    dl->AddCircleFilled(ImVec2(X(0.17f + 0.15f * float(i)), Y(0.74f)), u * 0.14f, board);
+  }
+  for (const auto& p : {ImVec2(0.12f, 0.36f), ImVec2(0.12f, 0.45f), ImVec2(0.12f, 0.55f), ImVec2(0.88f, 0.42f),
+                        ImVec2(0.88f, 0.55f), ImVec2(0.35f, 0.66f), ImVec2(0.5f, 0.66f), ImVec2(0.8f, 0.66f)})
+    dl->AddRectFilled(ImVec2(X(p.x) - u * 0.22f, Y(p.y) - u * 0.12f), ImVec2(X(p.x) + u * 0.22f, Y(p.y) + u * 0.12f), part, u * 0.04f);
+
+  // the chip
+  const float cs = bw * 0.56f, cy = Y(0.51f);
+  dl->AddRectFilled(ImVec2(cx - cs / 2, cy - cs / 2), ImVec2(cx + cs / 2, cy + cs / 2), chip, u * 0.12f);
+  for (int i = 0; i < 7; ++i) {   // pins on each side
+    const float t = -cs / 2 + cs * (float(i) + 0.5f) / 7, pw = u * 0.05f, pl = u * 0.16f;
+    dl->AddRectFilled(ImVec2(cx - cs / 2 - pl, cy + t - pw), ImVec2(cx - cs / 2, cy + t + pw), metal);
+    dl->AddRectFilled(ImVec2(cx + cs / 2, cy + t - pw), ImVec2(cx + cs / 2 + pl, cy + t + pw), metal);
+    dl->AddRectFilled(ImVec2(cx + t - pw, cy - cs / 2 - pl), ImVec2(cx + t + pw, cy - cs / 2), metal);
+    dl->AddRectFilled(ImVec2(cx + t - pw, cy + cs / 2), ImVec2(cx + t + pw, cy + cs / 2 + pl), metal);
+  }
+  centred(fs * 0.85f, cx, cy - fs * 0.45f, muted, "nRF52840");
+
+  // the pad row at the top right, numbers under it, and the wire bridging 1 and 5
+  const float padY = Y(0.29f), step = bw * 0.1f, r = u * 0.2f;
+  float padX[5];
+  for (int i = 0; i < 5; ++i) padX[i] = X(0.73f) + (float(i) - 2) * step;
+  dl->AddBezierCubic(ImVec2(padX[0], padY - r), ImVec2(padX[0], b0.y - fs * 0.2f), ImVec2(padX[4], b0.y - fs * 0.2f),
+                     ImVec2(padX[4], padY - r), hot, u * 0.11f);
+  for (int i = 0; i < 5; ++i) {
+    const bool on = i == 0 || i == 4;
+    dl->AddCircleFilled(ImVec2(padX[i], padY), r, on ? hot : pad);
+    dl->AddCircleFilled(ImVec2(padX[i], padY), r * 0.4f, board);
+    const char n[2] = {char('1' + i), 0};
+    centred(fs * 0.95f, padX[i], padY + r + u * 0.08f, on ? hot : muted, n);
+  }
+  centred(fs * 1.1f, X(0.73f), o.y, text, "Short");
+  ImGui::Dummy(ImVec2(w, h));
 }
 
 // Two to four big buttons side by side, centred; returns the one pressed (-1: none).
@@ -437,6 +505,11 @@ bool Ui::PackageNewer() {
 }
 
 void Ui::RefreshStatus() { status_ = steamvr_.root.empty() ? DriverStatus{} : ReadStatus(steamvr_.root); }
+
+void Ui::ShowForTest(const std::string& page) {
+  if (page == "kuroshin") { Go(Page::Dongle); dongleBoard_ = 3; dongleStep_ = DongleStep::Detect; }
+  else if (page == "dongle") Go(Page::Dongle);
+}
 
 void Ui::Go(Page page) {
   baseDrives_.Stop();
@@ -1005,11 +1078,14 @@ void Ui::DonglePage() {
           return s;
         }, 1.0);
       };
-      const int board = Tiles({{Icon::Dongle, "ProMicro nRF52840", "Adafruit bootloader"},
-                               {Icon::Dongle, "Holyiot 21017", "Nordic bootloader"},
-                               {Icon::Dongle, "Nordic PCA10059", "nRF52840 Dongle"},
-                               {Icon::Dongle, "Kuroshin", "Nordic bootloader"}}, ImGui::GetFontSize() * 15);
-      if (board >= 0) watch(board);
+      // Board ids (DoormanDongleInfo::board) in tile order.
+      static constexpr int kBoards[] = {1, 2, 0, 3};
+      const int tile = Tiles({{Icon::Dongle, "Holyiot 21017", "Nordic bootloader", Tint::None, "Recommended"},
+                              {Icon::Dongle, "Nordic PCA10059 Dongle", "Nordic bootloader"},
+                              {Icon::Dongle, "ProMicro nRF52840", "Adafruit bootloader. Soldering an antenna to the board is highly recommended"},
+                              {Icon::Dongle, "Kuroshin", "It needs to be put into DFU mode by opening the dongle and shorting two pins"}},
+                             ImGui::GetFontSize() * 15);
+      if (tile >= 0) watch(kBoards[tile]);
       Back(Page::DoormanMenu);
       return;
     }
@@ -1017,9 +1093,24 @@ void Ui::DonglePage() {
       const DongleSeen seen = dongleSeen_.Value();
       if (!DeviceAccess()) { Back(Page::DoormanMenu); return; }
       Step(1, "Plug the dongle in");
-      Step(2, dongleBoard_ == 3 ? "If it doesn't show up, short its reset pads (the first and the last) to put it in DFU mode"
+      Step(2, dongleBoard_ == 3 ? "If it doesn't show up, open the dongle and briefly short pads 1 and 5 to put it in DFU mode"
               : dongleBoard_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
                              : "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
+      if (dongleBoard_ == 3) {
+        ImGui::Spacing();
+        ImGui::BeginGroup();
+        KuroshinPads();
+        ImGui::EndGroup();
+        ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+        ImGui::BeginGroup();
+        ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 2));
+        Wrapped("Chip side up, USB plug at the bottom");
+        Wrapped("Pads 1 and 5 are the first and the last of the row above the chip");
+        Wrapped("Touch them together for a moment with tweezers or a wire");
+        ImGui::Spacing();
+        ImGui::TextColored(kWarn, "Only the version with the anime character on the board is tested");
+        ImGui::EndGroup();
+      }
       ImGui::Spacing();
       if (seen.drives.empty() && seen.ports.empty() && seen.dongles.empty()) ImGui::TextColored(kMuted, "Waiting for the dongle...");
       // It restarts as a Doorman Dongle: check it answers.

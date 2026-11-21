@@ -56,6 +56,11 @@ int Run() {
   {
     Ui ui;
     ui.SetLogo(UploadRgba(openhouse::overlay::kLogoRgba, openhouse::overlay::kLogoSize, openhouse::overlay::kLogoSize));
+    // Testing without a screen: OPENHOUSE_INSTALLER_PAGE picks the page, OPENHOUSE_INSTALLER_SNAPSHOT=FILE.ppm
+    // writes the frame drawn after ~2 s and exits.
+    if (const char* page = std::getenv("OPENHOUSE_INSTALLER_PAGE")) ui.ShowForTest(page);
+    const char* snapshot = std::getenv("OPENHOUSE_INSTALLER_SNAPSHOT");
+    int frame = 0;
     while (!glfwWindowShouldClose(window)) {
       glfwWaitEventsTimeout(1.0 / 30);  // keeps redrawing for progress bars and device lists
       ImGui_ImplOpenGL2_NewFrame();
@@ -69,6 +74,17 @@ int Run() {
       glClearColor(0.067f, 0.075f, 0.098f, 1);
       glClear(GL_COLOR_BUFFER_BIT);
       ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+      if (snapshot && ++frame == 60) {
+        std::vector<unsigned char> rgb(size_t(w) * h * 3);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+        if (FILE* f = std::fopen(snapshot, "wb")) {
+          std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+          for (int y = h - 1; y >= 0; --y) std::fwrite(rgb.data() + size_t(y) * w * 3, 1, size_t(w) * 3, f);   // GL rows are bottom-up
+          std::fclose(f);
+        }
+        break;
+      }
       glfwSwapBuffers(window);
     }
   }

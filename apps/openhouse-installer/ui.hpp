@@ -101,6 +101,8 @@ class Ui {
   static void SetUpImGui();
   void SetLogo(uint64_t texture) { logo_ = texture; }
   void Draw(float width, float height);
+  // Testing (OPENHOUSE_INSTALLER_PAGE): the page shown first. "kuroshin": its DFU instructions.
+  void ShowForTest(const std::string& page);
 
  private:
   enum class Page {

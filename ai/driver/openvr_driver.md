@@ -135,7 +135,21 @@ Calibrating_InProgress / Uninitialized.
   and configs at startup (each timed out ~1.5 s); startup dropped from ~5.5 s to
   ~0.3 s with three idle dongles.
 * A probe thread watches those receivers and attaches devices that connect later
-  ("connected to receiver"), as the stock driver does.
+  ("connected to receiver"), as the stock driver does. Its cost, measured 2026-11-21 on 3x
+  `28de:2101` plus a Tundra SW7's 7x `28de:2102`: one `QueryDeviceInfo` per idle receiver per
+  pass, ~150 ms each, and the stock keepalive (`ff a1 00`) to every idle receiver per pass —
+  ~2.5 of them a second with those ten on the bus. `LH_LOG_LEVEL=DEBUG` logs every keepalive
+  and every open's device-info query, which is how that was counted.
+* **A Tundra SW7 presents seven receivers, not one:** `28de:2102`, USB serial `<serial>-<n>YX`
+  for n 1-7, each answering the config read (0x10/0x11) in ~150 ms. `usb_protocol.md`'s
+  "nothing" for `0x2102` describes *stream* reports only.
+* **`back-facing hits` plus `no optical samples` is a room problem, not a driver one.** On the
+  same machine Valve's stock `lighthouse 2.18.4` reproduced it identically (71k back-facing
+  hits, a reset every ~3 s, SteamVR logging "Moving the base for tracking too"), with a base
+  calibrated at 138-146 deg pitch. **Check the stock driver before attributing it to us.**
+* **The SW7's heat is its own firmware, not the keepalive.** A unit stayed hot with the
+  keepalive traffic at zero, so the heat is most likely the dongle holding seven radios in RX.
+  Do not infer a temperature from a traffic count.
 * **Receiver hotplug (2026-10-19).** The probe thread re-enumerates HID once a second
   and opens any receiver/HMD interface it doesn't have open. An unplugged interface
   (read error) is closed, detached and forgotten, so plugging it back in opens it

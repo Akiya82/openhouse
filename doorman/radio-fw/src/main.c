@@ -792,7 +792,8 @@ static void drops_report(void)
 }
 
 /* Test load (air op 'L' [kB/s]): filler 'Z' frames sent up as if the main MCU sent more, so a few
-   devices load the radio cycle like many. 0 = off (the default; not kept across a reboot). */
+   devices load the radio cycle like many. 0 = off (the default; not kept across a reboot). The budget
+   is kept in thousandths of a byte, so a loop pass shorter than 1000/kB/s us still counts. */
 static uint8_t load_kbps;
 static uint32_t load_at, load_budget;
 static void load_tick(void)
@@ -800,9 +801,9 @@ static void load_tick(void)
   const uint32_t now = now_us(), dt = now - load_at;
   load_at = now;
   if (!link_up || !load_kbps || dt > 100000u) return;
-  load_budget += (uint32_t)load_kbps * dt / 1000u;             /* kB/s x us / 1000 = bytes */
+  load_budget += (uint32_t)load_kbps * dt;                      /* kB/s x us = 1/1000 B */
   static uint8_t z[40] = { 'Z' };
-  while (load_budget >= sizeof z) { load_budget -= sizeof z; z[1]++; uplink_push(z, sizeof z); }
+  while (load_budget >= 1000u * sizeof z) { load_budget -= 1000u * sizeof z; z[1]++; uplink_push(z, sizeof z); }
 }
 
 static void set_addr(uint32_t base, uint8_t prefix)

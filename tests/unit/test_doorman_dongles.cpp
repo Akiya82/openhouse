@@ -655,3 +655,20 @@ TEST(DoormanCarriers, UsbCableCarriesTheDevice) {
   EXPECT_FALSE(c.Take("LHR-1", "OHDG-A", 2).has_value());  // unplugged: the slot takes it
   EXPECT_FALSE(c.Wired("LHR-1"));
 }
+
+// A 0x81 fragment that carries no bytes (its start was lost, or a short report) must not read
+// the length byte of an empty accumulator: the first buffered byte is the frame's length only
+// once a fragment has actually arrived.
+TEST_F(Doorman, AZeroLengthFragmentWithNothingBufferedIsIgnored) {
+  Plug("A", L"TESTA");
+  Step();
+  Queue("A0", {0x81, 0, 0});   // slot 0, no bytes: frag[0] is still empty when the length is read
+  Step();
+  // The dongle still works afterwards: a device on slot 1 identifies and attaches.
+  Queue("A0", Live(0b10));
+  Step();
+  Queue("A1", Ident(1, kA1));
+  Step();
+  Step();
+  EXPECT_EQ(sink.Count(Serial(kA1) + ": connected on Doorman Dongle OHDG-TESTA slot 1"), 1u);
+}

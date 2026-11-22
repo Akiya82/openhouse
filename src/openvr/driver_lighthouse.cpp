@@ -895,6 +895,17 @@ class Device : public ITrackedDeviceServerDriver {
   // (WayVR's clock) was fine: so the skeleton also goes out with the poses.
   // The hand's springs and fades advance here, on the host clock, with the latest
   // input: stepped only when an input report came, they moved in jumps.
+  // The controller's orientation as apps get it from the last pose sent: world from driver, driver from
+  // IMU, IMU from head (as stock gives its hand).
+  std::optional<std::array<double, 4>> HeadOrientation() {
+    DriverPose_t p;
+    { std::lock_guard lock(poseMutex_); p = pose_; }
+    if (!p.poseIsValid) return std::nullopt;
+    const auto q = [](const HmdQuaternion_t& v) { return Eigen::Quaterniond(v.w, v.x, v.y, v.z); };
+    const Eigen::Quaterniond h = q(p.qWorldFromDriverRotation) * q(p.qRotation) * q(p.qDriverFromHeadRotation);
+    return std::array<double, 4>{h.w(), h.x(), h.y(), h.z()};
+  }
+
   void SendSkeleton(double now) {
     if (!skeletonHandle_ && !skeletonOtherHandle_) return;
     const double dt = lastSkeletonSent_ < -1e299 ? 0 : now - lastSkeletonSent_;
@@ -909,6 +920,7 @@ class Device : public ITrackedDeviceServerDriver {
     }
     for (auto [skeleton, handle] : {std::pair{&skeleton_, skeletonHandle_}, std::pair{&skeletonOther_, skeletonOtherHandle_}}) {
       if (!handle) continue;
+      if (const auto q = HeadOrientation()) skeleton->SetOrientation(*q);
       skeleton->Update(in, dt);
       for (bool withController : {true, false}) {
         const auto bones = skeleton->Current(withController);

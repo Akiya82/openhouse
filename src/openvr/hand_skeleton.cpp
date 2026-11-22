@@ -266,6 +266,18 @@ void HandSkeleton::Update(const ControllerInput& in, double seconds) {
     Spring(fingers[f], dt, 250, &s.curl[f], &s.curlV[f]);
     Spring(Bias(fingers[f], kBias[f]), dt, 250, &s.fist[f], &s.fistV[f]);
   }
+  // The open hand at rest, by how the controller is held (0x27ff20's end, from the pose 0x27fcb0 keeps):
+  // the hand frame is the controller's turned 44 deg about -x (cos/sin 22 deg: 0.927, 0.375). Its +z
+  // pointing up blends frame 0 toward frame 8, its -x pointing up adds frame 9, each through a spring.
+  if (haveOrientation_) {
+    const Eigen::Quaterniond q(orientation_[0], orientation_[1], orientation_[2], orientation_[3]);
+    const Eigen::Quaterniond hand = q.normalized() * Eigen::Quaterniond(0.9270064234733582, -0.3750454783439636, 0, 0);
+    const double up = (hand * Eigen::Vector3d(0, 0, 1)).y(), side = (hand * Eigen::Vector3d(-1, 0, 0)).y();
+    const float restUp = up < -1 ? 0.f : up > 1 ? 1.f : float((up + 1) * 0.5);
+    const float restSide = side < 0 ? 0.f : float(std::min(side, 1.0));
+    Spring(restUp, dt, 40, &s.restUp, &s.restUpV);
+    Spring(restSide, dt, 40, &s.restSide, &s.restSideV);
+  }
   s.trigger = finite(in.trigger);
   // Pulling the trigger closes the index all the way without the controller; on a wand,
   // which has no finger sensors, as far as it's pulled.
@@ -331,6 +343,11 @@ Bones HandSkeleton::ThumbPose(const State& s, bool blended) const {
   return blended && s.fade < 1 ? Lerp(s.thumbFrom, target, s.fade) : target;
 }
 
+// The open hand without the controller (0x280e80's first blends): frame 0 toward frame 8, then 9.
+Bones HandSkeleton::Rest(const State& s) const {
+  return Lerp(Lerp(hand_[0], hand_[8], s.restUp), hand_[9], s.restSide);
+}
+
 Bones HandSkeleton::Current(bool withController) const {
   if (glove_.empty()) return {};
   const State& s = state_;
@@ -347,7 +364,10 @@ Bones HandSkeleton::Current(bool withController) const {
     Blend(out, open, 1 - s.curl[3], kPinky);
   } else if (!hand_.empty()) {
     // 0x280e80: each finger closes along the fist clip (squeezing, the squeeze clip)
-    out = hand_[0];
+    const Bones rest = Rest(s);
+    out = rest;
+    // The index goes back to frame 0 as the other three close (their mean closure).
+    Blend(out, hand_[0], std::clamp((s.fist[1] + s.fist[2] + s.fist[3]) / 3, 0.f, 1.f), kIndex);
     auto fist = [&](float t) { return squeeze_.empty() ? Sample(close_, t) : Lerp(Sample(close_, t), Sample(squeeze_, t), s.squeeze); };
     Blend(out, fist(s.indexClose), s.indexClose, kIndex);
     Blend(out, fist(s.fist[1]), s.fist[1], kMiddle);
@@ -358,7 +378,7 @@ Bones HandSkeleton::Current(bool withController) const {
     Bones thumb = s.thumbX < 0 ? Lerp(hand_[kThumbRest], fist(s.thumbClose), -s.thumbX)
                                : Lerp(hand_[kThumbRest], hand_[kThumbOut], s.thumbX);
     thumb = s.thumbY < 0 ? Lerp(thumb, hand_[kThumbBack], -s.thumbY) : Lerp(thumb, hand_[kThumbRest], s.thumbY);
-    Blend(out, Lerp(thumb, hand_[0], s.thumbRaise), 1, kThumb);
+    Blend(out, Lerp(thumb, rest, s.thumbRaise), 1, kThumb);
   } else {
     // No shared animations installed: close onto the glove library's grip.
     out = glove_[kOpen];

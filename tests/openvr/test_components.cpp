@@ -1022,3 +1022,41 @@ TEST(PublishedPose, CloseWaitsForACallInTheStockDriver) {
   EXPECT_TRUE(left);
   caller.join();
 }
+
+// The open hand without the controller settles by how the controller is held, as stock's does (its
+// rest pose blends hand_right_poses frames 0, 8 and 9 by the hand's tilt): turned palm up and palm
+// down, the open hand differs, and held one way it settles over a fraction of a second, not at once.
+TEST(Skeleton, OpenHandRestsByHowTheControllerIsHeld) {
+  const char* file = std::getenv("LH_HAND_POSES");
+  if (!file) GTEST_SKIP() << "set LH_HAND_POSES to Valve's installed vr_glove_right_poses.glb";
+  lh::openvr::HandSkeleton h;
+  std::string error;
+  ASSERT_TRUE(h.Load(file, false, &error)) << error;
+  if (!error.empty()) GTEST_SKIP() << error;   // no shared hand animations: no rest poses
+  const lh::ControllerInput open{};
+  const auto settled = [&](const Eigen::Quaterniond& q) {
+    h.SetOrientation({q.w(), q.x(), q.y(), q.z()});
+    for (int i = 0; i < 100; ++i) h.Update(open, 0.02);
+    return h.Current(false);
+  };
+  const auto spread = [](const lh::openvr::HandSkeleton::Bones& a, const lh::openvr::HandSkeleton::Bones& b) {
+    double worst = 0;
+    for (int i = 1; i < 26; ++i) {
+      const Eigen::Quaterniond qa(a[i].orientation.w, a[i].orientation.x, a[i].orientation.y, a[i].orientation.z);
+      const Eigen::Quaterniond qb(b[i].orientation.w, b[i].orientation.x, b[i].orientation.y, b[i].orientation.z);
+      worst = std::max(worst, qa.angularDistance(qb));
+    }
+    return worst * 57.29577951308232;
+  };
+  const auto level = settled(Eigen::Quaterniond::Identity());
+  const auto up = settled(Eigen::Quaterniond(Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX())));
+  const auto rolled = settled(Eigen::Quaterniond(Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ())));
+  EXPECT_GT(spread(level, up), 2.0);
+  EXPECT_GT(spread(level, rolled), 2.0);
+  // One step after turning: still close to where it was (a spring, not a jump).
+  h.SetOrientation({1, 0, 0, 0});
+  h.Update(open, 0.011);
+  EXPECT_LT(spread(h.Current(false), rolled), spread(level, rolled) * 0.7);
+  for (const auto& b : rolled)
+    for (float v : {b.orientation.w, b.orientation.x, b.orientation.y, b.orientation.z}) EXPECT_TRUE(std::isfinite(v));
+}

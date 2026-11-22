@@ -505,7 +505,8 @@ TEST(RoomMap, SmallTurnAgainstSavedGravityIsNotABump) {
     r.OnBaseSeen(Config(1), tilted(0));
     for (int i = 0; i < 3; ++i) r.OnBaseSeen(Config(2), tilted(1.3));
     EXPECT_FALSE(bumped(r));
-    EXPECT_TRUE(RoomMap::Locked(*r.Base(2)));
+    EXPECT_FALSE(RoomMap::Locked(*r.Base(2)));   // loosened (SmallTurnKeepsTheSavedLevel), not relearned
+    EXPECT_FALSE(r.Base(2)->relearn);
     for (int i = 0; i < 2; ++i) r.OnBaseSeen(Config(2), tilted(3.0));   // then knocked in the session: 1.7 deg
     EXPECT_TRUE(bumped(r));
   }
@@ -516,6 +517,81 @@ TEST(RoomMap, SmallTurnAgainstSavedGravityIsNotABump) {
     for (int i = 0; i < 2; ++i) r.OnBaseSeen(Config(2), tilted(5.0));
     EXPECT_TRUE(bumped(r));
   }
+  std::filesystem::remove(path);
+}
+
+// Moved a little while nothing ran: 1.4 deg reads like a cold base, so it isn't relearned, but it's
+// loosened so the room solver can follow it, and the saved level is kept rather than replaced by the new
+// reading (which would hide the move from the next session). Close to the saved level, nothing changes.
+TEST(RoomMap, SmallTurnKeepsTheSavedLevel) {
+  const auto path = (std::filesystem::temp_directory_path() / ("lh-test-keptlevel-" + std::to_string(lh::platform::ProcessId()) + ".json")).string();
+  const auto tilted = [](double deg) {
+    BaseDynamicState d;
+    const double r = deg * 0.017453292519943295;
+    d.accelDir = {0.f, float(std::cos(r)), float(std::sin(r))};
+    d.sysUnlockCount = 7;
+    return d;
+  };
+  const auto savedTilt = [&] {
+    RoomMap r;
+    EXPECT_TRUE(r.Load(path));
+    const auto& g = r.KnownConfigs().at(2u).second.accelDir;
+    return std::atan2(double(g[2]), double(g[1])) * 57.29577951308232;
+  };
+  {
+    RoomMap r;
+    r.OnBaseSeen(Config(1), tilted(0));
+    ASSERT_TRUE(r.EstablishOrigin(1, {0.0, 0.0}, 1e-6));
+    r.OnBaseSeen(Config(2), tilted(0));
+    r.ApplySolved(2, Pose(3, 0.5, -2, 40), 1e-6, 1e-7, 150, 1e-4);
+    ASSERT_TRUE(RoomMap::Locked(*r.Base(2)));
+    ASSERT_TRUE(r.Save(path));
+  }
+  {
+    RoomMap r;  // 1.4 deg off: loosened, its saved level kept
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    for (int i = 0; i < 3; ++i) r.OnBaseSeen(Config(2), tilted(1.4));
+    bool logged = false, knocked = false;
+    for (const auto& line : r.TakeLogs()) {
+      logged |= line.find("off the saved one") != std::string::npos;
+      knocked |= line.find("knocked") != std::string::npos;
+    }
+    EXPECT_TRUE(logged);
+    EXPECT_FALSE(knocked);
+    EXPECT_FALSE(RoomMap::Locked(*r.Base(2)));
+    ASSERT_TRUE(r.Save(path));
+  }
+  EXPECT_NEAR(savedTilt(), 0.0, 0.01);
+  {
+    RoomMap r;  // next session, still 1.4 deg off the level its pose was learned at: noticed again
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    for (int i = 0; i < 3; ++i) r.OnBaseSeen(Config(2), tilted(1.4));
+    bool logged = false;
+    for (const auto& line : r.TakeLogs()) logged |= line.find("off the saved one") != std::string::npos;
+    EXPECT_TRUE(logged);
+  }
+  {
+    RoomMap r;  // re-placed after a bump: its level now goes with its new pose
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    for (int i = 0; i < 2; ++i) r.OnBaseSeen(Config(2), tilted(5.0));
+    r.ApplySolved(2, Pose(3.03, 0.5, -2, 41), 1e-6, 1e-7, 150, 1e-4, 2);
+    ASSERT_FALSE(r.Base(2)->relearn);
+    ASSERT_TRUE(r.Save(path));
+  }
+  EXPECT_NEAR(savedTilt(), 5.0, 0.05);
+  {
+    RoomMap r;  // close to the saved level: still locked, and this reading is saved
+    ASSERT_TRUE(r.Load(path));
+    r.OnBaseSeen(Config(1), tilted(0));
+    r.ApplySolved(2, Pose(3.03, 0.5, -2, 41), 1e-6, 1e-7, 150, 1e-4, 2);
+    for (int i = 0; i < 3; ++i) r.OnBaseSeen(Config(2), tilted(5.4));
+    for (const auto& line : r.TakeLogs()) EXPECT_EQ(line.find("off the saved one"), std::string::npos) << line;
+    ASSERT_TRUE(r.Save(path));
+  }
+  EXPECT_NEAR(savedTilt(), 5.4, 0.05);
   std::filesystem::remove(path);
 }
 

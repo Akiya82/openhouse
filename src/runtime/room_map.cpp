@@ -188,6 +188,7 @@ bool RoomMap::Save(const std::string& path, std::string* error) const {
     json configs = json::array();
     for (const auto& [serial, c] : configs_) {
       json jc = ConfigJson(c.first, c.second);
+      if (const auto kept = keptGravity_.find(serial); kept != keptGravity_.end()) jc["gravity"] = kept->second;
       const auto frame = frames_.find(serial);
       if (frame != frames_.end()) {
         std::string bits;
@@ -315,6 +316,17 @@ void RoomMap::Suspect(RoomBase& b) {
   b.rotationVariance = std::max(b.rotationVariance, 3 * 0.003 * 0.003);
 }
 
+// A base that may have moved a little: Suspect's loosening, locked or not, so the room solver can move it.
+// One that didn't move is solved back where it was and locks again with fresh keyframes.
+void RoomMap::Loosen(RoomBase& b) {
+  constexpr int kLoosenedEvidence = 30;
+  b.observations = std::min(b.observations, kLoosenedEvidence);
+  b.storedObservations = std::min(b.storedObservations, kLoosenedEvidence);
+  b.positionVariance = std::max(b.positionVariance, 3 * 0.01 * 0.01);
+  b.rotationVariance = std::max(b.rotationVariance, 3 * 0.003 * 0.003);
+  Changed();
+}
+
 void RoomMap::OnBaseSeen(const BaseConfig& config, const BaseDynamicState& dynamic) {
   const uint32_t serial = config.serial;
   const auto previousConfig = configs_.find(serial);
@@ -323,7 +335,10 @@ void RoomMap::OnBaseSeen(const BaseConfig& config, const BaseDynamicState& dynam
   std::optional<Eigen::Vector3d> saved;  // the gravity this base had when the room was saved
   if (firstSighting && previousConfig != configs_.end()) {
     const auto& g = previousConfig->second.second.accelDir;
-    if (Eigen::Vector3d(g[0], g[1], g[2]).norm() > 0.5) saved = Eigen::Vector3d(g[0], g[1], g[2]).normalized();
+    if (Eigen::Vector3d(g[0], g[1], g[2]).norm() > 0.5) {
+      saved = Eigen::Vector3d(g[0], g[1], g[2]).normalized();
+      if (!keptGravity_.count(serial)) keptGravity_[serial] = g;
+    }
   }
   configs_[serial] = {config, dynamic};
   const int resetCount = dynamic.sysUnlockCount;
@@ -372,6 +387,7 @@ void RoomMap::OnBaseSeen(const BaseConfig& config, const BaseDynamicState& dynam
       rooms_.push_back(fresh);
       active_ = int(rooms_.size()) - 1;
       solvedTarget_.clear();
+      keptGravity_.clear();  // a new room: its bases are learned where they are now
       Log("Created new room " + fresh.id);
       Changed();
     }
@@ -453,6 +469,7 @@ bool RoomMap::EstablishOrigin(uint32_t serial, const std::array<double, 2>& tilt
   if (!room || !room->bases.empty()) return false;
   RoomBase base;
   base.serial = serial;
+  keptGravity_.erase(serial);
   base.origin = true;
   base.worldFromBase = Eigen::Isometry3d::Identity();
   base.worldFromBase.linear() = Leveling(tilt[0], tilt[1], 0);
@@ -486,6 +503,7 @@ void RoomMap::Observe(const std::string& device, uint32_t primary, uint32_t alt,
   auto addBase = [&](uint32_t serial, const Eigen::Isometry3d& pose, double pv, double rv, uint32_t from) {
     RoomBase base;
     base.serial = serial;
+    keptGravity_.erase(serial);
     base.worldFromBase = pose;
     base.positionVariance = pv;
     base.rotationVariance = rv;
@@ -602,6 +620,7 @@ void RoomMap::CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const
   if (dynamic.cached || up.norm() < 0.5) return;  // a recalled frame: an earlier session's gravity
   AccelTrack& a = accel_[serial];
   const Eigen::Vector3d u = up.normalized();
+  auto deg = [](double rad) { return rad * 57.29577951308232; };
   if (!a.has) {
     // Against the saved gravity first: a base moved while nothing ran is bumped on its
     // first live frames (twice running, as any bump).
@@ -612,7 +631,25 @@ void RoomMap::CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const
   }
   const double angle = std::acos(std::clamp(a.ref.dot(u), -1.0, 1.0));
   if (angle <= (a.fromSaved ? kBumpSavedRad : kBumpRad)) {
-    if (a.fromSaved) { a.ref = u; a.fromSaved = false; }   // this session's own reference from here on
+    if (a.fromSaved) {   // this session's own reference from here on
+      // Between kBumpRad and kBumpSavedRad a base woken cold and one moved a little look the same (a 2.0
+      // base moved 35 mm turned 1.4 deg, and nothing else caught it). Not relearned for it: loosened, so
+      // the room solver follows it if it moved, and its saved level is kept for the next session.
+      if (angle > kBumpRad) {
+        char text[200];
+        std::snprintf(text, sizeof text, "Base %08X: level %.1f deg off the saved one (woken cold, or moved a little): loosened",
+                      serial, deg(angle));
+        Log(text);
+        if (Room* room = ActiveRoom()) {
+          auto found = room->bases.find(serial);
+          if (found != room->bases.end() && !found->second.origin) Loosen(found->second);
+        }
+      } else {
+        keptGravity_.erase(serial);   // where it was saved: this session's reading goes with the room
+      }
+      a.ref = u;
+      a.fromSaved = false;
+    }
     a.strikes = 0;
     a.ref = (0.9 * a.ref + 0.1 * u).normalized();  // follows a slow (thermal) drift
     return;
@@ -622,7 +659,7 @@ void RoomMap::CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const
   a.fromSaved = false;
   a.strikes = 0;
   char text[160];
-  std::snprintf(text, sizeof text, "its accelerometer turned %.1f deg", angle * 57.29577951308232);
+  std::snprintf(text, sizeof text, "its accelerometer turned %.1f deg", deg(angle));
   Bump(serial, text);
 }
 
@@ -680,6 +717,7 @@ void RoomMap::ApplyOriginSolved(const Eigen::Isometry3d& pose, double pv, int ke
                   serial, dp * 1000, dr * 57.29577951308232, keyframes, std::sqrt(pv / 3) * 1000);
     Log(text);
     b.worldFromBase = pose;
+    keptGravity_.erase(serial);
     originRelearn_ = false;
     ++originEpoch_;
     ++b.epoch;
@@ -767,6 +805,7 @@ void RoomMap::ApplySolved(uint32_t serial, const Eigen::Isometry3d& pose, double
     b.storedObservations = 0;  // earlier sessions' evidence is for the old place: lock again on new solves only
     b.farSolves = 0;
     b.relearn = false;
+    keptGravity_.erase(serial);  // learned where it is now: its gravity now goes with it
     ++b.epoch;
     Changed();
     return;
@@ -783,6 +822,7 @@ void RoomMap::ApplySolved(uint32_t serial, const Eigen::Isometry3d& pose, double
                   serial, dp * 1000, dr * 57.29577951308232, keyframes, rms * 1e6, std::sqrt(pv / 3) * 1000,
                   knock ? "" : "; gliding there");
     Log(text);
+    keptGravity_.erase(serial);
     if (knock) {
       b.worldFromBase = pose;
       solvedTarget_.erase(serial);
@@ -918,6 +958,7 @@ void RoomMap::ForgetAll() {
   solvedTarget_.clear();
   levelled_ = false;
   accel_.clear();
+  keptGravity_.clear();
   originRelearn_ = false;
   ++originEpoch_;
   Log("Room map forgotten; learning a new room");

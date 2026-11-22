@@ -138,6 +138,7 @@ class RoomMap {
   // accelerometer if the stored level disagrees, the others relearned if it was reset
   bool LevelOrigin(Room& room, RoomBase& origin, const BaseDynamicState& dynamic);  // true: room stale
   static void Suspect(RoomBase& base);
+  void Loosen(RoomBase& base);
   void CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const Eigen::Vector3d* saved = nullptr);
   void Changed() { ++revision_; dirty_ = true; if (auto* r = ActiveRoom()) r->updated = Now(); }
   static double Now();
@@ -164,6 +165,10 @@ class RoomMap {
     int strikes = 0;
   };
   std::map<uint32_t, AccelTrack> accel_;  // this session
+  // The gravity a base had when its pose was learned, kept in the saved room until this session re-places
+  // the base or reads it close to that level. Saving a moved base's new reading with its old pose would
+  // hide the move from every later session.
+  std::map<uint32_t, std::array<float, 3>> keptGravity_;
   bool originRelearn_ = false;
   uint64_t bumps_ = 0;
   uint64_t originEpoch_ = 0;

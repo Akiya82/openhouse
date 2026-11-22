@@ -1848,6 +1848,7 @@ class Provider : public IServerTrackedDeviceProvider {
     nlohmann::json j = applied_;
     j["host"] = HostName();
     j["steamvr"] = HostName().rfind("vrserver", 0) == 0;
+    j["live"] = !replay_;
     j["recording"] = !recording_.empty();
     j["recordingPath"] = recording_;
     j["reportBusy"] = !reportDone_.load();

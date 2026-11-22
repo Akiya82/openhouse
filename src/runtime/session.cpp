@@ -294,7 +294,9 @@ class SessionImpl final : public Session, public InputSinkBase {
     BaseConfig config;
     BaseDynamicState dynamic;
     bool seen = false;
+    double channelObservedAt = -1;
   };
+  std::bitset<sob::kChannels> conflictedChannels_;
 
   // level: as given, else ClassifyLog(text).
   void Emit(SessionEventType type, const std::string& serial, std::string text, std::optional<LogLevel> level = {});
@@ -1143,7 +1145,9 @@ void SessionImpl::OnBattery(const DeviceId& id, const BatteryReport& b) {
 void SessionImpl::Process(const DeviceId& id, Device& d) {
   if (now_ - lastAdvance_ >= 0.01) { lastAdvance_ = now_; room_.Advance(now_); }
   std::vector<std::pair<BaseConfig, BaseDynamicState>> decoded;
-  d.tracker->Process(&decoded);
+  BaseConfig config;
+  BaseDynamicState dynamic;
+  while (d.tracker->Source().PopBaseConfig(&config, &dynamic)) decoded.emplace_back(config, dynamic);
   tdm::TdmDisambiguator::Identity identity;
   bool newIdentity = false;
   while (d.tracker->Source().PopIdentity(&identity)) {
@@ -1156,26 +1160,30 @@ void SessionImpl::Process(const DeviceId& id, Device& d) {
   for (const auto& [config, dynamic] : decoded) {
     auto& base = bases_[config.serial];
     const bool first = !base.seen;
+    if (dynamic.sobChannel >= 0 && dynamic.cached && !first && !base.dynamic.cached) continue;
     if (first) {
       char text[128];
       std::snprintf(text, sizeof text, "base %08X: firmware %u, gravity %.3f %.3f %.3f", config.serial,
                     unsigned(dynamic.firmwareVersion), dynamic.accelDir[0], dynamic.accelDir[1], dynamic.accelDir[2]);
       Emit(SessionEventType::Log, "", text, LogLevel::Debug);
     }
-    const bool newChannel = dynamic.sobChannel >= 0 && base.dynamic.sobChannel != dynamic.sobChannel;
+    const bool newChannel = dynamic.sobChannel >= 0 &&
+        (first || base.dynamic.sobChannel != dynamic.sobChannel || base.dynamic.cached != dynamic.cached);
     base.config = config;
     base.dynamic = dynamic;
-    if (newChannel) PushIdentities();  // the other devices identify this LH2 base at once
     base.seen = true;
+    if (dynamic.sobChannel >= 0 && !dynamic.cached) base.channelObservedAt = now_;
+    if (newChannel) PushIdentities();  // Update every decoder before processing its queued sweeps.
     room_.OnBaseSeen(config, dynamic);
     for (auto& [otherId, other] : devices_)
-      if (other.tracker && otherId != id) other.tracker->OnBaseConfig(config, dynamic);
+      if (other.tracker) other.tracker->OnBaseConfig(config, dynamic);
     if (first) {
       char text[96];
       std::snprintf(text, sizeof text, "%s seen by %s (mode %d)", BaseName(config.serial).c_str(), id.c_str(), dynamic.mode);
       Emit(SessionEventType::BaseStationSeen, BaseName(config.serial), text);
     }
   }
+  d.tracker->Process();
   TakeKeyframes(d);
   CollectLogs(&d);
   const auto out = d.tracker->Output();
@@ -1190,6 +1198,9 @@ void SessionImpl::Process(const DeviceId& id, Device& d) {
 void SessionImpl::TakeKeyframes(Device& d) {
   for (uint32_t base : room_.TakeRelearned()) keyframes_.DropBase(base);
   for (auto& k : d.tracker->TakeKeyframes()) {
+    if (room_.Conflicted(k->primary) ||
+        std::any_of(k->samples.begin(), k->samples.end(), [&](const auto& entry) { return room_.Conflicted(entry.first); }))
+      continue;
     std::optional<Eigen::Isometry3d> pose;
     if (const RoomBase* primary = room_.Base(k->primary)) pose = primary->worldFromBase * k->primaryFromDevice;
     if (keyframes_.Add(std::move(k), pose)) { newKeyframes_ = true; ++addedKeyframes_; }
@@ -1208,7 +1219,7 @@ bool SessionImpl::SolveDue() const {
   if (!room_.Active() || !room_.Origin()) return false;
   // Locating a seen base quickly matters most; refinement can be slower.
   bool missing = false;
-  for (const auto& [serial, b] : bases_) missing |= b.seen && !room_.Base(serial);
+  for (const auto& [serial, b] : bases_) missing |= b.seen && !room_.Conflicted(serial) && !room_.Base(serial);
   return now_ - lastSolve_ >= (missing ? 0.1 : solveInterval_);
 }
 
@@ -1223,7 +1234,7 @@ RoomSolveInput SessionImpl::SolveInput() {
   // the solver held every placed base fixed, so one placed wrong (re-aimed while the
   // origin was off) was never found, and the room fit 2 deg off forever. One placed base
   // in view, the best placed, holds the gauge instead; the others are solved against it.
-  if (const auto o = bases_.find(in.origin); o == bases_.end() || !o->second.seen) {
+  if (const auto o = bases_.find(in.origin); o == bases_.end() || !o->second.seen || room_.Conflicted(in.origin)) {
     uint32_t gauge = 0;
     int best = -1;
     for (const auto& b : room_.Bases()) {
@@ -1445,14 +1456,50 @@ void SessionImpl::SolverMain() {
 void SessionImpl::PushIdentities() {
   std::vector<tdm::TdmDisambiguator::Identity> all;
   for (const auto& [serial, id] : identities_) all.push_back(id);
-  std::map<int, std::pair<BaseConfig, BaseDynamicState>> channels;  // LH2: one channel per base, every device
-  for (const auto& [serial, b] : bases_)
-    if (b.dynamic.sobChannel >= 0 && b.config.valid && b.config.cal.size() == 14)
-      channels[b.dynamic.sobChannel] = {b.config, b.dynamic};
+  using Channels = std::map<int, std::pair<BaseConfig, BaseDynamicState>>;
+  Channels channels, recalled;
+  std::bitset<sob::kChannels> conflicts, duplicateRecalls;
+  std::set<uint32_t> conflictedBases;
+  for (const auto& [serial, b] : bases_) {
+    const int ch = b.dynamic.sobChannel;
+    if (ch < 0 || ch >= sob::kChannels || !b.config.valid || b.config.cal.size() != 14) continue;
+    if (!b.seen || b.dynamic.cached) {
+      if (!recalled.try_emplace(ch, b.config, b.dynamic).second) duplicateRecalls.set(ch);
+      continue;
+    }
+    const auto [first, added] = channels.try_emplace(ch, b.config, b.dynamic);
+    if (added) continue;
+    const uint32_t other = first->second.first.serial;
+    if (!conflicts[ch] && !conflictedChannels_[ch]) {
+      char text[240];
+      std::snprintf(text, sizeof text,
+                    "Lighthouse 2.0 channel %d conflict: %s and %s. Tracking on this channel is paused. Assign a different channel to one base, then reset the room if its map is wrong.",
+                    ch + 1, BaseName(other).c_str(), BaseName(serial).c_str());
+      Emit(SessionEventType::Log, "", text, LogLevel::Warn);
+    }
+    conflicts.set(ch);
+    conflictedBases.insert(other);
+    conflictedBases.insert(serial);
+  }
+  for (int ch = 0; ch < sob::kChannels; ++ch) {
+    if (conflicts[ch]) channels.erase(ch);
+    else if (conflictedChannels_[ch]) {
+      Emit(SessionEventType::Log, "", "Lighthouse 2.0 channel " + std::to_string(ch + 1) + " conflict cleared");
+    }
+  }
+  for (const auto& [ch, base] : recalled)
+    if (!conflicts[ch] && !duplicateRecalls[ch]) channels.try_emplace(ch, base);
+  for (uint32_t serial : conflictedBases) {
+    if (room_.Conflicted(serial)) continue;
+    keyframes_.DropBase(serial);
+    lastSolved_.erase(serial);
+  }
+  room_.SetConflictedBases(std::move(conflictedBases));
+  conflictedChannels_ = conflicts;
   for (auto& [id, d] : devices_)
     if (d.tracker) {
       d.tracker->Source().SetKnownIdentities(all);
-      d.tracker->Source().SetKnownSobChannels(channels);
+      d.tracker->Source().SetKnownSobChannels(channels, conflicts);
     }
 }
 
@@ -1535,6 +1582,7 @@ SessionSnapshot SessionImpl::Snapshot() const {
     s.mode = b.dynamic.mode;
     // lhbs multi channels are its slot (1-4 on the display), stock ones A, b, c.
     s.lh2 = b.dynamic.sobChannel >= 0;
+    s.channelObservedAt = b.channelObservedAt;
     if (b.dynamic.sobChannel >= 0) s.channel = std::to_string(b.dynamic.sobChannel + 1);  // LH2: 1-16
     else if (b.dynamic.multiSlot >= 0) s.channel = std::to_string(b.dynamic.multiSlot + 1);
     else if (b.dynamic.mode >= 1 && b.dynamic.mode <= 3) s.channel = std::string(1, "Abc"[b.dynamic.mode - 1]);

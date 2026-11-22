@@ -329,6 +329,7 @@ void RoomMap::Loosen(RoomBase& b) {
 
 void RoomMap::OnBaseSeen(const BaseConfig& config, const BaseDynamicState& dynamic) {
   const uint32_t serial = config.serial;
+  if (Conflicted(serial)) return;
   const auto previousConfig = configs_.find(serial);
   if (previousConfig == configs_.end() || previousConfig->second.first.cal != config.cal) dirty_ = true;
   const bool firstSighting = !seenResetCount_.count(serial);
@@ -445,9 +446,18 @@ void RoomMap::SetOotxFrame(uint32_t serial, const std::vector<uint8_t>& frame) {
   if (stored != frame) { stored = frame; dirty_ = true; }
 }
 
+void RoomMap::SetConflictedBases(std::set<uint32_t> bases) {
+  if (bases == conflictedBases_) return;
+  for (uint32_t serial : bases) solvedTarget_.erase(serial);
+  if (bases.contains(Origin())) levelTarget_.reset();
+  conflictedBases_ = std::move(bases);
+  ++revision_;
+  ++bumps_;  // Discard room solves that used observations from before the conflict.
+}
+
 const RoomBase* RoomMap::Base(uint32_t serial) const {
   const Room* room = Active();
-  if (!room) return nullptr;
+  if (!room || Conflicted(serial)) return nullptr;
   const auto found = room->bases.find(serial);
   return found == room->bases.end() ? nullptr : &found->second;
 }
@@ -455,7 +465,8 @@ const RoomBase* RoomMap::Base(uint32_t serial) const {
 std::vector<RoomBase> RoomMap::Bases() const {
   std::vector<RoomBase> out;
   if (const Room* room = Active())
-    for (const auto& [serial, base] : room->bases) out.push_back(base);
+    for (const auto& [serial, base] : room->bases)
+      if (!Conflicted(serial)) out.push_back(base);
   return out;
 }
 
@@ -466,7 +477,7 @@ bool RoomMap::Empty() const {
 
 bool RoomMap::EstablishOrigin(uint32_t serial, const std::array<double, 2>& tilt, double tiltVariance) {
   Room* room = ActiveRoom();
-  if (!room || !room->bases.empty()) return false;
+  if (!room || !room->bases.empty() || Conflicted(serial)) return false;
   RoomBase base;
   base.serial = serial;
   keptGravity_.erase(serial);
@@ -490,7 +501,7 @@ void RoomMap::Observe(const std::string& device, uint32_t primary, uint32_t alt,
                       const Eigen::Isometry3d& altFromPrimary, double positionVariance, double rotationVariance,
                       double time) {
   Room* room = ActiveRoom();
-  if (!room || primary == alt || frozen_) return;
+  if (!room || primary == alt || frozen_ || Conflicted(primary) || Conflicted(alt)) return;
   const std::string key = device + ":" + Hex(primary) + ":" + Hex(alt);
   auto last = lastObservation_.find(key);
   if (last != lastObservation_.end() && time - last->second < 0.5 && time >= last->second) return;
@@ -733,7 +744,7 @@ void RoomMap::ApplySolved(uint32_t serial, const Eigen::Isometry3d& pose, double
   // base that really shifted a little (a 1 cm shift is half taken in a few minutes).
   constexpr double kFloorVariance = 3 * 0.001 * 0.001;
   Room* room = ActiveRoom();
-  if (!room || !pose.matrix().allFinite() || frozen_ || keyframes <= 0) return;
+  if (!room || !pose.matrix().allFinite() || frozen_ || keyframes <= 0 || Conflicted(serial)) return;
   auto found = room->bases.find(serial);
   if (found != room->bases.end() && found->second.origin) return;
   if (fresh < 0) fresh = keyframes;
@@ -898,7 +909,7 @@ void RoomMap::Advance(double time) {
 bool RoomMap::RefineOriginTilt(uint32_t serial, const std::array<double, 2>& tilt, double tiltVariance, double time) {
   constexpr double kLevelSlew = 0.05 * 0.017453292519943295, kFirstLevelSlew = 2.0 * 0.017453292519943295;  // rad/s
   Room* room = ActiveRoom();
-  if (!room || frozen_) return false;
+  if (!room || frozen_ || Conflicted(serial)) return false;
   auto found = room->bases.find(serial);
   if (found == room->bases.end() || !found->second.origin) return false;
   RoomBase& origin = found->second;

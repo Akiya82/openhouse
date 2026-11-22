@@ -175,9 +175,10 @@ void TrackingSource::SetKnownIdentities(std::vector<tdm::TdmDisambiguator::Ident
   tdm_.SetKnownIdentities(std::move(identities));
 }
 
-void TrackingSource::SetKnownSobChannels(const std::map<int, std::pair<BaseConfig, BaseDynamicState>>& channels) {
+void TrackingSource::SetKnownSobChannels(const std::map<int, std::pair<BaseConfig, BaseDynamicState>>& channels,
+                                         std::bitset<sob::kChannels> blocked) {
   std::lock_guard lock(mutex_);
-  sob_.SetKnownChannels(channels);
+  sob_.SetKnownChannels(channels, blocked);
 }
 
 bool TrackingSource::PopIdentity(tdm::TdmDisambiguator::Identity* out) {

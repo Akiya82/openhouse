@@ -319,6 +319,7 @@ if(LH_BUILD_VIEWER)
     # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
     if(OPENVR_INCLUDE_DIR)
       add_executable(openhouse-overlay WIN32 apps/openhouse-overlay/main.cpp apps/openhouse-overlay/ui.cpp
+                     apps/openhouse-overlay/base_channels.cpp
                      apps/openhouse-overlay/openvr_runtime.cpp apps/openhouse-overlay/update_check.cpp
                      apps/openhouse-overlay/driver_check.cpp
                      apps/openhouse-overlay/telemetry_client.cpp apps/openhouse-overlay/log_view.cpp
@@ -423,10 +424,13 @@ if(LH_BUILD_TESTS)
   endif()
   add_test(NAME unit COMMAND lh_unit_tests)
   if(TARGET driver_lighthouse)
-    add_executable(lh_openvr_component_tests tests/openvr/test_components.cpp src/openvr/hand_skeleton.cpp src/openvr/raw_alignment.cpp src/openvr/steam_rooms.cpp src/openvr/room_publisher.cpp src/openvr/host_frame.cpp src/openvr/telemetry_server.cpp src/openvr/pairing_mailbox.cpp)
-    target_include_directories(lh_openvr_component_tests PRIVATE src tests ${OPENVR_INCLUDE_DIR})
+    add_library(lh_test_ble SHARED tests/openvr/fake_lighthouse_ble.cpp)
+    add_executable(lh_openvr_component_tests tests/openvr/test_components.cpp tests/openvr/test_base_channels.cpp src/openvr/hand_skeleton.cpp src/openvr/raw_alignment.cpp src/openvr/steam_rooms.cpp src/openvr/room_publisher.cpp src/openvr/host_frame.cpp src/openvr/telemetry_server.cpp src/openvr/pairing_mailbox.cpp apps/openhouse-overlay/base_channels.cpp)
+    target_include_directories(lh_openvr_component_tests PRIVATE src tests apps/openhouse-overlay ${OPENVR_INCLUDE_DIR})
     target_compile_definitions(lh_openvr_component_tests PRIVATE LH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-    target_link_libraries(lh_openvr_component_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main)
+    target_link_libraries(lh_openvr_component_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main ${CMAKE_DL_LIBS})
+    target_link_libraries(lh_openvr_component_tests PRIVATE lh_test_ble)
+    target_compile_definitions(lh_openvr_component_tests PRIVATE LH_TEST_BLE="$<TARGET_FILE:lh_test_ble>")
     add_test(NAME openvr_components COMMAND lh_openvr_component_tests)
     find_library(OPENVR_API_LIBRARY openvr_api)
     if(OPENVR_API_LIBRARY)

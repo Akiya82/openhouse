@@ -18,6 +18,7 @@
 #include <map>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,9 @@ class RoomMap {
   void SetOotxFrame(uint32_t serial, const std::vector<uint8_t>& frame);
   const std::map<uint32_t, std::vector<uint8_t>>& OotxFrames() const { return frames_; }
 
+  // Keep stored poses while excluding stations whose optical channel is ambiguous.
+  void SetConflictedBases(std::set<uint32_t> bases);
+  bool Conflicted(uint32_t serial) const { return conflictedBases_.contains(serial); }
   const RoomBase* Base(uint32_t serial) const;
   std::vector<RoomBase> Bases() const;
   bool Empty() const;
@@ -112,7 +116,7 @@ class RoomMap {
   // base (OriginGauge), so the room, and what devices report in it, stay put.
   void Bump(uint32_t serial, const std::string& why);
   bool OriginRelearning() const { return originRelearn_; }
-  uint64_t Bumps() const { return bumps_; }  // counts Bump calls: a solve started before one is stale
+  uint64_t Bumps() const { return bumps_; }  // Movement and channel conflicts invalidate in-flight solves.
   uint32_t OriginGauge() const;  // the base held fixed meanwhile; 0 if none
   void ApplyOriginSolved(const Eigen::Isometry3d& worldFromOrigin, double positionVariance, int keyframes);
   uint64_t OriginEpoch() const { return originEpoch_; }  // bumps when the origin was re-placed
@@ -148,6 +152,7 @@ class RoomMap {
   std::map<uint32_t, std::pair<BaseConfig, BaseDynamicState>> configs_;
   std::map<uint32_t, std::vector<uint8_t>> frames_;
   std::map<uint32_t, int> seenResetCount_;  // this session
+  std::set<uint32_t> conflictedBases_;
   std::map<std::string, double> lastObservation_;
   uint64_t revision_ = 0;
   bool dirty_ = false;

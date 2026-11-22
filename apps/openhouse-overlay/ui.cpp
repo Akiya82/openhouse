@@ -423,9 +423,11 @@ void Ui::ReplacedBanner() {
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted("A SteamVR update replaced the openhouse driver");
   if (!n.error.empty()) { ImGui::SameLine(); ImGui::TextColored(kBad, "%s", n.error.c_str()); }
-  const float w = ImGui::GetFontSize() * 7;
-  ImGui::SameLine(ImGui::GetContentRegionMax().x - w * 2 - ImGui::GetStyle().ItemSpacing.x);
-  if (ImGui::Button("Fix", ImVec2(w, 0))) confirm_ = true;
+  const float w = ImGui::GetFontSize() * 7, wide = ImGui::CalcTextSize("Uninstall openhouse").x + ImGui::GetStyle().FramePadding.x * 4;
+  ImGui::SameLine(ImGui::GetContentRegionMax().x - w * 2 - wide - ImGui::GetStyle().ItemSpacing.x * 2);
+  if (ImGui::Button("Fix", ImVec2(w, 0))) { uninstall_ = false; confirm_ = true; }
+  ImGui::SameLine();
+  if (ImGui::Button("Uninstall openhouse", ImVec2(wide, 0))) { uninstall_ = true; confirm_ = true; }
   ImGui::SameLine();
   if (ImGui::Button("Ignore", ImVec2(w, 0))) ActOnNotice(NoticeAction::Ignore);
   ImGui::EndChild();
@@ -461,13 +463,18 @@ void Ui::NoticePopups() {
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   if (ImGui::BeginPopupModal("Confirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
     ImGui::PushFont(g_title);
-    ImGui::TextUnformatted(replaced ? "Fix openhouse?" : ("Update openhouse to " + n.tag + "?").c_str());
+    const bool remove = replaced && uninstall_;
+    ImGui::TextUnformatted(remove ? "Uninstall openhouse?" : replaced ? "Fix openhouse?" : ("Update openhouse to " + n.tag + "?").c_str());
     ImGui::PopFont();
     ImGui::TextColored(kWarn, "VR will shut down. These will be closed:");
     ImGui::TextUnformatted(ClosingText(inVR_).c_str());
-    if (!replaced) ImGui::TextDisabled("The changelog opens on your desktop");
+    if (remove) ImGui::TextDisabled("Your room and settings are kept");
+    else if (!replaced) ImGui::TextDisabled("The changelog opens on your desktop");
     ImGui::Spacing();
-    if (BigButton(replaced ? "Fix" : "Update", w)) { ActOnNotice(NoticeAction::Update); ImGui::CloseCurrentPopup(); }
+    if (BigButton(remove ? "Uninstall" : replaced ? "Fix" : "Update", w)) {
+      ActOnNotice(remove ? NoticeAction::Uninstall : NoticeAction::Update);
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::SameLine();
     if (BigButton("Cancel", w)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();

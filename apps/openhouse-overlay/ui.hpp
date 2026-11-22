@@ -41,7 +41,7 @@ class Ui {
   void UpdateCard();
   void ReplacedBanner();
   void NoticePopups();
-  bool confirm_ = false, offered_ = false;
+  bool confirm_ = false, offered_ = false, uninstall_ = false;  // uninstall_: the confirmation is for uninstalling
   void FloorCalibration();  // the Room map page's "put your controllers down" countdown
   void RoomActions();      // Record / Reset room, in the sidebar
 

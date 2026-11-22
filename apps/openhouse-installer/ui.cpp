@@ -1137,9 +1137,9 @@ void Ui::InstallPage(bool install) {
       ImGui::PopFont();
       // Started from the overlay (Update, Fix): VR was closed for this.
 #ifdef _WIN32
-      if (install && autoInstall_) ImGui::TextUnformatted("You can start SteamVR again");
+      if (autoInstall_) ImGui::TextUnformatted("You can start SteamVR again");
 #else
-      if (install && autoInstall_) ImGui::TextUnformatted("You can start SteamVR or Monado again");
+      if (autoInstall_) ImGui::TextUnformatted("You can start SteamVR or Monado again");
 #endif
       if (install) DongleUpdateOffer();
     } else {
@@ -1201,7 +1201,7 @@ void Ui::InstallPage(bool install) {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.53f, 0.43f, 0.14f, 1));
   }
   bool start = BigButton(install ? kActions[a] : "Uninstall", ImGui::GetFontSize() * 14);
-  if (install && autoInstall_ && !autoStarted_) start = autoStarted_ = true;
+  if (autoInstall_ && !autoStarted_) start = autoStarted_ = true;
   if (install && a != 0) ImGui::PopStyleColor(3);
   if (!install) ImGui::PopStyleColor(3);
   if (start) {
@@ -1224,6 +1224,11 @@ void Ui::StartSelfUpdate() { Go(Page::SelfUpdate); }
 void Ui::StartAutoInstall() {
   autoInstall_ = true;
   Go(Page::Install);
+}
+
+void Ui::StartAutoUninstall() {
+  autoInstall_ = true;
+  Go(Page::Uninstall);
 }
 
 // After installing: Doorman Dongles on older firmware than this package's.

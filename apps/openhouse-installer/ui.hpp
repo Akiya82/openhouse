@@ -108,6 +108,7 @@ class Ui {
   void StartSelfUpdate();
   // --install: installs right away (closing SteamVR), then offers a dongle update if one is due.
   void StartAutoInstall();
+  void StartAutoUninstall();  // --uninstall: the same, uninstalling
   bool QuitRequested() const { return quit_; }
 
  private:

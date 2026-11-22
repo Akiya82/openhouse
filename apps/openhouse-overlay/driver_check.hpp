@@ -14,7 +14,8 @@
 namespace openhouse::overlay {
 
 enum class NoticeKind { None, Replaced, Newer };
-enum class NoticeAction { Update, Ignore };  // Update: confirmed (Fix for a replaced driver)
+// Update: confirmed (Fix for a replaced driver). Uninstall: a replaced driver's other way out.
+enum class NoticeAction { Update, Uninstall, Ignore };
 
 // What the check found, for the overlay's banner; shared by the dialog and the banner.
 struct NoticeState {

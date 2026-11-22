@@ -62,6 +62,7 @@ int Run(const std::string& mode) {
     if (const char* page = std::getenv("OPENHOUSE_INSTALLER_PAGE")) ui.ShowForTest(page);
     if (mode == "--update") ui.StartSelfUpdate();
     else if (mode == "--install" || mode == "--repair") ui.StartAutoInstall();
+    else if (mode == "--uninstall") ui.StartAutoUninstall();
     const char* snapshot = std::getenv("OPENHOUSE_INSTALLER_SNAPSHOT");
     int frame = 0;
     while (!glfwWindowShouldClose(window) && !ui.QuitRequested()) {
@@ -106,5 +107,5 @@ int Run(const std::string& mode) {
 
 // --update (the overlay's Update / Reinstall): download the latest release and hand over to its
 // installer; --install (that installer) and --repair (the overlay's Fix, from the package kept at
-// install): install right away.
+// install): install right away; --uninstall (its Uninstall openhouse): uninstall right away.
 int main(int argc, char** argv) { return Run(argc > 1 ? argv[1] : ""); }

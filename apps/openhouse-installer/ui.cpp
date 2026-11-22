@@ -759,6 +759,13 @@ void Ui::ShowForTest(const std::string& page) {
   else if (page == "home") Go(Page::Home);
   else if (page == "pick") Go(Page::DongleUpdatePick);
   else if (page == "tools") Go(Page::Tools);
+  else if (page == "flash") Go(Page::FlashMenu);
+  else if (page == "doorman") Go(Page::DoormanMenu);
+  else if (page == "radio") Go(Page::RadioMenu);
+  else if (page == "wireless") Go(Page::RadioWireless);
+  else if (page == "wired") Go(Page::RadioWired);
+  else if (page == "base") Go(Page::BaseStation);
+  else if (page == "restore") Go(Page::RestoreMenu);
   else if (page == "update") {
     testOnly_ = true;   // a snapshot never updates anything
     const auto dongles = FindDoormanDongles();
@@ -1240,10 +1247,26 @@ void Ui::DongleUpdateOffer() {
   const uint16_t packaged = PackagedDongleVersion();
   int outdated = 0;
   for (const auto& d : homeDongles_.Value()) outdated += packaged && d.firmware != packaged;
+  // OPENHOUSE_TEST_DONGLE_OUTDATED (testing): as if a dongle had older firmware.
+  if (std::getenv("OPENHOUSE_TEST_DONGLE_OUTDATED")) outdated = std::max(outdated, 1);
   if (!outdated) return;
+  // In the middle of the page, hard to miss: the dongle and its devices need the new firmware.
+  const float fs = ImGui::GetFontSize(), w = ImGui::GetContentRegionAvail().x;
+  ImGui::Dummy(ImVec2(0, fs * 2));
+  const char* text = outdated == 1 ? "Your Doorman Dongle needs to be updated!" : "Your Doorman Dongles need to be updated!";
+  ImGui::PushFont(g_title);
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (w - ImGui::CalcTextSize(text).x) / 2));
+  ImGui::TextColored(kWarn, "%s", text);
+  ImGui::PopFont();
   ImGui::Spacing();
-  ImGui::TextColored(kWarn, "%s", outdated == 1 ? "Your dongle needs an update too" : "Your dongles need an update too");
-  if (BigButton("Update Dongles", ImGui::GetFontSize() * 14)) Go(Page::DongleUpdatePick);
+  const float bw = fs * 14;
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (w - bw) / 2));
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.62f, 0.50f, 0.16f, 1));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.60f, 0.20f, 1));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.53f, 0.43f, 0.14f, 1));
+  if (BigButton("Update", bw)) Go(Page::DongleUpdatePick);
+  ImGui::PopStyleColor(3);
+  ImGui::Dummy(ImVec2(0, fs));
 }
 
 void Ui::SelfUpdatePage() {

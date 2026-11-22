@@ -57,7 +57,9 @@ int TelemetryPort() {
 // drawn after ~2 s is written to FILE, and the app exits.
 bool SnapshotDue(int frame, int w, int h) {
   const char* path = std::getenv("OPENHOUSE_OVERLAY_SNAPSHOT");
-  if (!path || frame < 120) return false;
+  // OPENHOUSE_OVERLAY_SNAPSHOT_FRAMES: frames to wait (120 by default), for data that takes a while.
+  static const int wait = std::getenv("OPENHOUSE_OVERLAY_SNAPSHOT_FRAMES") ? std::atoi(std::getenv("OPENHOUSE_OVERLAY_SNAPSHOT_FRAMES")) : 120;
+  if (!path || frame < wait) return false;
   std::vector<unsigned char> rgb(size_t(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());

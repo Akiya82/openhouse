@@ -27,7 +27,9 @@ using openhouse::overlay::kLogoSize;
 
 bool SnapshotDue(int frame, int w, int h) {
   const char* path = std::getenv("OPENHOUSE_DONGLE_SNAPSHOT");
-  if (!path || frame < 180) return false;
+  // OPENHOUSE_DONGLE_SNAPSHOT_FRAMES: frames to wait (180 by default), for the radio stats to settle.
+  static const int wait = std::getenv("OPENHOUSE_DONGLE_SNAPSHOT_FRAMES") ? std::atoi(std::getenv("OPENHOUSE_DONGLE_SNAPSHOT_FRAMES")) : 180;
+  if (!path || frame < wait) return false;
   std::vector<unsigned char> rgb(size_t(w) * h * 3);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());

@@ -17,6 +17,7 @@
 #include "common/ui_theme.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/version.hpp"
+#include "platform/platform.hpp"
 
 namespace openhouse::overlay {
 namespace {
@@ -49,12 +50,42 @@ std::filesystem::path SettingsPath() {
 #endif
 }
 
+std::filesystem::path NameFallbackFont() {
+#ifdef _WIN32
+  return lh::platform::FsPath(lh::platform::Env("WINDIR")) / "Fonts" / "segoeui.ttf";
+#else
+  const char* candidates[] = {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                              "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+                              "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"};
+  for (const auto* path : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error)) return path;
+  }
+  return {};
+#endif
+}
+
+bool SelectableDeviceLabel(const char* label, bool selected, ImGuiSelectableFlags flags, ImVec2 size = {}) {
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  if (size.y == 0) size.y = ImGui::GetTextLineHeight();
+  const ImVec2 end(pos.x + ImGui::GetContentRegionAvail().x, pos.y + size.y);
+  const bool clicked = ImGui::Selectable("##device", selected, flags, size);
+  if (ImGui::IsItemVisible()) {
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(pos, end, true);
+    draw->AddText(pos, ImGui::GetColorU32(ImGuiCol_Text), label);
+    draw->PopClipRect();
+  }
+  return clicked;
+}
+
 std::string Short(const std::string& serial) {
   const auto dash = serial.find('-');
   return dash == std::string::npos ? serial : serial.substr(dash + 1);
 }
 
 std::string DeviceName(const Device& d) {
+  if (!d.name.empty()) return d.name;
   std::string kind = d.role == "hmd" ? "Headset" : d.role == "controller" ? "Controller" : "Tracker";
   if (d.hand == "left_hand") kind += " (left)";
   else if (d.hand == "right_hand") kind += " (right)";
@@ -201,12 +232,23 @@ void Ui::SetUpImGui(int k) {
   ImFontConfig font;
   font.OversampleH = font.OversampleV = 1;
   font.PixelSnapH = true;
-  font.SizePixels = 13.f * k;
-  io.Fonts->AddFontDefault(&font);
-  font.SizePixels = 13.f * (k + 1);
-  g_title = io.Fonts->AddFontDefault(&font);
-  font.SizePixels = 13.f * (k + 2);
-  g_huge = io.Fonts->AddFontDefault(&font);
+  const auto fallback = NameFallbackFont();
+  std::error_code error;
+  const bool haveFallback = !fallback.empty() && std::filesystem::is_regular_file(fallback, error);
+  const auto path = fallback.u8string();
+  auto add = [&](float size) {
+    font.SizePixels = size;
+    ImFont* base = io.Fonts->AddFontDefault(&font);
+    if (haveFallback) {
+      ImFontConfig merge;
+      merge.MergeMode = true;
+      io.Fonts->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size, &merge);
+    }
+    return base;
+  };
+  add(13.f * k);
+  g_title = add(13.f * (k + 1));
+  g_huge = add(13.f * (k + 2));
   // Plain ImGui, with roomy frames: easy to hit with a laser pointer.
   ImGui::StyleColorsDark();
   ImGuiStyle& style = ImGui::GetStyle();
@@ -552,7 +594,7 @@ void Ui::Overview() {
       ImGui::PushID(d.serial.c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      if (ImGui::Selectable(DeviceName(d).c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
+      if (SelectableDeviceLabel(DeviceName(d).c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
         selectedDevice_ = d.serial;
         page_ = Page::Devices;
       }
@@ -617,6 +659,21 @@ void Ui::Overview() {
   if (BigButton("Copy vrserver logs")) CopyServerLog();
 }
 
+void Ui::CommitTrackerName(const char* name, uint64_t edit) {
+  if (renameSerial_.empty() || edit != renameEdit_) return;
+  const std::string serial = std::move(renameSerial_);
+  renameSerial_.clear();
+  if (!client_.Connected() || renameConnection_ != client_.ConnectionGeneration()) {
+    Toast("Tracker name not saved: driver connection changed", true);
+    return;
+  }
+  try {
+    Send(json{{"cmd", "renameTracker"}, {"serial", serial}, {"name", name}}.dump(), "Tracker name");
+  } catch (const json::type_error&) {
+    Toast("Tracker name is not valid UTF-8", true);
+  }
+}
+
 void Ui::Devices() {
   Title("Devices", lh::ui::Icon::Tracker);
   const State& s = client_.Current();
@@ -629,7 +686,7 @@ void Ui::Devices() {
     Dot(DeviceColor(d));
     char label[96];
     std::snprintf(label, sizeof label, "%s\n%s", DeviceName(d).c_str(), d.serial.c_str());
-    if (ImGui::Selectable(label, selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
+    if (SelectableDeviceLabel(label, selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
       selectedDevice_ = d.serial;
     ImGui::PopID();
   }
@@ -658,6 +715,44 @@ void Ui::Devices() {
       Row("Speed", "%.2f m/s", std::sqrt(d->v[0] * d->v[0] + d->v[1] * d->v[1] + d->v[2] * d->v[2]));
     }
     ImGui::EndTable();
+  }
+  if (d->role == "tracker") {
+    if (BigButton("Rename tracker")) {
+      renameSerial_ = d->serial;
+      renameConnection_ = client_.ConnectionGeneration();
+      ++renameEdit_;
+      if (nameKeyboard_) {
+        if (!nameKeyboard_(d->name.c_str(), renameEdit_)) {
+          renameSerial_.clear();
+          Toast("Couldn't open SteamVR keyboard", true);
+        }
+      } else {
+        std::snprintf(trackerName_.data(), trackerName_.size(), "%s", d->name.c_str());
+        ImGui::OpenPopup("Tracker name");
+      }
+    }
+    if (!d->name.empty()) {
+      ImGui::SameLine();
+      if (BigButton("Clear name")) {
+        renameSerial_ = d->serial;
+        renameConnection_ = client_.ConnectionGeneration();
+        CommitTrackerName("", ++renameEdit_);
+      }
+    }
+    if (ImGui::BeginPopupModal("Tracker name", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+      const bool enter = ImGui::InputText("Name", trackerName_.data(), trackerName_.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+      if (BigButton("Save") || enter) {
+        CommitTrackerName(trackerName_.data(), renameEdit_);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (BigButton("Cancel")) {
+        renameSerial_.clear();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
   }
   ImGui::SeparatorText("Light");
   if (d->coverage.empty()) ImGui::TextDisabled("None");

@@ -2,7 +2,9 @@
 // window. It talks to the running driver over its telemetry (lh/telemetry.hpp): the state
 // and log it streams, and commands for settings and actions.
 #pragma once
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <map>
 #include <string>
@@ -22,6 +24,8 @@ class Ui {
   static void SetUpImGui(int k);
   void SetLogo(uint64_t texture) { logo_ = texture; }  // an ImTextureID (GL texture)
   void SetInVR(bool inVR) { inVR_ = inVR; }
+  void SetNameKeyboard(std::function<bool(const char*, uint64_t)> keyboard) { nameKeyboard_ = std::move(keyboard); }
+  void CommitTrackerName(const char* name, uint64_t edit);
 
   void Poll(double now);                // telemetry, replies
   void Draw(float width, float height);  // one frame, inside ImGui::NewFrame/Render
@@ -73,7 +77,10 @@ class Ui {
   viewer::Detail detail_ = viewer::Detail::Basic;
   UpdateCheck update_;
   Page page_ = Page::Overview;
-  std::string selectedDevice_, selectedBase_;
+  std::string selectedDevice_, selectedBase_, renameSerial_;
+  std::array<char, 64> trackerName_{};
+  std::function<bool(const char*, uint64_t)> nameKeyboard_;
+  uint64_t renameConnection_ = 0, renameEdit_ = 0;
   uint64_t reportCount_ = UINT64_MAX;  // the driver's report count last seen (MAX: none yet)
   std::string reportPath_, reportError_;
   bool showReport_ = false;

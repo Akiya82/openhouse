@@ -571,7 +571,7 @@ void DoormanDongle::StartConfigFetch(int slot) {
     // (Index controller just switched on) the main MCU doesn't answer feature reads yet, and one
     // early try for the IMU ranges left them unknown: every IMU sample was then dropped
     // (ImuEmitter::Emit) and the device stayed "not tracked" for good.
-    const bool ok = ReadDeviceConfig(read, &json, &error);
+    const bool ok = ReadDeviceConfig(read, &json, &error, true);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (serial.empty()) {          // unidentified device: IMU ranges from feature 0x01 (as wired)
       w.fetchedGyro = w.fetchedAccel = -1;

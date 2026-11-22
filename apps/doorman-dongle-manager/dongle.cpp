@@ -228,7 +228,11 @@ void Dongle::Poll(double now) {
         const uint8_t* e = r.data.data() + (i - first) * 10;
         auto& s = state_.slots[i];
         s.used = e[0] & 1;
+        const bool wasActive = s.active;
         s.active = (e[0] & 2) != 0;
+        // Turned on again: it's asked who it is again. Its tries may have run out while it was on before
+        // (the driver running, a weak link), and the slot stayed unnamed until the dongle was replugged.
+        if (s.active && !wasActive && s.id.serial.empty()) { identTried_[i] = 0; configTried_[i] = 0; configNext_[i] = 0; }
         s.rssiMin = -int(e[4]);  // min/max are magnitudes: the strongest is the smallest
         s.rssiMax = -int(e[3]);
         // Signal strength differs by several dB from channel to channel (the link hops every

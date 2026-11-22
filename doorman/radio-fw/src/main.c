@@ -614,6 +614,7 @@ static void spis_kick(void)
 
 /* ---------------- radio link v1 (tracker side, see common/doorman_link.h) ---------------- */
 #define UQ_BYTES 1024                  /* uplink frames from the LPC, [len][frame] */
+#define UQ_CAP 384                     /* at most this much queued: ~25 ms at 15 kB/s (uplink_push) */
 static uint8_t uq[UQ_BYTES];
 static uint16_t uq_head, uq_tail;
 static uint32_t uq_drops;
@@ -762,7 +763,10 @@ static void uplink_push(const uint8_t *f, uint8_t n)
     for (int i = 0; i < n; i++) { pq[pq_tail] = f[i]; pq_tail = (pq_tail + 1) & (PQ_BYTES - 1); }
     return;
   }
-  if (uq_used() + n + 1 >= UQ_BYTES) { uq_drops++; return; }   /* drop BEFORE the codec sees it */
+  /* Held to UQ_CAP, not the whole queue: a full 1 KB took ~66 ms to drain at the ~15 kB/s one slot
+     carries, so while the link was behind every IMU sample reached the PC that late. Dropped here, before
+     the codec sees it, so both codec ends stay in step. */
+  if (uq_used() + n + 1 >= UQ_CAP) { uq_drops++; return; }
   static uint8_t enc[80];
   addr_check();
   uint32_t te = now_us();

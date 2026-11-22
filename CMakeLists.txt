@@ -162,15 +162,6 @@ if(LH_BUILD_USB)
     if(WIN32)
       target_link_libraries(lhtool PRIVATE advapi32)
     endif()
-    # Started by SteamVR each session: warns when an update replaced our driver.
-    add_executable(update-checker WIN32 apps/update-checker/main.cpp)
-    target_include_directories(update-checker PRIVATE include)
-    if(WIN32)
-      target_link_libraries(update-checker PRIVATE winhttp)
-    endif()
-    if(MSVC)
-      target_link_options(update-checker PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
-    endif()
     add_executable(lhcapture apps/lhcapture/main.cpp)
     target_include_directories(lhcapture PRIVATE src)
     target_link_libraries(lhcapture PRIVATE lh_usb nlohmann_json::nlohmann_json)
@@ -329,6 +320,7 @@ if(LH_BUILD_VIEWER)
     if(OPENVR_INCLUDE_DIR)
       add_executable(openhouse-overlay WIN32 apps/openhouse-overlay/main.cpp apps/openhouse-overlay/ui.cpp
                      apps/openhouse-overlay/openvr_runtime.cpp apps/openhouse-overlay/update_check.cpp
+                     apps/openhouse-overlay/driver_check.cpp
                      apps/openhouse-overlay/telemetry_client.cpp apps/openhouse-overlay/log_view.cpp
                      apps/openhouse-overlay/views.cpp)
       target_include_directories(openhouse-overlay PRIVATE src ${OPENVR_INCLUDE_DIR})
@@ -347,7 +339,7 @@ if(LH_BUILD_VIEWER)
     add_executable(openhouse-installer WIN32 apps/openhouse-installer/main.cpp apps/openhouse-installer/ui.cpp
                    apps/openhouse-installer/system.cpp apps/openhouse-installer/driver_install.cpp
                    apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp
-                   apps/openhouse-installer/device_type.cpp src/common/nordic_dfu.cpp)
+                   apps/openhouse-installer/device_type.cpp apps/openhouse-installer/self_update.cpp src/common/nordic_dfu.cpp)
     target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
     target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
     if(WIN32)
@@ -503,17 +495,22 @@ foreach(entry
     "driver_lighthouse|openhouse SteamVR lighthouse driver"
     "lhtool|openhouse replay and diagnostics tool"
     "lhcapture|openhouse device recorder"
-    "update-checker|openhouse update check"
-    "openhouse-overlay|openhouse overlay"
-    "doorman-dongle-manager|Doorman Dongle Manager"
+    "openhouse-overlay|openhouse overlay|openhouse.ico"
+    "doorman-dongle-manager|Doorman Dongle Manager|dongle-manager.ico"
     "openhouse-compare|openhouse and SteamVR driver comparison"
     "lhviz|openhouse developer viewer"
-    "openhouse-installer|openhouse driver installer")
+    "openhouse-viewer|openhouse driver status viewer"
+    "openhouse-installer|openhouse driver installer|openhouse.ico")
   string(REPLACE "|" ";" parts "${entry}")
   list(GET parts 0 name)
   list(GET parts 1 text)
+  set(icon "")
+  list(LENGTH parts n)
+  if(n GREATER 2)
+    list(GET parts 2 icon)
+  endif()
   if(TARGET ${name})
-    lh_windows_resources(${name} "${text}")
+    lh_windows_resources(${name} "${text}" "${icon}")
   endif()
 endforeach()
 

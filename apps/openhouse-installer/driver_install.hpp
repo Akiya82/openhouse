@@ -2,7 +2,7 @@
 //
 // Install keeps SteamVR's own driver as driver_lighthouse.<ext>.stock whenever the one in place
 // isn't openhouse's (a SteamVR update's newer one replaces an older backup), puts ours in its
-// place, and registers update-checker and openhouse-overlay as apps SteamVR starts with each
+// place, and registers openhouse-overlay (which also runs the update check) as an app SteamVR starts with each
 // session (Steam's appconfig.json + vrappconfig). Uninstall puts SteamVR's driver back, unless a
 // SteamVR update already did. Your room and settings are kept either way.
 #pragma once
@@ -19,6 +19,7 @@ struct SteamVR {
 };
 SteamVR FindSteamVR();
 bool IsSteamVRFolder(const fs::path& root);
+bool FlatpakSteam(const fs::path& root);  // Linux: inside Flatpak Steam's folder (not fully tested)
 void RememberSteamVR(const fs::path& root);  // installer.json, so the next start finds it
 
 struct DriverStatus {

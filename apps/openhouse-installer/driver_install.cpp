@@ -161,17 +161,17 @@ fs::path MonadoUnit() {
 }
 
 // For Monado / WiVRn (they don't start SteamVR apps): a systemd user service that runs the
-// update check whenever monado-service or wivrn-server starts.
+// update check (openhouse-overlay --check) whenever monado-service or wivrn-server starts.
 void InstallMonadoCheck(const Paths& p) {
   const fs::path watch = p.data / "openhouse-monado-watch";
-  const std::string check = Utf8(p.data / "update-checker");
+  const std::string check = Utf8(p.data / "openhouse-overlay");
   WriteFileAtomic(watch,
                   "#!/usr/bin/env bash\n"
-                  "# Runs update-checker once each time Monado or WiVRn starts.\n"
+                  "# Runs openhouse's update check once each time Monado or WiVRn starts.\n"
                   "running=0\n"
                   "while sleep 3; do\n"
                   "  if pgrep -x monado-service >/dev/null || pgrep -x wivrn-server >/dev/null; then\n"
-                  "    [[ $running == 0 ]] && \"" + check + "\" \"" + Utf8(p.directory) + "\"\n"
+                  "    [[ $running == 0 ]] && \"" + check + "\" --check \"" + Utf8(p.directory) + "\"\n"
                   "    running=1\n"
                   "  else\n"
                   "    running=0\n"
@@ -203,6 +203,10 @@ void RemoveOldUpdateCheck(const Paths& p, const std::function<void(const std::st
   const fs::path manifest = p.data / "openhouse-check.vrmanifest";
   if (fs::exists(manifest, ec)) SetRegistration(p, manifest, "openhouse.check", false, log);
   for (const char* name : {"openhouse-check", "openhouse-check.exe", "openhouse-check.vrmanifest"}) RemoveFile(p.data / name);
+  // 1.0.4 moved the check into openhouse-overlay: the separate update-checker goes.
+  const fs::path checker = p.data / "update-checker.vrmanifest";
+  if (fs::exists(checker, ec)) SetRegistration(p, checker, kCheckKey, false, log);
+  for (const char* name : {"update-checker", "update-checker.exe", "update-checker.vrmanifest"}) RemoveFile(p.data / name);
 #ifndef _WIN32
   const fs::path unit = MonadoUnit().parent_path() / "openhouse-check.service";
   if (fs::exists(unit, ec)) {
@@ -228,6 +232,15 @@ void Try(const std::function<void(const std::string&)>& log, const char* what, c
   }
 }
 }  // namespace
+
+bool FlatpakSteam(const fs::path& root) {
+#ifdef _WIN32
+  (void)root;
+  return false;
+#else
+  return Utf8(root).find("/.var/app/com.valvesoftware.Steam/") != std::string::npos;
+#endif
+}
 
 bool IsSteamVRFolder(const fs::path& root) {
   std::error_code ec;
@@ -260,7 +273,7 @@ SteamVR FindSteamVR() {
   const fs::path home = HomeDirectory();
   candidates = {home / ".local/share/Steam/steamapps/common/SteamVR", home / ".steam/steam/steamapps/common/SteamVR",
                 home / ".steam/root/steamapps/common/SteamVR",
-                home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/SteamVR"};
+                home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/SteamVR"};  // last: not fully tested
 #endif
   for (const auto& c : candidates)
     if (IsSteamVRFolder(c)) { s.root = c; return s; }
@@ -406,25 +419,36 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
 #endif
   RemoveOldSettingsPage(p);
   RemoveOldUpdateCheck(p, log);
-  // The update check (warns when a SteamVR update replaced openhouse) and the overlay.
+  // The overlay; with --driver it also warns when a SteamVR update replaced openhouse, and offers
+  // new releases (driver_check.hpp).
   const fs::path tools = here / "apps";
   fs::create_directories(p.data, ec);
-  const fs::path check = tools / (std::string("update-checker") + kExe);
-  if (fs::exists(check, ec)) {
-    const fs::path installed = p.data / check.filename();
-    CopyOver(check, installed);
-    const fs::path manifest = p.data / "update-checker.vrmanifest";
-    WriteManifest(manifest, kCheckKey, installed, "\"" + Utf8(p.directory) + "\"", "openhouse update check",
-                  "Tells you when a SteamVR update replaced the openhouse driver");
-    SetRegistration(p, manifest, kCheckKey, true, log);
-    log("Added the update check to SteamVR");
+  // What this install came from, kept for the overlay: Fix reinstalls from it (--repair) and
+  // Update starts its installer (--update). A package of its own: installer, driver, its libraries.
+  const fs::path saved = p.data / "package";
+  if (fs::weakly_canonical(here, ec) != fs::weakly_canonical(saved, ec)) {
+    fs::remove_all(saved, ec);
+    fs::create_directories(saved / "apps", ec);
+    for (const std::string name : {std::string("openhouse-installer") + kExe, std::string(kDriverFile), std::string("VERSION.txt")})
+      if (fs::exists(here / name, ec)) CopyOver(here / name, saved / name);
+    if (fs::exists(here / "lh-libs", ec)) {
+      fs::create_directories(saved / "lh-libs", ec);
+      for (const auto& e : fs::directory_iterator(here / "lh-libs", ec)) CopyOver(e.path(), saved / "lh-libs" / e.path().filename());
+    }
+    if (const fs::path o = tools / (std::string("openhouse-overlay") + kExe); fs::exists(o, ec)) CopyOver(o, saved / "apps" / o.filename());
+#ifndef _WIN32
+    fs::permissions(saved / "openhouse-installer", fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                    fs::perms::others_read | fs::perms::others_exec, ec);
+#endif
+    log("Kept the package for repairs");
   }
+  RemoveFile(p.data / (std::string("openhouse-installer") + kExe));  // where 1.0.4 test builds kept it
   const fs::path overlay = tools / (std::string("openhouse-overlay") + kExe);
   if (fs::exists(overlay, ec)) {
     const fs::path installed = p.data / overlay.filename();
     CopyOver(overlay, installed);
     const fs::path manifest = p.data / "openhouse-overlay.vrmanifest";
-    WriteManifest(manifest, kOverlayKey, installed, "--overlay", "openhouse",
+    WriteManifest(manifest, kOverlayKey, installed, "--overlay --driver \"" + Utf8(p.directory) + "\"", "openhouse",
                   "openhouse's devices, base stations, room and settings in the SteamVR dashboard");
     SetRegistration(p, manifest, kOverlayKey, true, log);
     log("Added openhouse to SteamVR's dashboard");
@@ -470,15 +494,16 @@ void UninstallDriver(const fs::path& steamvr, const std::function<void(const std
 #endif
   Try(log, "Old settings page not removed", [&] { RemoveOldSettingsPage(p); });
   Try(log, "Old update check not removed", [&] { RemoveOldUpdateCheck(p, log); });
-  Try(log, "Update check not unregistered", [&] { SetRegistration(p, p.data / "update-checker.vrmanifest", kCheckKey, false, log); });
   Try(log, "Overlay not unregistered", [&] { SetRegistration(p, p.data / "openhouse-overlay.vrmanifest", kOverlayKey, false, log); });
 #ifndef _WIN32
   RemoveMonadoCheck();
 #endif
   // Only the files the installer put there: the folder also holds the user's recordings.
-  for (const char* name : {"update-checker", "update-checker.exe", "update-checker.vrmanifest", "openhouse-overlay",
+  for (const char* name : {"update-checker", "update-checker.exe", "update-checker.vrmanifest", "openhouse-installer", "openhouse-installer.exe", "openhouse-overlay",
                            "openhouse-overlay.exe", "openhouse-overlay.vrmanifest", "openhouse-monado-watch"})
     RemoveFile(p.data / name);
+  fs::remove_all(p.data / "package", ec);
+  fs::remove_all(p.data / "update", ec);
   fs::remove(p.data, ec);  // only goes when nothing else is in it
   log("Removed the update check and the dashboard overlay");
 #ifndef _WIN32

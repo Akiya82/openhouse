@@ -4,8 +4,12 @@
 // runs in (SteamVR, Monado, WiVRn).
 //
 //   openhouse-overlay              a desktop window
-//   openhouse-overlay --overlay    the SteamVR dashboard overlay, or exit if SteamVR isn't running
-//                                  (what SteamVR starts with each session, from its manifest)
+//   openhouse-overlay --overlay [--driver DIR]
+//                                  the SteamVR dashboard overlay, or exit if SteamVR isn't running
+//                                  (what SteamVR starts with each session, from its manifest). With
+//                                  --driver it also runs the session check (driver_check.hpp)
+//   openhouse-overlay --check DIR  only the session check, then exit (Linux: the Monado / WiVRn
+//                                  service). DIR: SteamVR/drivers/lighthouse/bin/<platform>
 //
 // The dashboard overlay renders the same ImGui UI into an OpenGL texture of a hidden
 // window and hands SteamVR the texture; the laser pointer comes back as mouse events.
@@ -15,6 +19,9 @@
 #include <backends/imgui_impl_opengl2.h>
 
 #include <chrono>
+#include <string>
+#include <thread>
+#include "driver_check.hpp"
 #include <cstdlib>
 #include <vector>
 #include <cstdio>
@@ -36,7 +43,8 @@ using namespace openhouse::overlay;
 
 // The overlay's texture, and its size in SteamVR's dashboard.
 // SteamVR fits the dashboard overlay to its panel: a smaller texture shows the UI larger.
-constexpr int kTextureWidth = 1600, kTextureHeight = 1000;
+// 2128 x 1330 with the 2x font: the UI at 1.5x of a 1x desktop window, still pixel-sharp.
+constexpr int kTextureWidth = 2128, kTextureHeight = 1330;
 constexpr float kOverlayWidthMeters = 2.5f;
 constexpr const char* kOverlayKey = "openhouse.overlay";
 
@@ -214,8 +222,26 @@ int RunOverlay() {
   ui.SetLogo(UploadRgba(kLogoRgba, kLogoSize, kLogoSize));
 
   auto last = std::chrono::steady_clock::now();
-  bool running = true;
+  bool running = true, notified = false;
   while (running) {
+    // In the headset too: the desktop dialog isn't seen with it on.
+    // SteamVR's own notification in the headset: a replaced driver stays until dismissed, a new
+    // release is a passing one.
+    if (!notified && !openhouse::overlay::NoticeText().empty()) {
+      notified = true;
+      if (vr::IVRNotifications* n = vr::VRNotifications()) {
+        const bool replaced = openhouse::overlay::Notice().kind == openhouse::overlay::NoticeKind::Replaced;
+        const std::string text = openhouse::overlay::NoticeText() + (replaced ? ". Open openhouse in the dashboard to reinstall" : "");
+        vr::NotificationBitmap_t logo;
+        logo.m_pImageData = const_cast<uint8_t*>(kLogoRgba);
+        logo.m_nWidth = kLogoSize;
+        logo.m_nHeight = kLogoSize;
+        logo.m_nBytesPerPixel = 4;
+        vr::VRNotificationId id = 0;
+        n->CreateNotification(main, 0, replaced ? vr::EVRNotificationType_Persistent : vr::EVRNotificationType_Transient,
+                              text.c_str(), vr::EVRNotificationStyle_Application, &logo, &id);
+      }
+    }
     vr::VREvent_t event;
     while (vr::VRSystem() && vr::VRSystem()->PollNextEvent(&event, sizeof event))
       if (event.eventType == vr::VREvent_Quit) {
@@ -274,12 +300,21 @@ int RunOverlay() {
 
 int main(int argc, char** argv) {
   bool overlay = false;
-  for (int i = 1; i < argc; ++i)
+  std::string driverDir;
+  for (int i = 1; i < argc; ++i) {
+    // --check and --driver take the rest of the line: the path may have come in pieces.
+    if (!std::strcmp(argv[i], "--check")) return openhouse::overlay::RunDriverCheck(openhouse::overlay::JoinedPath(argc, argv, i + 1));
+    if (!std::strcmp(argv[i], "--driver")) { driverDir = openhouse::overlay::JoinedPath(argc, argv, i + 1); break; }
     if (!std::strcmp(argv[i], "--overlay")) overlay = true;
+  }
   if (!glfwInit()) { std::fprintf(stderr, "openhouse-overlay: no display\n"); return 1; }
   int rc = 0;
   if (!overlay) rc = RunDesktop();
-  else if (SteamVRRunning()) rc = RunOverlay();
+  else if (SteamVRRunning()) {
+    // Its dialogs wait for the user: on their own thread, the overlay goes on meanwhile.
+    if (!driverDir.empty()) std::thread([driverDir] { openhouse::overlay::RunDriverCheck(driverDir, true); }).detach();
+    rc = RunOverlay();
+  }
   // --overlay without SteamVR: nothing to do
   glfwTerminate();
   return rc;

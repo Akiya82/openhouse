@@ -29,7 +29,7 @@ for package in openvr glfw systemd; do
 done
 find "$out/lh-licenses" -xtype l -delete  # a link whose target wasn't there
 # Every app stands alone (liblh's code is built in); none keeps the build directory as its RUNPATH.
-for app in lhtool lhcapture lhviz openhouse-viewer update-checker openhouse-overlay doorman-dongle-manager; do
+for app in lhtool lhcapture lhviz openhouse-viewer openhouse-overlay doorman-dongle-manager; do
   cp "$build/$app" "$out/apps/"
   strip "$out/apps/$app"
   patchelf --remove-rpath "$out/apps/$app"

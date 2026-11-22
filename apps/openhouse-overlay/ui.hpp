@@ -38,6 +38,10 @@ class Ui {
   void Debug();
   void About();
   void StatusBar();
+  void UpdateCard();
+  void ReplacedBanner();
+  void NoticePopups();
+  bool confirm_ = false, offered_ = false;
   void FloorCalibration();  // the Room map page's "put your controllers down" countdown
   void RoomActions();      // Record / Reset room, in the sidebar
 

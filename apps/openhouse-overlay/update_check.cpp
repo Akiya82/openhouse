@@ -45,12 +45,15 @@ void UpdateCheck::Start() {
   busy_ = true;
   done_ = false;
   thread_ = std::thread([this] {
-    const std::string tag = TagName(lh::GithubGet("/repos/YusufOzmen01/openhouse/releases/latest"));
+    // OPENHOUSE_TEST_NEWER=v9.9.9 (testing): as if that release were out.
+    const char* test = std::getenv("OPENHOUSE_TEST_NEWER");
+    const std::string tag = test && *test ? std::string(test) : TagName(lh::GithubGet("/repos/YusufOzmen01/openhouse/releases/latest"));
     {
       std::lock_guard lock(mutex_);
       latest_ = tag;
     }
-    const lh::UpdateState state = tag.empty() ? lh::UpdateState::Current : lh::CheckRelease(tag, lh::GithubGet);
+    const lh::UpdateState state = test && *test ? lh::UpdateState::Newer
+                                  : tag.empty() ? lh::UpdateState::Current : lh::CheckRelease(tag, lh::GithubGet);
     newer_ = state == lh::UpdateState::Newer;
     unknown_ = state == lh::UpdateState::Unknown;
     done_ = true;

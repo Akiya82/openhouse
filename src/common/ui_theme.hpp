@@ -67,7 +67,7 @@ inline ImVec4 CardColor() { return ImVec4(0.11f, 0.122f, 0.157f, 0.92f); }
 
 enum class Icon {
   Download, Refresh, Trash, Chip, Restore, BaseStation, Wireless, Dongle, Tracker, Wire,
-  Overview, Map, Settings, Debug, About, Slots, Channels, Record, Folder
+  Overview, Map, Settings, Debug, About, Slots, Channels, Record, Folder, Wrench
 };
 
 inline void Arc(ImDrawList* dl, ImVec2 c, float r, float a0, float a1, ImU32 col, float th) {
@@ -110,6 +110,12 @@ inline void DrawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
       break;
     case Icon::Refresh:
       RingArrow(dl, c, h * 0.62f, th, true, col);
+      break;
+    case Icon::Wrench:
+      // A handle down to the lower left, an open jaw up to the upper right.
+      dl->AddLine(P(-0.72f, 0.72f), P(0.12f, -0.12f), col, th * 1.7f);
+      dl->PathArcTo(P(0.38f, -0.38f), h * 0.34f, 0.0f, 3.14159265f * 1.5f, 16);
+      dl->PathStroke(col, ImDrawFlags_None, th * 1.5f);
       break;
     case Icon::Restore:
       RingArrow(dl, c, h * 0.62f, th, false, col);

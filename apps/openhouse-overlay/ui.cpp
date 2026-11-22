@@ -1,5 +1,6 @@
 #include <filesystem>
 #include "ui.hpp"
+#include "driver_check.hpp"
 
 #include "openvr_runtime.hpp"
 
@@ -173,6 +174,7 @@ Ui::Ui(int port) : client_(port) {
   // OPENHOUSE_OVERLAY_PAGE (testing, with OPENHOUSE_OVERLAY_SNAPSHOT): the page shown first.
   if (const char* page = std::getenv("OPENHOUSE_OVERLAY_PAGE")) {
     const std::string p = page;
+    if (p == "confirm") { offered_ = true; confirm_ = true; }  // the confirmation popup instead of the first one
     page_ = p == "devices" ? Page::Devices : p == "bases" ? Page::Bases : p == "dongles" ? Page::Dongles : p == "map" ? Page::Map
           : p == "settings" ? Page::Settings : p == "debug" ? Page::Debug : p == "about" ? Page::About : Page::Overview;
   }
@@ -249,6 +251,7 @@ void Ui::Draw(float width, float height) {
   ImGui::Begin("openhouse", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                          ImGuiWindowFlags_NoScrollbar);
   lh::ui::Snow(ImGui::GetWindowDrawList(), ImVec2(0, 0), ImVec2(width, height));
+  ReplacedBanner();
   const float statusHeight = ImGui::GetFrameHeightWithSpacing() + 4;
   const float body = ImGui::GetContentRegionAvail().y - statusHeight;
   Sidebar(body);
@@ -269,6 +272,7 @@ void Ui::Draw(float width, float height) {
   ImGui::EndChild();
   StatusBar();
   ReportPopup();
+  NoticePopups();
   ImGui::End();
 }
 
@@ -288,8 +292,9 @@ void Ui::Sidebar(float height) {
   ImGui::PushFont(g_title);
   ImGui::TextUnformatted("openhouse");
   ImGui::PopFont();
-  ImGui::TextDisabled("v%s", lh::kVersion);
   ImGui::EndGroup();
+  ImGui::TextDisabled("v%s", lh::kVersion);
+  UpdateCard();
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::Spacing();
@@ -392,17 +397,86 @@ void Ui::ReportPopup() {
   }
 }
 
+// A new release: a small card at the top of the sidebar, out of the pages' way.
+void Ui::UpdateCard() {
+  if (update_.Done() && update_.Newer()) OfferUpdate(update_.Latest());
+  const NoticeState n = Notice();
+  if (n.kind != NoticeKind::Newer || (n.handled && n.error.empty())) return;
+  ImGui::Spacing();
+  ImGui::TextColored(kAccent, "%s available", n.tag.c_str());
+  if (!n.error.empty()) ImGui::TextColored(kBad, "%s", n.error.c_str());
+  const float ignore = ImGui::CalcTextSize("Ignore").x + ImGui::GetStyle().FramePadding.x * 2;
+  if (ImGui::Button("Update", ImVec2(ImGui::GetContentRegionAvail().x - ignore - ImGui::GetStyle().ItemSpacing.x, 0)))
+    confirm_ = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Ignore", ImVec2(ignore, 0))) ActOnNotice(NoticeAction::Ignore);
+}
+
+// A SteamVR update replaced the driver: across the top, above the sidebar and the page (which
+// get what's left, so nothing is covered).
+void Ui::ReplacedBanner() {
+  const NoticeState n = Notice();
+  if (n.kind != NoticeKind::Replaced || (n.handled && n.error.empty())) return;
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.45f, 0.16f, 0.16f, 1));
+  ImGui::BeginChild("replaced", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+  ImGui::PopStyleColor();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("A SteamVR update replaced the openhouse driver");
+  if (!n.error.empty()) { ImGui::SameLine(); ImGui::TextColored(kBad, "%s", n.error.c_str()); }
+  const float w = ImGui::GetFontSize() * 7;
+  ImGui::SameLine(ImGui::GetContentRegionMax().x - w * 2 - ImGui::GetStyle().ItemSpacing.x);
+  if (ImGui::Button("Fix", ImVec2(w, 0))) confirm_ = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Ignore", ImVec2(w, 0))) ActOnNotice(NoticeAction::Ignore);
+  ImGui::EndChild();
+}
+
+// A new release, once a session when it's first known; and the confirmation before updating or
+// fixing (VR shuts down).
+void Ui::NoticePopups() {
+  const NoticeState n = Notice();
+  const bool replaced = n.kind == NoticeKind::Replaced;
+  const float fs = ImGui::GetFontSize(), w = fs * 9;
+  const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+  if (n.kind == NoticeKind::Newer && !n.handled && !offered_) {
+    offered_ = true;
+    ImGui::OpenPopup("Update available");
+  }
+  if (confirm_) {
+    confirm_ = false;
+    ImGui::OpenPopup("Confirm");
+  }
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Update available", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+    ImGui::PushFont(g_title);
+    ImGui::Text("openhouse %s is available", n.tag.c_str());
+    ImGui::PopFont();
+    ImGui::Text("You have v%s", lh::kVersion);
+    ImGui::Spacing();
+    if (BigButton("Update", w)) { ImGui::CloseCurrentPopup(); confirm_ = true; }
+    ImGui::SameLine();
+    if (BigButton("Ignore", w)) { ActOnNotice(NoticeAction::Ignore); ImGui::CloseCurrentPopup(); }
+    ImGui::EndPopup();
+  }
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Confirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+    ImGui::PushFont(g_title);
+    ImGui::TextUnformatted(replaced ? "Fix openhouse?" : ("Update openhouse to " + n.tag + "?").c_str());
+    ImGui::PopFont();
+    ImGui::TextColored(kWarn, "VR will shut down. These will be closed:");
+    ImGui::TextUnformatted(ClosingText(inVR_).c_str());
+    if (!replaced) ImGui::TextDisabled("The changelog opens on your desktop");
+    ImGui::Spacing();
+    if (BigButton(replaced ? "Fix" : "Update", w)) { ActOnNotice(NoticeAction::Update); ImGui::CloseCurrentPopup(); }
+    ImGui::SameLine();
+    if (BigButton("Cancel", w)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+}
+
 void Ui::StatusBar() {
   ImGui::Separator();
   bool any = false;
-  if (update_.Done() && update_.Newer()) {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(kAccent, "Update available: %s", update_.Latest().c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Update")) update_.OpenLatestRelease();
-    Tip("Close SteamVR before installing");
-    any = true;
-  }
   if (!toast_.empty() && now_ < toastUntil_) {
     if (any) ImGui::SameLine(0, ImGui::GetFontSize() * 2);
     ImGui::AlignTextToFramePadding();
@@ -433,14 +507,16 @@ void Ui::Overview() {
   // One line: room, runtime, driver, recording.
   if (seen == 0) ImGui::TextColored(kWarn, "Room: no base stations");
   else ImGui::TextColored(s.room.settled ? kGood : kWarn, "Room: %s (%d / %d placed)", s.room.settled ? "Ready" : "Learning", placed, seen);
-  ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-  ImGui::Text("Runtime: %s", st.value("steamvr", false) ? "SteamVR" : st.value("host", std::string("?")).c_str());
-  ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-  ImGui::Text("Driver: v%s", client_.Version().empty() ? "?" : client_.Version().c_str());
-  if (st.value("recording", false)) {
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    ImGui::TextColored(kBad, "Recording");
-  }
+  // The next part on this line if it fits, else on the next one.
+  const auto next = [](const std::string& text) {
+    const float gap = ImGui::GetFontSize() * 2;
+    if (ImGui::GetItemRectMax().x + gap + ImGui::CalcTextSize(text.c_str()).x <= ImGui::GetWindowPos().x + ImGui::GetContentRegionMax().x)
+      ImGui::SameLine(0, gap);
+    return text;
+  };
+  ImGui::TextUnformatted(next("Runtime: " + (st.value("steamvr", false) ? std::string("SteamVR") : st.value("host", std::string("?")))).c_str());
+  ImGui::TextUnformatted(next("Driver: v" + (client_.Version().empty() ? std::string("?") : client_.Version())).c_str());
+  if (st.value("recording", false)) ImGui::TextColored(kBad, "%s", next("Recording").c_str());
 
   // Devices: what each one is doing.
   ImGui::SeparatorText("Devices");

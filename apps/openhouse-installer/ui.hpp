@@ -104,12 +104,17 @@ class Ui {
   void Draw(float width, float height);
   // Testing (OPENHOUSE_INSTALLER_PAGE): the page shown first. "kuroshin": its DFU instructions.
   void ShowForTest(const std::string& page);
+  // --update: downloads the latest release and starts its installer with --install.
+  void StartSelfUpdate();
+  // --install: installs right away (closing SteamVR), then offers a dongle update if one is due.
+  void StartAutoInstall();
+  bool QuitRequested() const { return quit_; }
 
  private:
   enum class Page {
     Home, Install, Uninstall, FlashMenu, BaseStation, DoormanMenu, Dongle, RadioMenu, RadioWired, RadioWireless,
     RestoreMenu, RestoreBase, RestoreRadioMenu, RestoreRadio, RestoreRadioWireless, DeviceType,
-    DongleUpdatePick, DongleUpdate, Tools
+    DongleUpdatePick, DongleUpdate, Tools, SelfUpdate
   };
   void Go(Page page);
   void Header();
@@ -118,9 +123,12 @@ class Ui {
   bool RuntimesClosed();
   bool DeviceAccess();  // Linux: draws the udev notice; true when this user can open devices  // draws the "close SteamVR" notice; true when nothing is running
   void Back(Page to);
+  bool BackButton(const char* label = "< Back");  // Back's button, for a step back within a page
 
   void Home();
   void InstallPage(bool install);
+  void SelfUpdatePage();
+  void DongleUpdateOffer();
   void FlashMenu();
   void DoormanMenu();
   void RadioMenu();
@@ -150,11 +158,18 @@ class Ui {
   bool haveAccess_ = true;
   Job job_, closeJob_;
   bool monadoCheck_ = true;
+  bool autoInstall_ = false, autoStarted_ = false, autoClosed_ = false;
+  std::atomic<bool> quit_{false};  // set by the update job
+  std::string updateTag_;
   bool statusFresh_ = true;
   int installAction_ = 0;  // 0 install, 1 update, 2 reinstall
   // Whether this package is newer than the installed driver (lh::CompareBuilds: a GitHub
   // compare for two builds of one version, on a thread). Only a confirmed newer one is an update.
   bool PackageNewer();
+  // openhouse was installed, but its driver isn't in place any more (a SteamVR update or
+  // "verify files" put SteamVR's back): Repair, and Uninstall cleans up what's left.
+  bool Replaced() const;
+  int InstallAction();  // 0 install, 1 update, 2 reinstall, 3 repair
   std::string orderFor_;                                  // the installed version it's for
   std::shared_ptr<std::atomic<int>> order_;               // lh::BuildOrder, -1 while asking
 

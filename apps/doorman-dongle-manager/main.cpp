@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "dongle_logo_rgba.h"
 #include "logo_rgba.h"
 #include "ui.hpp"
 
@@ -56,11 +57,13 @@ int main() {
   int scale = 1;
   if (const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor()); mode && mode->height > 1300) scale = 2;
   if (const char* s = std::getenv("OPENHOUSE_DONGLE_SCALE"); s && std::atoi(s) >= 1) scale = std::atoi(s);
-  GLFWwindow* window = glfwCreateWindow(1180 * scale, 760 * scale, "Doorman Dongle", nullptr, nullptr);
+  GLFWwindow* window = glfwCreateWindow(1180 * scale, 760 * scale, "Doorman Dongle Manager", nullptr, nullptr);
   if (!window) { std::fprintf(stderr, "doorman-dongle-manager: can't open a window\n"); glfwTerminate(); return 1; }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
-  GLFWimage icon{kLogoSize, kLogoSize, const_cast<unsigned char*>(kLogoRgba)};
+  // The logo with a dongle badge (tools/make-app-icons.py).
+  GLFWimage icon{openhouse::dongle::kDongleLogoSize, openhouse::dongle::kDongleLogoSize,
+                 const_cast<unsigned char*>(openhouse::dongle::kDongleLogoRgba)};
   glfwSetWindowIcon(window, 1, &icon);
   ImGui::CreateContext();
   openhouse::dongle::Ui::SetUpImGui(scale);

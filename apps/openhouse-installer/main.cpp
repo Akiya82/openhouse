@@ -2,6 +2,7 @@
 // firmware (1.0 base stations, doorman dongles, trackers' and controllers' radios), with a guided
 // window for each. Windows and Linux; everything it needs is linked in, and the firmware files
 // come from the package's firmwares/ folder.
+#include <string>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
@@ -34,7 +35,7 @@ GLuint UploadRgba(const uint8_t* rgba, int w, int h) {
   return texture;
 }
 
-int Run() {
+int Run(const std::string& mode) {
   if (!glfwInit()) {
 #ifdef _WIN32
     MessageBoxW(nullptr, L"openhouse-installer couldn't open its window.", L"openhouse", MB_ICONERROR);
@@ -59,9 +60,11 @@ int Run() {
     // Testing without a screen: OPENHOUSE_INSTALLER_PAGE picks the page, OPENHOUSE_INSTALLER_SNAPSHOT=FILE.ppm
     // writes the frame drawn after ~2 s and exits.
     if (const char* page = std::getenv("OPENHOUSE_INSTALLER_PAGE")) ui.ShowForTest(page);
+    if (mode == "--update") ui.StartSelfUpdate();
+    else if (mode == "--install" || mode == "--repair") ui.StartAutoInstall();
     const char* snapshot = std::getenv("OPENHOUSE_INSTALLER_SNAPSHOT");
     int frame = 0;
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window) && !ui.QuitRequested()) {
       glfwWaitEventsTimeout(1.0 / 30);  // keeps redrawing for progress bars and device lists
       ImGui_ImplOpenGL2_NewFrame();
       ImGui_ImplGlfw_NewFrame();
@@ -101,4 +104,7 @@ int Run() {
 }
 }  // namespace
 
-int main() { return Run(); }
+// --update (the overlay's Update / Reinstall): download the latest release and hand over to its
+// installer; --install (that installer) and --repair (the overlay's Fix, from the package kept at
+// install): install right away.
+int main(int argc, char** argv) { return Run(argc > 1 ? argv[1] : ""); }

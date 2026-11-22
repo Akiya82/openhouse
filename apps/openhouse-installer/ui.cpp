@@ -1,4 +1,5 @@
 #include "ui.hpp"
+#include "self_update.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -51,6 +52,219 @@ void Step(int n, const char* text) {
   ImGui::TextColored(kWarn, "%d", n);
   ImGui::SameLine();
   Wrapped(text);
+}
+
+// The ProMicro nRF52840 from above, USB port at the top: the board's own antenna runs along the
+// bottom edge, and a 31.2 mm wire (a quarter wave at 2.4 GHz) soldered to its end reaches much
+// further. Laid out as SlimeVR's build guide shows it.
+void ProMicroAntenna() {
+  const float fs = ImGui::GetFontSize(), u = fs * 1.7f;    // drawing unit: 3 mm
+  const float bw = u * 6, bh = u * 11;                      // the board: 18 x 33 mm
+  const float wire = bw * 31.2f / 18.0f;                    // to scale
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  ImFont* font = ImGui::GetFont();
+  const ImU32 pcb = IM_COL32(24, 26, 32, 255), edge = IM_COL32(90, 96, 110, 255), silk = IM_COL32(150, 155, 165, 255);
+  const ImU32 gold = IM_COL32(214, 176, 86, 255), steel = IM_COL32(178, 183, 192, 255), steelDark = IM_COL32(120, 125, 135, 255);
+  const ImU32 ceramic = IM_COL32(226, 150, 140, 255), copper = IM_COL32(205, 120, 70, 255);
+  const ImU32 hot = ImGui::GetColorU32(kWarn), text = ImGui::GetColorU32(ImGuiCol_Text), muted = ImGui::GetColorU32(kMuted);
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  // The antenna's end sits at 0.8 of the board's width: the wire runs left from below it, past the
+  // board's left edge, so the board moves right by what sticks out.
+  const float endX = 0.8f, left = std::max(0.f, wire - bw * endX) + u * 0.3f;
+  const ImVec2 b0(o.x + left, o.y + u * 0.7f), b1(b0.x + bw, b0.y + bh);
+  const auto X = [&](float f) { return b0.x + bw * f; };
+  const auto Y = [&](float f) { return b0.y + bh * f; };
+  const auto label = [&](float size, ImVec2 at, ImU32 col, const char* str, float alignX = 0) {
+    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, str);
+    dl->AddText(font, size, ImVec2(at.x - ts.x * alignX, at.y - ts.y / 2), col, str);
+  };
+
+  // the board
+  dl->AddRectFilled(b0, b1, pcb, u * 0.25f);
+  dl->AddRect(b0, b1, edge, u * 0.25f, 0, 1.5f);
+  // USB-C at the top, over the edge
+  const ImVec2 c0(X(0.29f), b0.y - u * 0.45f), c1(X(0.71f), Y(0.13f));
+  dl->AddRectFilled(c0, c1, steel, u * 0.28f);
+  dl->AddRectFilled(ImVec2(c0.x + u * 0.3f, c0.y + u * 0.3f), ImVec2(c1.x - u * 0.3f, c0.y + u * 0.75f), steelDark, u * 0.2f);
+  label(fs * 0.8f, ImVec2(X(0.5f), (c0.y + c1.y) / 2 + u * 0.35f), pcb, "USB", 0.5f);
+  // castellated pins: 12 down each side, 3 along the bottom
+  const auto pin = [&](ImVec2 c) {
+    dl->AddCircleFilled(c, u * 0.26f, gold, 20);
+    dl->AddCircleFilled(c, u * 0.11f, pcb, 16);
+  };
+  for (int i = 0; i < 12; ++i)
+    for (const float x : {X(0.075f), X(0.925f)}) pin(ImVec2(x, Y(0.075f + 0.066f * float(i))));
+  for (int i = 0; i < 3; ++i) pin(ImVec2(X(0.3f + 0.2f * float(i)), Y(0.83f)));
+  // GND and RST, third and fourth down on the right: shorted twice for DFU mode
+  {
+    const ImVec2 gnd(X(0.925f), Y(0.075f + 0.066f * 2)), rst(X(0.925f), Y(0.075f + 0.066f * 3));
+    for (const ImVec2& c : {gnd, rst}) dl->AddCircle(c, u * 0.36f, hot, 20, 2.0f);
+    label(fs * 0.85f, ImVec2(gnd.x - u * 0.45f, gnd.y), silk, "GND", 1.0f);
+    label(fs * 0.85f, ImVec2(rst.x - u * 0.45f, rst.y), silk, "RST", 1.0f);
+    // an arrow from the note to the pair
+    const ImVec2 tipAt(gnd.x + u * 0.45f, (gnd.y + rst.y) / 2), from(b1.x + u * 1.8f, tipAt.y);
+    dl->AddLine(from, ImVec2(tipAt.x + u * 0.3f, tipAt.y), hot, 2.0f);
+    dl->AddTriangleFilled(ImVec2(tipAt.x + u * 0.35f, tipAt.y - u * 0.22f), ImVec2(tipAt.x + u * 0.35f, tipAt.y + u * 0.22f), tipAt, hot);
+    label(fs, ImVec2(from.x + u * 0.25f, tipAt.y - fs * 0.6f), hot, "Double tap these pins");
+    label(fs, ImVec2(from.x + u * 0.25f, tipAt.y + fs * 0.6f), hot, "together for DFU mode");
+  }
+  // the nRF52840: a square chip turned 45 degrees, its pins along each side
+  {
+    const ImVec2 c(X(0.5f), Y(0.45f));
+    const float r = bw * 0.27f;   // centre to corner
+    const ImVec2 q[] = {ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y)};
+    for (int side = 0; side < 4; ++side) {   // pins: short lines out from each side
+      const ImVec2 a0 = q[side], a1 = q[(side + 1) % 4];
+      const ImVec2 n((a1.y - a0.y) / r * 0.7071f, -(a1.x - a0.x) / r * 0.7071f);   // outward normal
+      for (int i = 1; i < 8; ++i) {
+        const float t = float(i) / 8;
+        const ImVec2 p(a0.x + (a1.x - a0.x) * t, a0.y + (a1.y - a0.y) * t);
+        dl->AddLine(p, ImVec2(p.x + n.x * u * 0.16f, p.y + n.y * u * 0.16f), steel, 1.5f);
+      }
+    }
+    dl->AddConvexPolyFilled(q, 4, IM_COL32(18, 19, 23, 255));
+    dl->AddPolyline(q, 4, steelDark, ImDrawFlags_Closed, 1.2f);
+    dl->AddCircleFilled(ImVec2(c.x, c.y - r * 0.62f), u * 0.07f, steelDark);   // pin 1
+    label(fs * 0.7f, c, silk, "nRF52840", 0.5f);
+  }
+  // the ceramic chip antenna along the bottom edge; its right end is where the wire goes
+  const ImVec2 a0(X(0.22f), Y(0.915f)), a1(X(endX), Y(0.97f));
+  dl->AddRectFilled(a0, a1, ceramic, u * 0.06f);
+  dl->AddRect(a0, a1, IM_COL32(170, 100, 95, 255), u * 0.06f);
+  const ImVec2 end(a1.x, (a0.y + a1.y) / 2);
+  // the wire: down from the end, then left, to scale
+  const float wy = b1.y + u * 1.2f, th = u * 0.16f;
+  dl->AddLine(end, ImVec2(end.x, wy), copper, th);
+  dl->AddLine(ImVec2(end.x + th / 2, wy), ImVec2(end.x - wire, wy), copper, th);
+  dl->AddCircleFilled(end, u * 0.24f, hot, 20);
+  // labels: the solder point, the ceramic antenna, the wire's length with a dimension line
+  label(fs, ImVec2(b1.x + u * 0.4f, end.y), hot, "Solder here");
+  dl->AddLine(ImVec2(b1.x + u * 0.3f, end.y), ImVec2(end.x + u * 0.35f, end.y), hot, 1.5f);
+  label(fs * 0.85f, ImVec2(b1.x + u * 0.4f, Y(0.83f)), muted, "Ceramic antenna");
+  dl->AddLine(ImVec2(b1.x + u * 0.3f, Y(0.83f)), ImVec2(X(0.66f), a0.y), muted, 1.0f);
+  const float dy = wy + u * 0.7f;
+  dl->AddLine(ImVec2(end.x - wire, dy), ImVec2(end.x, dy), silk, 1.0f);
+  for (const float x : {end.x - wire, end.x}) dl->AddLine(ImVec2(x, dy - u * 0.2f), ImVec2(x, dy + u * 0.2f), silk, 1.0f);
+  label(fs, ImVec2(end.x - wire / 2, dy + u * 0.55f), text, "31.2 mm", 0.5f);
+  ImGui::Dummy(ImVec2(left + bw + fs * 15, dy + u * 1.0f - o.y));
+}
+
+// The Holyiot 21017 standing up: the USB plug at the top, the antenna out to the left from the round
+// hinge at the bottom. The thin clear strip near the plug is the LED window: a magnet brought close
+// there starts the bootloader (a reed switch inside). Drawn lying down (plug to the right, antenna
+// up, proportions from a photo) and turned a quarter left.
+void HolyiotMagnet() {
+  const float fs = ImGui::GetFontSize(), H = fs * 3.8f;   // H: the case's width
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  ImFont* font = ImGui::GetFont();
+  const ImU32 black = IM_COL32(34, 36, 41, 255), shade = IM_COL32(24, 25, 29, 255), hi = IM_COL32(78, 83, 93, 255);
+  const ImU32 edge = IM_COL32(88, 93, 104, 255), steel = IM_COL32(198, 202, 209, 255), steelHi = IM_COL32(225, 228, 233, 255);
+  const ImU32 steelDark = IM_COL32(112, 117, 127, 255), red = IM_COL32(210, 70, 60, 255), grey = IM_COL32(170, 175, 185, 255);
+  const ImU32 window = IM_COL32(170, 215, 245, 235), glow = IM_COL32(120, 190, 255, 60);
+  const ImU32 hot = ImGui::GetColorU32(kWarn), text = ImGui::GetColorU32(ImGuiCol_Text);
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const auto label = [&](float size, ImVec2 at, ImU32 col, const char* str, float alignX = 0) {
+    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, str);
+    dl->AddText(font, size, ImVec2(at.x - ts.x * alignX, at.y - ts.y / 2), col, str);
+  };
+  // Lying-down coordinates (x toward the plug, y down, 0 at the case's lower left) to the screen,
+  // turned a quarter left: x goes up, y goes right.
+  const float antennaLen = H * 4.4f;
+  const ImVec2 P(o.x + antennaLen + H * 0.6f, o.y + H * 3.3f);
+  const auto S = [&](float x, float y) { return ImVec2(P.x + y, P.y - x); };
+  const auto rect = [&](float x0, float y0, float x1, float y1, ImU32 col, float round, bool outline = false) {
+    const ImVec2 a = S(x0, y0), b = S(x1, y1);
+    const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y)), hi2(std::max(a.x, b.x), std::max(a.y, b.y));
+    if (outline) dl->AddRect(lo, hi2, col, round, 0, 1.2f);
+    else dl->AddRectFilled(lo, hi2, col, round);
+  };
+  // the antenna, up from the hinge (left on screen), tapering to a rounded tip
+  const ImVec2 hinge(H * 0.2f, -H * 0.5f);
+  {
+    const float wb = H * 0.27f, wt = H * 0.21f, from = hinge.y - H * 0.45f, to = hinge.y - antennaLen;
+    ImVec2 q[] = {S(hinge.x - wt, to), S(hinge.x + wt, to), S(hinge.x + wb, from), S(hinge.x - wb, from)};
+    dl->AddConvexPolyFilled(q, 4, black);
+    dl->AddCircleFilled(S(hinge.x, to), wt, black, 24);
+    dl->AddLine(S(hinge.x + wt * 0.45f, to + H * 0.2f), S(hinge.x + wb * 0.45f, from - H * 0.1f), hi, 2.0f);
+  }
+  // the case
+  rect(0, -H, H * 2.4f, 0, black, H * 0.14f);
+  dl->AddLine(S(H * 0.6f, -H * 0.9f), S(H * 2.3f, -H * 0.9f), hi, 2.0f);
+  rect(0, -H, H * 2.4f, 0, edge, H * 0.14f, true);
+  // the hinge: round, a little wider than the case
+  dl->AddCircleFilled(S(hinge.x, hinge.y), H * 0.42f, black, 32);
+  dl->AddCircle(S(hinge.x, hinge.y), H * 0.42f, edge, 32, 1.2f);
+  dl->AddCircleFilled(S(hinge.x, hinge.y), H * 0.16f, shade, 24);
+  // the LED window near the plug: short, across the middle
+  const float wx = H * 2.0f;
+  rect(wx - H * 0.12f, -H * 0.68f, wx + H * 0.12f, -H * 0.32f, glow, H * 0.06f);
+  rect(wx - H * 0.035f, -H * 0.66f, wx + H * 0.035f, -H * 0.34f, window, H * 0.03f);
+  // the USB-A plug, short, with its two holes
+  rect(H * 2.4f, -H * 0.86f, H * 3.15f, -H * 0.14f, steel, H * 0.04f);
+  rect(H * 2.4f, -H * 0.86f, H * 3.15f, -H * 0.14f, steelDark, H * 0.04f, true);
+  dl->AddLine(S(H * 2.45f, -H * 0.8f), S(H * 3.1f, -H * 0.8f), steelHi, 2.0f);
+  for (const float sy : {-0.67f, -0.33f}) rect(H * 2.7f, H * sy - H * 0.08f, H * 2.95f, H * sy + H * 0.08f, steelDark, H * 0.02f);
+  // the magnet to the right, an arrow left to the window
+  const ImVec2 w = S(wx, 0);   // the window at the case's right edge
+  const ImVec2 m0(w.x + H * 1.3f, w.y - H * 0.28f), m1(m0.x + H * 1.2f, w.y + H * 0.28f);
+  dl->AddRectFilled(m0, ImVec2((m0.x + m1.x) / 2, m1.y), red, H * 0.06f, ImDrawFlags_RoundCornersLeft);
+  dl->AddRectFilled(ImVec2((m0.x + m1.x) / 2, m0.y), m1, grey, H * 0.06f, ImDrawFlags_RoundCornersRight);
+  label(fs * 0.85f, ImVec2(m0.x + H * 0.3f, w.y), IM_COL32(255, 255, 255, 255), "N", 0.5f);
+  label(fs * 0.85f, ImVec2(m1.x - H * 0.3f, w.y), black, "S", 0.5f);
+  label(fs, ImVec2(m1.x + H * 0.25f, w.y), text, "Bring a magnet close");
+  const float ax0 = m0.x - H * 0.15f, ax1 = w.x + H * 0.15f;
+  dl->AddLine(ImVec2(ax0, w.y), ImVec2(ax1 + H * 0.12f, w.y), hot, 2.0f);
+  dl->AddTriangleFilled(ImVec2(ax1 + H * 0.16f, w.y - H * 0.13f), ImVec2(ax1 + H * 0.16f, w.y + H * 0.13f), ImVec2(ax1, w.y), hot);
+  ImGui::Dummy(ImVec2(m1.x + fs * 12 - o.x, S(-H * 0.42f, 0).y + H * 0.2f - o.y));
+}
+
+// Nordic's PCA10059 from above, USB contacts to the left: the RESET button is the square one at the
+// right end, next to the round white one (SW1).
+void NordicReset() {
+  const float fs = ImGui::GetFontSize(), u = fs * 1.6f;
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  ImFont* font = ImGui::GetFont();
+  const ImU32 pcb = IM_COL32(30, 105, 175, 255), pcbEdge = IM_COL32(90, 150, 210, 255), gold = IM_COL32(214, 176, 86, 255);
+  const ImU32 chip = IM_COL32(28, 30, 36, 255), white = IM_COL32(235, 235, 235, 255), steel = IM_COL32(170, 175, 185, 255);
+  const ImU32 hot = ImGui::GetColorU32(kWarn), silk = IM_COL32(225, 235, 245, 255);
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const auto label = [&](float size, ImVec2 at, ImU32 col, const char* str, float alignX = 0) {
+    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, str);
+    dl->AddText(font, size, ImVec2(at.x - ts.x * alignX, at.y - ts.y / 2), col, str);
+  };
+  const float bw = u * 12, bh = u * 4.4f, plug = u * 3.2f;
+  const ImVec2 b0(o.x, o.y + u * 1.6f), b1(b0.x + bw, b0.y + bh);
+  // the narrower USB tongue, then the board
+  const ImVec2 t0(b0.x, b0.y + bh * 0.12f), t1(b0.x + plug, b1.y - bh * 0.12f);
+  dl->AddRectFilled(t0, t1, pcb, u * 0.15f);
+  dl->AddRectFilled(ImVec2(b0.x + plug - u * 0.2f, b0.y), b1, pcb, u * 0.2f);
+  dl->AddRect(ImVec2(b0.x + plug - u * 0.2f, b0.y), b1, pcbEdge, u * 0.2f, 0, 1.5f);
+  for (int i = 0; i < 4; ++i) {   // USB contacts
+    const float y = t0.y + (t1.y - t0.y) * (0.2f + 0.2f * float(i));
+    dl->AddRectFilled(ImVec2(t0.x + u * 0.3f, y - u * 0.17f), ImVec2(t0.x + (i == 0 || i == 3 ? u * 2.5f : u * 2.1f), y + u * 0.17f), gold, u * 0.05f);
+  }
+  // castellations along both long edges
+  for (int i = 0; i < 9; ++i) {
+    const float x = b0.x + plug + u * 0.6f + float(i) * u * 0.95f;
+    dl->AddRectFilled(ImVec2(x - u * 0.25f, b0.y), ImVec2(x + u * 0.25f, b0.y + u * 0.45f), gold, u * 0.05f);
+    dl->AddRectFilled(ImVec2(x - u * 0.25f, b1.y - u * 0.45f), ImVec2(x + u * 0.25f, b1.y), gold, u * 0.05f);
+  }
+  // the chip
+  const ImVec2 cc(b0.x + plug + u * 4.0f, (b0.y + b1.y) / 2);
+  dl->AddRectFilled(ImVec2(cc.x - u * 1.3f, cc.y - u * 1.3f), ImVec2(cc.x + u * 1.3f, cc.y + u * 1.3f), chip, u * 0.08f);
+  label(fs * 0.75f, cc, IM_COL32(150, 155, 165, 255), "nRF52840", 0.5f);
+  // SW1 (round, white) and RESET (square)
+  const ImVec2 sw1(b1.x - u * 2.6f, cc.y + u * 0.6f), rst(b1.x - u * 1.1f, cc.y + u * 0.4f);
+  dl->AddRectFilled(ImVec2(sw1.x - u * 0.5f, sw1.y - u * 0.5f), ImVec2(sw1.x + u * 0.5f, sw1.y + u * 0.5f), steel, u * 0.08f);
+  dl->AddCircleFilled(sw1, u * 0.33f, white, 20);
+  dl->AddRectFilled(ImVec2(rst.x - u * 0.5f, rst.y - u * 0.6f), ImVec2(rst.x + u * 0.5f, rst.y + u * 0.6f), steel, u * 0.08f);
+  dl->AddRectFilled(ImVec2(rst.x - u * 0.25f, rst.y - u * 0.35f), ImVec2(rst.x + u * 0.25f, rst.y + u * 0.35f), IM_COL32(110, 115, 125, 255), u * 0.05f);
+  label(fs * 0.75f, ImVec2(rst.x, rst.y - u * 1.0f), silk, "RESET", 0.5f);
+  dl->AddCircle(rst, u * 0.95f, hot, 28, 2.0f);
+  // a callout below the board
+  dl->AddLine(ImVec2(rst.x, rst.y + u * 0.95f), ImVec2(rst.x, b1.y + u * 0.9f), hot, 1.5f);
+  label(fs, ImVec2(rst.x, b1.y + u * 1.3f), hot, "Press RESET", 0.5f);
+  ImGui::Dummy(ImVec2(bw + u * 0.5f, b1.y - o.y + u * 1.9f));
 }
 
 // The Kuroshin dongle's board as it looks with the case open, chip side up and the USB plug at the bottom:
@@ -525,11 +739,23 @@ bool Ui::PackageNewer() {
   return order_->load() == int(lh::BuildOrder::Newer);
 }
 
+bool Ui::Replaced() const {
+  if (status_.openhouse || !status_.driverFound) return false;
+  std::error_code ec;
+  const fs::path data = DataDirectory();
+  return status_.backup || fs::exists(data / "package", ec) || fs::exists(data / "openhouse-overlay.vrmanifest", ec);
+}
+
+int Ui::InstallAction() { return Replaced() ? 3 : !status_.openhouse ? 0 : PackageNewer() ? 1 : 2; }
+
 void Ui::RefreshStatus() { status_ = steamvr_.root.empty() ? DriverStatus{} : ReadStatus(steamvr_.root); }
 
 void Ui::ShowForTest(const std::string& page) {
   if (page == "kuroshin") { Go(Page::Dongle); dongleBoard_ = 3; dongleStep_ = DongleStep::Detect; }
   else if (page == "dongle") Go(Page::Dongle);
+  else if (page == "holyiot") { Go(Page::Dongle); dongleBoard_ = 1; dongleStep_ = DongleStep::Detect; }
+  else if (page == "nordic") { Go(Page::Dongle); dongleBoard_ = 2; dongleStep_ = DongleStep::Detect; }
+  else if (page == "promicro") { Go(Page::Dongle); dongleBoard_ = 0; dongleStep_ = DongleStep::Detect; }
   else if (page == "home") Go(Page::Home);
   else if (page == "pick") Go(Page::DongleUpdatePick);
   else if (page == "tools") Go(Page::Tools);
@@ -553,7 +779,7 @@ void Ui::Go(Page page) {
   page_ = page;
   checked_.clear();
   RefreshStatus();
-  installAction_ = !status_.openhouse ? 0 : PackageNewer() ? 1 : 2;
+  installAction_ = InstallAction();
   switch (page) {
     case Page::BaseStation:
     case Page::RestoreBase:
@@ -593,12 +819,17 @@ void Ui::Go(Page page) {
 }
 
 void Ui::Back(Page to) {
+  if (BackButton(to == Page::Home ? "< Home" : "< Back")) Go(to);
+}
+
+bool Ui::BackButton(const char* label) {
   ImGui::Spacing();
   ImGui::BeginDisabled(job_.Running());
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetFontSize() * 1.2f, ImGui::GetFontSize() * 0.7f));
-  if (ImGui::Button(to == Page::Home ? "< Home" : "< Back")) Go(to);
+  const bool pressed = ImGui::Button(label);
   ImGui::PopStyleVar();
   ImGui::EndDisabled();
+  return pressed;
 }
 
 void Ui::Draw(float width, float height) {
@@ -613,6 +844,7 @@ void Ui::Draw(float width, float height) {
   ImGui::BeginChild("page", ImVec2(0, -(ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2)));
   switch (page_) {
     case Page::Home: Home(); break;
+    case Page::SelfUpdate: SelfUpdatePage(); break;
     case Page::Install: InstallPage(true); break;
     case Page::Uninstall: InstallPage(false); break;
     case Page::FlashMenu: FlashMenu(); break;
@@ -671,9 +903,14 @@ void Ui::Footer() {
     // Long paths lose their start, so the button always fits.
     const float room = ImGui::GetWindowWidth() - ImGui::GetCursorPosX() - ImGui::GetStyle().WindowPadding.x -
                        ImGui::CalcTextSize(label).x - ImGui::GetFontSize() * 3;
-    std::string where = "SteamVR: " + Utf8(steamvr_.root);
-    while (where.size() > 12 && ImGui::CalcTextSize(where.c_str()).x > room) where = "SteamVR: ..." + where.substr(13);
-    ImGui::TextColored(kMuted, "%s", where.c_str());
+    if (FlatpakSteam(steamvr_.root)) {
+      // The path says little here; that it's Flatpak's matters.
+      ImGui::TextColored(kWarn, "SteamVR: Flatpak (not fully tested)");
+    } else {
+      std::string where = "SteamVR: " + Utf8(steamvr_.root);
+      while (where.size() > 12 && ImGui::CalcTextSize(where.c_str()).x > room) where = "SteamVR: ..." + where.substr(13);
+      ImGui::TextColored(kMuted, "%s", where.c_str());
+    }
   }
   ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x -
                                                          ImGui::CalcTextSize(label).x - ImGui::GetStyle().FramePadding.x * 2));
@@ -695,6 +932,9 @@ void Ui::SteamVRPrompt() {
     ImGui::TextColored(kWarn, "SteamVR not found. Pick its folder");
   }
   ImGui::TextColored(kMuted, "Usually Steam/steamapps/common/SteamVR");
+#ifndef _WIN32
+  ImGui::TextColored(kMuted, "Flatpak Steam isn't fully tested");
+#endif
   ImGui::Spacing();
   ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 7);
   ImGui::InputText("##steamvr", steamvrInput_, sizeof steamvrInput_);
@@ -756,6 +996,14 @@ bool Ui::RuntimesClosed() {
     runningChecked_ = Now();
   }
   if (running_.empty()) return true;
+  // --install: the user already chose to update from the overlay.
+  if (autoInstall_ && !autoClosed_ && !closeJob_.Running()) {
+    autoClosed_ = true;
+    closeJob_.Start([](Job& j) {
+      if (!CloseRuntimes()) { j.Fail("Couldn't close them, close them manually"); return false; }
+      return true;
+    });
+  }
   std::string list;
   for (const auto& n : running_) list += (list.empty() ? "" : ", ") + n;
   ImGui::TextColored(kWarn, "Close these first: %s", list.c_str());
@@ -819,21 +1067,25 @@ void Ui::Home() {
   static std::string installSub;
   static char dongleSub[64];
   const bool installed = status_.openhouse;
+  const bool replaced = Replaced();
   const bool newer = installed && PackageNewer();
-  if (!installed) installSub = std::string("Installs openhouse v") + lh::kVersion + " to SteamVR";
+  if (replaced) installSub = "SteamVR replaced the openhouse driver";
+  else if (!installed) installSub = std::string("Installs openhouse v") + lh::kVersion + " to SteamVR";
   else installSub = std::string(newer ? "Updates openhouse to v" : "Installs openhouse v") + lh::kVersion + (newer ? "" : " again");
   if (outdated) std::snprintf(dongleSub, sizeof dongleSub, outdated == 1 ? "A dongle has an update" : "%d dongles have an update", outdated);
   else std::snprintf(dongleSub, sizeof dongleSub, "No update available");
   const std::vector<TileSpec> tiles{
-      {installed ? (newer ? Icon::Download : Icon::Refresh) : Icon::Download,
-       installed ? (newer ? "Update Driver" : "Reinstall Driver") : "Install Driver", installSub.c_str(),
-       installed && !newer ? Tint::Yellow : Tint::Green},
-      {Icon::Trash, "Uninstall Driver", installed ? "Puts the SteamVR Lighthouse driver back" : "openhouse isn't installed", Tint::Red},
+      replaced ? TileSpec{Icon::Wrench, "Repair Driver", installSub.c_str(), Tint::Yellow}
+               : TileSpec{installed ? (newer ? Icon::Download : Icon::Refresh) : Icon::Download,
+                          installed ? (newer ? "Update Driver" : "Reinstall Driver") : "Install Driver", installSub.c_str(),
+                          installed && !newer ? Tint::Yellow : Tint::Green},
+      {Icon::Trash, "Uninstall Driver",
+       replaced ? "Cleans up what's left of openhouse" : installed ? "Puts the SteamVR Lighthouse driver back" : "openhouse isn't installed", Tint::Red},
       {Icon::Settings, "Tools", "Dongle manager and device converter"},
       {Icon::Chip, "Install or Update Firmware", "For base stations, dongles, trackers and controllers"},
       {Icon::Restore, "Restore Firmware", "Puts the original firmware back"},
       {Icon::Dongle, "Update Dongles", dongleSub, outdated ? Tint::Yellow : Tint::None}};
-  switch (TileRows(tiles, {false, !installed, false, false, false, outdated == 0})) {
+  switch (TileRows(tiles, {false, !installed && !replaced, false, false, false, outdated == 0})) {
     case 0: Go(Page::Install); break;
     case 1: Go(Page::Uninstall); break;
     case 2: Go(Page::Tools); break;
@@ -867,11 +1119,11 @@ void Ui::ToolsPage() {
 
 void Ui::InstallPage(bool install) {
   // What Install does here, decided when the page opened (the status changes once it's done).
-  static const char* const kActions[] = {"Install", "Update", "Reinstall"};
-  static const char* const kDoing[] = {"Installing", "Updating", "Reinstalling"};
-  static const char* const kDone[] = {"installed", "updated", "reinstalled"};
+  static const char* const kActions[] = {"Install", "Update", "Reinstall", "Repair"};
+  static const char* const kDoing[] = {"Installing", "Updating", "Reinstalling", "Repairing"};
+  static const char* const kDone[] = {"installed", "updated", "reinstalled", "repaired"};
   // Until it starts, a GitHub compare still going may turn a reinstall into an update.
-  if (install && !job_.Running() && !job_.Finished()) installAction_ = !status_.openhouse ? 0 : PackageNewer() ? 1 : 2;
+  if (install && !job_.Running() && !job_.Finished()) installAction_ = InstallAction();
   const int a = install ? installAction_ : 0;
   Title(install ? (std::string(kActions[a]) + " Driver").c_str() : "Uninstall Driver");
   if (job_.Finished() && !statusFresh_) {
@@ -883,6 +1135,13 @@ void Ui::InstallPage(bool install) {
       ImGui::PushFont(g_title);
       ImGui::TextColored(kGood, "%s", install ? (std::string("openhouse has been ") + kDone[a]).c_str() : "openhouse has been uninstalled");
       ImGui::PopFont();
+      // Started from the overlay (Update, Fix): VR was closed for this.
+#ifdef _WIN32
+      if (install && autoInstall_) ImGui::TextUnformatted("You can start SteamVR again");
+#else
+      if (install && autoInstall_) ImGui::TextUnformatted("You can start SteamVR or Monado again");
+#endif
+      if (install) DongleUpdateOffer();
     } else {
       ImGui::PushFont(g_title);
       ImGui::TextColored(kBad, "%s", install ? (std::string(kActions[a]) + " failed").c_str() : "Uninstall failed");
@@ -909,17 +1168,20 @@ void Ui::InstallPage(bool install) {
       return;
     }
     const std::string installed = status_.version.empty() ? "1.0.3 or older" : "v" + status_.version;
-    if (a == 1) ImGui::Text("Updates openhouse %s to v%s", installed.c_str(), lh::kVersion);
+    if (a == 3) ImGui::Text("SteamVR replaced the openhouse driver. Puts openhouse v%s back", lh::kVersion);
+    else if (a == 1) ImGui::Text("Updates openhouse %s to v%s", installed.c_str(), lh::kVersion);
     else if (a == 2) ImGui::Text("openhouse %s is installed. Reinstalls v%s", installed.c_str(), lh::kVersion);
     else ImGui::Text("Installs openhouse v%s", lh::kVersion);
 #ifndef _WIN32
+    if (FlatpakSteam(steamvr_.root)) ImGui::TextColored(kWarn, "Flatpak Steam isn't fully tested and may cause problems");
     ImGui::Spacing();
     ImGui::Checkbox("Update check for Monado / WiVRn", &monadoCheck_);
+    ImGui::SameLine();
+    ImGui::TextColored(kMuted, "Needs systemd");
 #endif
   } else {
-    if (!status_.openhouse) {
-      ImGui::TextColored(kMuted, "openhouse isn't installed");
-    }
+    if (Replaced()) ImGui::TextUnformatted("SteamVR replaced the openhouse driver. Cleans up what's left of openhouse");
+    else if (!status_.openhouse) ImGui::TextColored(kMuted, "openhouse isn't installed");
     ImGui::TextUnformatted("Your room and settings are kept");
   }
   ImGui::Spacing();
@@ -929,7 +1191,7 @@ void Ui::InstallPage(bool install) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.30f, 0.30f, 1));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.52f, 0.18f, 0.18f, 1));
   }
-  if (install && a == 1) {
+  if (install && (a == 1 || a == 3)) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.50f, 0.28f, 1));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.60f, 0.34f, 1));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.19f, 0.43f, 0.24f, 1));
@@ -938,7 +1200,8 @@ void Ui::InstallPage(bool install) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.60f, 0.20f, 1));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.53f, 0.43f, 0.14f, 1));
   }
-  const bool start = BigButton(install ? kActions[a] : "Uninstall", ImGui::GetFontSize() * 14);
+  bool start = BigButton(install ? kActions[a] : "Uninstall", ImGui::GetFontSize() * 14);
+  if (install && autoInstall_ && !autoStarted_) start = autoStarted_ = true;
   if (install && a != 0) ImGui::PopStyleColor(3);
   if (!install) ImGui::PopStyleColor(3);
   if (start) {
@@ -954,6 +1217,56 @@ void Ui::InstallPage(bool install) {
     });
   }
   Back(Page::Home);
+}
+
+void Ui::StartSelfUpdate() { Go(Page::SelfUpdate); }
+
+void Ui::StartAutoInstall() {
+  autoInstall_ = true;
+  Go(Page::Install);
+}
+
+// After installing: Doorman Dongles on older firmware than this package's.
+void Ui::DongleUpdateOffer() {
+  if (!homeWatching_) {
+    homeDongles_.Start(FindDoormanDongles, 3.0);
+    homeWatching_ = true;
+  }
+  const uint16_t packaged = PackagedDongleVersion();
+  int outdated = 0;
+  for (const auto& d : homeDongles_.Value()) outdated += packaged && d.firmware != packaged;
+  if (!outdated) return;
+  ImGui::Spacing();
+  ImGui::TextColored(kWarn, "%s", outdated == 1 ? "Your dongle needs an update too" : "Your dongles need an update too");
+  if (BigButton("Update Dongles", ImGui::GetFontSize() * 14)) Go(Page::DongleUpdatePick);
+}
+
+void Ui::SelfUpdatePage() {
+  Title("Update openhouse");
+  if (!job_.Running() && !job_.Finished()) {
+    job_.Start([this](Job& j) {
+      std::string tag;
+      const fs::path installer = DownloadLatestPackage([&j](float p, const std::string& s) { j.Status(p, s); }, &tag);
+      j.Log("Downloaded " + tag);
+      if (!StartDetached(installer, "--install")) { j.Fail("Couldn't start the new installer"); return false; }
+      quit_ = true;  // the new one takes over
+      return true;
+    });
+  }
+  if (job_.Finished() && !job_.Ok()) {
+    ImGui::PushFont(g_title);
+    ImGui::TextColored(kBad, "Update failed");
+    ImGui::PopFont();
+    Wrapped(job_.Error().c_str());
+    if (BigButton("Try again")) job_.Reset();
+    ImGui::SameLine();
+    if (BigButton("Open releases page")) OpenInFileManager(Path("https://github.com/YusufOzmen01/openhouse/releases/latest"));
+    Back(Page::Home);
+    return;
+  }
+  const std::string status = job_.StatusText();
+  ImGui::Text("%s...", status.empty() ? "Starting" : status.c_str());
+  ImGui::ProgressBar(job_.Progress(), ImVec2(ImGui::GetFontSize() * 30, 0), "");
 }
 
 // ---- menus ----
@@ -1208,7 +1521,7 @@ void Ui::BaseStationPage(bool restore) {
           });
         }
       }
-      Back(back);
+      if (BackButton()) { baseDrives_.Stop(); baseStep_ = BaseStep::Warning; }
       return;
     }
     case BaseStep::Writing: {
@@ -1305,11 +1618,33 @@ void Ui::DonglePage() {
     }
     case DongleStep::Detect: {
       const DongleSeen seen = dongleSeen_.Value();
-      if (!DeviceAccess()) { Back(Page::DoormanMenu); return; }
+      // Back: to the board picker.
+      const auto back = [this] {
+        if (BackButton()) { dongleSeen_.Stop(); dongleStep_ = DongleStep::Board; }
+      };
+      if (!DeviceAccess()) { back(); return; }
       Step(1, "Plug the dongle in");
       Step(2, dongleBoard_ == 3 ? "If it doesn't show up, open the dongle and briefly short pads 1 and 5 to put it in DFU mode"
+              : dongleBoard_ == 1 ? "If it doesn't show up, bring a magnet close to the dongle's LED window to put it in DFU mode"
               : dongleBoard_ ? "If it doesn't show up, press its RESET button to put it in DFU mode"
                              : "If it doesn't show up, short the RST and GND pins twice to put it in DFU mode");
+      if (dongleBoard_ == 1 || dongleBoard_ == 2) {
+        ImGui::Spacing();
+        if (dongleBoard_ == 1) HolyiotMagnet();
+        else NordicReset();
+      }
+      if (dongleBoard_ == 0) {
+        ImGui::Spacing();
+        ImGui::BeginGroup();
+        ProMicroAntenna();
+        ImGui::EndGroup();
+        ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+        ImGui::BeginGroup();
+        ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 2));
+        ImGui::TextColored(kWarn, "Antenna: optional, but highly recommended");
+        Wrapped("Solder a 31.2 mm wire to the end of the board's antenna, at the bottom right");
+        ImGui::EndGroup();
+      }
       if (dongleBoard_ == 3) {
         ImGui::Spacing();
         ImGui::BeginGroup();
@@ -1431,7 +1766,7 @@ void Ui::DonglePage() {
           return false;
         });
       }
-      Back(Page::DoormanMenu);
+      back();
       return;
     }
     case DongleStep::Flashing:

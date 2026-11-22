@@ -221,6 +221,10 @@ int RunOverlay() {
   ImGui_ImplOpenGL2_Init();
   Ui ui(TelemetryPort());
   ui.SetInVR(true);
+  ui.SetNameKeyboard([&](const char* current, uint64_t edit) {
+    return overlay->ShowKeyboardForOverlay(main, vr::k_EGamepadTextInputModeNormal, vr::k_EGamepadTextInputLineModeSingleLine,
+                                           vr::KeyboardFlag_Modal, "Tracker name", 63, current, edit) == vr::VROverlayError_None;
+  });
   ui.SetLogo(UploadRgba(kLogoRgba, kLogoSize, kLogoSize));
 
   auto last = std::chrono::steady_clock::now();
@@ -258,6 +262,13 @@ int RunOverlay() {
           const int button = event.data.mouse.button == vr::VRMouseButton_Right ? 1 : event.data.mouse.button == vr::VRMouseButton_Middle ? 2 : 0;
           io.AddMousePosEvent(event.data.mouse.x, MouseY(event.data.mouse.y));
           io.AddMouseButtonEvent(button, event.eventType == vr::VREvent_MouseButtonDown);
+          break;
+        }
+        case vr::VREvent_KeyboardDone: {
+          char name[64]{};
+          const uint32_t size = overlay->GetKeyboardText(name, sizeof name);
+          if (size < sizeof name || (size == sizeof name && name[sizeof name - 1] == '\0'))
+            ui.CommitTrackerName(name, event.data.keyboard.uUserValue);
           break;
         }
         case vr::VREvent_ScrollSmooth: io.AddMouseWheelEvent(event.data.scroll.xdelta, event.data.scroll.ydelta); break;

@@ -1,5 +1,7 @@
 #include "telemetry_client.hpp"
 
+#include <algorithm>
+
 #include <nlohmann/json.hpp>
 
 namespace openhouse::viewer {
@@ -70,6 +72,7 @@ void TelemetryClient::Handle(const std::string& line) {
   if (j.is_discarded() || !j.is_object()) return;
   const std::string type = j.value("type", "");
   if (type == "hello") {
+    if (!helloed_) ++connectionGeneration_;
     helloed_ = true;
     host_ = j.value("host", "");
     version_ = j.value("version", "");
@@ -113,10 +116,20 @@ void TelemetryClient::Handle(const std::string& line) {
       x.q = Array<4>(b.value("q", json()), x.q);
       s.bases.push_back(std::move(x));
     }
+    const json settings = j.value("settings", json::object());
+    const auto names = settings.find("trackerNames");
     for (const auto& d : j.value("devices", json::array())) {
       Device x;
       x.serial = d.value("serial", "");
       x.role = d.value("role", "");
+      if (x.role == "tracker" && names != settings.end() && names->is_object()) {
+        const auto name = names->find(x.serial);
+        if (name != names->end() && name->is_string()) {
+          const auto& value = name->get_ref<const std::string&>();
+          if (value.size() <= 63 && std::none_of(value.begin(), value.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+            x.name = value;
+        }
+      }
       x.model = d.value("model", "");
       x.hand = d.value("hand", "");
       x.state = d.value("state", "");

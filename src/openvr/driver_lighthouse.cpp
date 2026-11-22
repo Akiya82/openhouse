@@ -1928,6 +1928,33 @@ class Provider : public IServerTrackedDeviceProvider {
       return true;
     }
     const std::string serial = text("serial");
+    if (cmd == "renameTracker") {
+      const auto device = std::find_if(snapshot_.devices.begin(), snapshot_.devices.end(), [&](const auto& state) {
+        return state.info.serial == serial && state.info.role == lh::DeviceRole::Tracker;
+      });
+      if (device == snapshot_.devices.end()) { *error = "unknown tracker " + serial; return false; }
+      const auto value = j.find("name");
+      if (value == j.end() || !value->is_string()) { *error = "name must be a string"; return false; }
+      const std::string input = value->get<std::string>();
+      const auto first = input.find_first_not_of(' ');
+      const auto last = input.find_last_not_of(' ');
+      const std::string name = first == std::string::npos ? "" : input.substr(first, last - first + 1);
+      if (name.size() > 63 || std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; })) {
+        *error = "enter up to 63 UTF-8 bytes without control characters";
+        return false;
+      }
+      if (!UpdateSettings([&](nlohmann::json& settings) {
+            auto& names = settings["trackerNames"];
+            if (!names.is_object()) names = nlohmann::json::object();
+            if (name.empty()) names.erase(serial);
+            else names[serial] = name;
+          })) {
+        *error = "couldn't save " + SettingsPath();
+        return false;
+      }
+      ApplyTuning(false);
+      return true;
+    }
     if (cmd == "identify") {
       // A short buzz on a controller or tracker, to tell which one it is.
       return session_->Haptic(serial, 160, 1.0, 0.4) || (*error = "no haptics for " + serial, false);
@@ -2121,6 +2148,8 @@ class Provider : public IServerTrackedDeviceProvider {
     session_->SetOutputTuning(position, rotation, acceleration);
     applied_ = {{"positionSmoothingMs", position * 1000}, {"rotationSmoothingMs", rotation * 1000},
                 {"predictWithAcceleration", acceleration}, {"useSteamVRRooms", flag(f, "useSteamVRRooms", true)}};
+    if (const auto names = f.find("trackerNames"); names != f.end() && names->is_object())
+      applied_["trackerNames"] = *names;
     // 1.0 and 2.0 base stations together (ai/driver/mixed_stations.md): settings.json
     // "mixedLight", true/false or an object (session.cpp LoadSettings has the fields).
     lh::MixedLightOptions mixed = session_->MixedLight();

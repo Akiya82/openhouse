@@ -118,13 +118,7 @@ void DeviceTracker::OnPulse(const LightPulse& pulse) {
 
 double DeviceTracker::Now() const { return latestImu_.value_or(filter_->Time()); }
 
-void DeviceTracker::Process(std::vector<std::pair<BaseConfig, BaseDynamicState>>* decoded) {
-  BaseConfig config;
-  BaseDynamicState dynamic;
-  while (source_.PopBaseConfig(&config, &dynamic)) {
-    if (decoded) decoded->push_back({config, dynamic});
-    OnBaseConfig(config, dynamic);
-  }
+void DeviceTracker::Process() {
   ImuSample imu;
   while (source_.PopImu(&imu)) filter_->OnImu(imu);
   OpticalFrame frame;
@@ -181,6 +175,7 @@ void DeviceTracker::DropForeignSweeps(OpticalFrame* f) {
 }
 
 void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
+  if (room_->Conflicted(incoming.baseSerial)) return;
   // Not stock (runtime/rotor_reference.hpp): sorted 2.0 hits less their rotor's offset, where a device in
   // LH2 mode measures it at that moment.
   OpticalFrame referenced;

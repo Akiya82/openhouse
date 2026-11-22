@@ -70,6 +70,7 @@ void TelemetryClient::Handle(const std::string& line) {
   if (j.is_discarded() || !j.is_object()) return;
   const std::string type = j.value("type", "");
   if (type == "hello") {
+    if (!helloed_) ++connectionGeneration_;
     helloed_ = true;
     host_ = j.value("host", "");
     version_ = j.value("version", "");
@@ -105,6 +106,7 @@ void TelemetryClient::Handle(const std::string& line) {
       x.origin = b.value("origin", false);
       x.locked = b.value("locked", false);
       x.lh2 = b.value("lh2", false);
+      x.channelObservedAt = b.value("channelObservedAt", -1.0);
       x.observations = b.value("observations", 0);
       x.sigma = b.value("sigma", 0.0);
       x.learned = b.value("learned", x.locked || x.sigma <= 0.005);

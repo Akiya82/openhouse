@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +25,11 @@ using viewer::Base;
 using viewer::Device;
 using viewer::State;
 using viewer::Receiver;
+
+// Windows and Linux share the host monotonic clock with the live driver.
+double HostClockSeconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // The pixel font at 2x (default), 3x (titles) and 4x (big numbers): sharp only at whole multiples.
 ImFont* g_title = nullptr;
@@ -236,6 +242,7 @@ void Ui::Send(const std::string& text, const std::string& what) {
 void Ui::Poll(double now) {
   now_ = now;
   client_.Poll(now);
+  PollBaseChannels();
   for (const auto& r : client_.TakeReplies()) {
     const auto it = pending_.find(r.id);
     const std::string what = it == pending_.end() ? "command" : it->second;
@@ -680,6 +687,98 @@ void Ui::Devices() {
   ImGui::EndChild();
 }
 
+void Ui::SetBaseChannel(BaseChannelChange change, bool automatic) {
+  channelChange_ = std::move(change);
+  automaticChannelChange_ = automatic;
+  channelConnection_ = client_.ConnectionGeneration();
+  channelDiscovery_ = std::async(std::launch::async, [request = channelChange_] {
+    try { return DiscoverBaseChannel(request); }
+    catch (const std::exception& e) { return BaseChannelDiscovery{{}, e.what()}; }
+  });
+}
+
+void Ui::CancelBaseChannelChange(const std::string& error) {
+  autoChannels_ = false;
+  channelConfirmationDeadline_ = 0;
+  Toast(error, true);
+}
+
+void Ui::PollBaseChannels() {
+  const State& state = client_.Current();
+  const bool live = client_.FreshState(HostClockSeconds()) && Settings(state).value("live", false);
+  if (client_.ConnectionGeneration() != autoChannelConnection_ || !client_.Connected()) autoChannels_ = false;
+  const bool sameSession = live && channelConnection_ == client_.ConnectionGeneration();
+  if (!sameSession && (channelDiscovery_.valid() || channelWrite_.valid() || channelConfirmationDeadline_)) {
+    autoChannels_ = false;
+    channelConnection_ = 0;
+  }
+  if (channelDiscovery_.valid()) {
+    if (channelDiscovery_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    auto discovery = channelDiscovery_.get();
+    if (!discovery.write) { CancelBaseChannelChange(discovery.error); return; }
+    if (!sameSession || (automaticChannelChange_ && !autoChannels_) ||
+        !CanChangeBaseChannel(state, channelChange_, automaticChannelChange_)) {
+      CancelBaseChannelChange("Channel change cancelled: station or live session changed");
+      return;
+    }
+    channelWrite_ = std::async(std::launch::async, [write = std::move(discovery.write)] {
+      std::string error = write();
+      return ChannelWriteResult{std::move(error), HostClockSeconds()};
+    });
+    return;
+  }
+  if (channelWrite_.valid()) {
+    if (channelWrite_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    const auto result = channelWrite_.get();
+    if (!sameSession || !result.error.empty()) {
+      CancelBaseChannelChange(sameSession ? result.error : "Channel write not confirmed: live session changed");
+      return;
+    }
+    channelConfirmationAfter_ = result.completedAt;
+    channelConfirmationDeadline_ = now_ + 25;
+  }
+  if (channelConfirmationDeadline_) {
+    if (!sameSession) { CancelBaseChannelChange("Channel write not confirmed: live session changed"); return; }
+    if (BaseChannelObserved(state, channelChange_, channelConfirmationAfter_)) {
+      channelConfirmationDeadline_ = 0;
+      Toast(channelChange_.serial + " now on channel " + std::to_string(channelChange_.to));
+    } else {
+      if (now_ >= channelConfirmationDeadline_) CancelBaseChannelChange("New channel not confirmed by the trackers");
+      return;
+    }
+  }
+  if (!autoChannels_ || !haveChannelBackend_ || !live) return;
+  const auto changes = ResolveBaseChannels(state);
+  if (!changes.empty()) SetBaseChannel(changes.front(), true);
+}
+
+void Ui::BaseChannelControls(const Base& base) {
+  if (!base.lh2) return;
+  const State& state = client_.Current();
+  ImGui::SeparatorText("Channel management");
+  if (!haveChannelBackend_) {
+    ImGui::TextDisabled("Install the Lighthouse BLE library to change channels");
+    return;
+  }
+  const bool busy = channelDiscovery_.valid() || channelWrite_.valid() || channelConfirmationDeadline_;
+  if (busy) ImGui::Text("Changing %s to channel %d...", channelChange_.serial.c_str(), channelChange_.to);
+  const bool live = client_.FreshState(HostClockSeconds()) && Settings(state).value("live", false);
+  const auto free = FreeBaseChannels(state.bases);
+  const int from = BaseChannel(base);
+  const bool ready = !free.empty() && CanChangeBaseChannel(state, {base.serial, from, free.front()}, false);
+  ImGui::BeginDisabled(!live || busy || !ready);
+  if (ImGui::BeginCombo("Change channel", base.channel.c_str())) {
+    for (int channel : free)
+      if (ImGui::Selectable(std::to_string(channel).c_str())) SetBaseChannel({base.serial, from, channel});
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(!live);
+  if (ImGui::Checkbox("Automatically resolve channel conflicts", &autoChannels_) && autoChannels_)
+    autoChannelConnection_ = client_.ConnectionGeneration();
+  ImGui::EndDisabled();
+}
+
 void Ui::Bases() {
   Title("Base stations", lh::ui::Icon::BaseStation);
   const State& s = client_.Current();
@@ -723,6 +822,7 @@ void Ui::Bases() {
     else Row("Faults", "None");
     ImGui::EndTable();
   }
+  BaseChannelControls(*b);
   ImGui::SeparatorText("Seen by");
   bool any = false;
   for (const auto& d : s.devices)

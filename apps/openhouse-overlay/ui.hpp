@@ -3,9 +3,11 @@
 // and log it streams, and commands for settings and actions.
 #pragma once
 #include <cstdint>
+#include <future>
 #include <map>
 #include <string>
 
+#include "base_channels.hpp"
 #include "log_view.hpp"
 #include "telemetry_client.hpp"
 #include "views.hpp"
@@ -32,6 +34,10 @@ class Ui {
   void Overview();
   void Devices();
   void Bases();
+  void BaseChannelControls(const viewer::Base& base);
+  void PollBaseChannels();
+  void SetBaseChannel(BaseChannelChange change, bool automatic = false);
+  void CancelBaseChannelChange(const std::string& error);
   void Dongles();
   void Map();
   void SettingsPage();
@@ -50,6 +56,18 @@ class Ui {
   void Toast(const std::string& text, bool error = false);
 
   viewer::TelemetryClient client_;
+  const bool haveChannelBackend_ = HaveBaseChannelBackend();
+  bool autoChannels_ = false;
+  BaseChannelChange channelChange_;
+  bool automaticChannelChange_ = false;
+  uint64_t channelConnection_ = 0, autoChannelConnection_ = 0;
+  std::future<BaseChannelDiscovery> channelDiscovery_;
+  struct ChannelWriteResult {
+    std::string error;
+    double completedAt;
+  };
+  std::future<ChannelWriteResult> channelWrite_;
+  double channelConfirmationDeadline_ = 0, channelConfirmationAfter_ = 0;
   viewer::LogView logs_;
   viewer::Detail detail_ = viewer::Detail::Basic;
   UpdateCheck update_;

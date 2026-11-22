@@ -37,7 +37,8 @@ class TrackingSource {
   // Fast base identification (see TdmDisambiguator::Identity).
   void SetKnownIdentities(std::vector<tdm::TdmDisambiguator::Identity> identities);
   bool PopIdentity(tdm::TdmDisambiguator::Identity* out);
-  void SetKnownSobChannels(const std::map<int, std::pair<BaseConfig, BaseDynamicState>>& channels);
+  void SetKnownSobChannels(const std::map<int, std::pair<BaseConfig, BaseDynamicState>>& channels,
+                           std::bitset<sob::kChannels> blocked = {});
 
   // Not stock, for rooms with both kinds of base station (ai/driver/mixed_stations.md): LH1
   // pulses from 2.0 stations go down the LH2 path (PulseSorter), the rest down the LH1 path as

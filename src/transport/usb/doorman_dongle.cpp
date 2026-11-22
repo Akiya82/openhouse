@@ -382,7 +382,10 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
     const uint8_t* body = r + 3;
     if (r[0] == 0x81) {
       frag[slot].insert(frag[slot].end(), body, body + len);
-      if (frag[slot].size() >= size_t(1 + frag[slot][0])) {
+      // The first buffered byte is the frame's length (protocol.md: a fragment carries the raw
+      // bytes of [len][frame]). A fragment that brought none — its start was lost, or a short
+      // report — leaves the accumulator empty, and reading its first byte there is past the end.
+      if (!frag[slot].empty() && frag[slot].size() >= size_t(1 + frag[slot][0])) {
         OnFrame(slot, t, frag[slot].data() + 1, frag[slot][0], last);
         frag[slot].clear();
       }

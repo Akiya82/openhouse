@@ -101,3 +101,7 @@ Air op `'L' [kB/s]` (reply `[F0]['L'][kB/s]`): the radio sends filler `'Z'` fram
 the main MCU sent more, so a few devices load the radio cycle like many. 0 stops it; not kept across a
 reboot. `doorman/tools/load.py radio SLOT KBPS`.
 
+The budget is kept in thousandths of a byte (`kB/s x us`), so `L` is the rate queued at any main-loop
+speed. Before this, each pass rounded its share down to whole bytes and lost the rest, which on a fast
+loop is nearly all of it: a Tracker 3.0 sent ~0.4 kB/s of filler for `L` 14 and ~2.4 for `L` 54.
+

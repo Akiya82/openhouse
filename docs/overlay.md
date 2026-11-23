@@ -19,6 +19,8 @@ A base station is **learning** while openhouse is still working out where it is,
 ### Devices
 Details for each device: its state, battery, position and speed, and which base stations it sees (with how many sensors and sweeps). You can vibrate a device, power it off or disable it here. A disabled device is ignored by openhouse completely.
 
+Trackers can also be **named** here (for example _Waist_, _Left foot_): **Rename tracker** asks for a name, which openhouse keeps by the tracker's hardware serial so it follows that tracker across reconnects and restarts, and **Clear name** goes back to the default label. In the SteamVR dashboard the name is typed on SteamVR's own keyboard; in the desktop window it's an ordinary text box. SteamVR itself keeps identifying the tracker by its serial.
+
 <img src="../images/overlay-devices.png" alt="Devices" width="720">
 
 ### Base stations

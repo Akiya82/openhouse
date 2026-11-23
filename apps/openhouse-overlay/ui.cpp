@@ -225,6 +225,11 @@ void Ui::SetUpImGui(int k) {
   };
   add(13.f * k);
   lh::ui::MergeTrackerNameFonts(*io.Fonts);
+  // The name fonts merge into the font added just above (MergeMode takes Fonts.back()), so only
+  // that one can draw a name outside ProggyClean's 0x20-0xFF. That is the font every device
+  // label uses, including the detail heading, which scales it with PushFont(nullptr, size).
+  // If a name ever needs g_title or g_huge, merge into those too - at the cost of another copy
+  // of each font file, which is why it isn't done for all three.
   g_title = add(13.f * (k + 1));
   g_huge = add(13.f * (k + 2));
   // Plain ImGui, with roomy frames: easy to hit with a laser pointer.

@@ -78,7 +78,7 @@ struct DevicePose {
   double filterTime = 0;
 };
 
-// Controller input: Index ("Knuckles") controllers and Vive wands. Trackers report none.
+// Decoded controller and tracker inputs. A tracker power button reports systemClick.
 struct ControllerInput {
   double hostTime = 0;
   // Buttons (pressed).
@@ -106,6 +106,8 @@ struct ControllerInput {
 enum class ControllerType { Index, ViveWand, Mapped };
 
 struct DeviceInfo {
+  bool IsTundraTracker() const { return manufacturer == "Tundra Labs" && model == "Tundra Tracker"; }
+
   std::string serial;           // "LHR-13DA81D1", or "LHB-A101B835" for bases
   DeviceRole role = DeviceRole::Tracker;
   std::string deviceClass;      // raw config device_class

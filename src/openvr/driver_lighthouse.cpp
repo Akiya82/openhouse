@@ -259,6 +259,7 @@ struct DeviceStatic {
   // apps don't list it, while TrackingOverrides can still use it (e.g. a tracker on the head standing
   // in for the headset). As the stock driver (0x2e8120): a class it doesn't know is Invalid.
   bool hidden = false;
+  bool tundraTracker = false;
 };
 
 class Device : public ITrackedDeviceServerDriver {
@@ -289,7 +290,7 @@ class Device : public ITrackedDeviceServerDriver {
     container_ = VRProperties()->TrackedDeviceToPropertyContainer(objectId);
     SetProperties();
     if (info_.role == lh::DeviceRole::Controller) CreateInputs();
-    else if (info_.role == lh::DeviceRole::Tracker && HtcTracker()) CreateTrackerInputs();
+    else if (info_.role == lh::DeviceRole::Tracker && (HtcTracker() || info_.tundraTracker)) CreateTrackerInputs();
     active_ = true;
     return VRInitError_None;
   }
@@ -455,7 +456,7 @@ class Device : public ITrackedDeviceServerDriver {
       VRProperties()->SetFloatProperty(container_, Prop_DeviceBatteryPercentage_Float, float(battery_) / 100.0f);
       VRProperties()->SetBoolProperty(container_, Prop_DeviceIsCharging_Bool, charging_);
     }
-    if (info_.role == lh::DeviceRole::Controller || (info_.role == lh::DeviceRole::Tracker && HtcTracker())) {
+    if (info_.role == lh::DeviceRole::Controller || u.input || hadInput_) {
       if (u.input && p.deviceIsConnected) { UpdateInputs(*u.input, now); hadInput_ = true; }
       else if (hadInput_) { lh::ControllerInput neutral; neutral.hostTime = now; UpdateInputs(neutral, now); hadInput_ = false; }
       if (info_.role == lh::DeviceRole::Controller && now - lastSkeletonSent_ >= kSkeletonInterval) SendSkeleton(now);
@@ -727,6 +728,7 @@ class Device : public ITrackedDeviceServerDriver {
       created(i, path, in->CreateBooleanComponent(c, path, &handles_[i]));
     };
     b(SystemClick, "/input/power/click");
+    if (info_.tundraTracker) return;  // built-in button only
     b(MenuClick, "/input/application_menu/click");
     b(GripClick, "/input/grip/click");
     b(TriggerClick, "/input/trigger/click");
@@ -1531,6 +1533,7 @@ class Provider : public IServerTrackedDeviceProvider {
       info.resourceRoot = d.info.resourceRoot;
       info.inputProfile = d.info.inputProfile;
       info.registeredType = d.info.registeredType;
+      info.tundraTracker = d.info.IsTundraTracker();
       info.hidden = EqualsNoCase(d.info.deviceClass, "null");
       Add(info, info.hidden ? TrackedDeviceClass_Invalid
                 : d.info.role == lh::DeviceRole::Controller ? TrackedDeviceClass_Controller

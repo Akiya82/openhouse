@@ -31,6 +31,7 @@ class TrackingSource {
   bool PeekImuTime(DeviceTime* out) const;
   bool PopFrame(OpticalFrame* out);
   const tdm::TdmStats& Stats() const { return tdm_.Stats(); }
+  bool PopSobBaseConfig(BaseConfig* config, BaseDynamicState* dynamic);
   bool PopBaseConfig(BaseConfig* config, BaseDynamicState* dynamic);
   bool PopEvent(tdm::TdmEvent* out);
   bool PopLog(std::string* out);

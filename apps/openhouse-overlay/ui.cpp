@@ -700,6 +700,7 @@ void Ui::SetBaseChannel(BaseChannelChange change, bool automatic) {
 void Ui::CancelBaseChannelChange(const std::string& error) {
   autoChannels_ = false;
   channelConfirmationDeadline_ = 0;
+  channelLock_.reset();
   Toast(error, true);
 }
 
@@ -725,6 +726,7 @@ void Ui::PollBaseChannels() {
       std::string error = write();
       return ChannelWriteResult{std::move(error), HostClockSeconds()};
     });
+    channelLock_ = std::move(discovery.lock);
     return;
   }
   if (channelWrite_.valid()) {
@@ -741,6 +743,7 @@ void Ui::PollBaseChannels() {
     if (!sameSession) { CancelBaseChannelChange("Channel write not confirmed: live session changed"); return; }
     if (BaseChannelObserved(state, channelChange_, channelConfirmationAfter_)) {
       channelConfirmationDeadline_ = 0;
+      channelLock_.reset();
       Toast(channelChange_.serial + " now on channel " + std::to_string(channelChange_.to));
     } else {
       if (now_ >= channelConfirmationDeadline_) CancelBaseChannelChange("New channel not confirmed by the trackers");

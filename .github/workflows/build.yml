@@ -20,6 +20,8 @@ env:
   RELEASE_FLAG: ${{ (github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner) && '--release' || '' }}
   # OpenVR's public headers (MIT), fetched at build time, never stored in the repo.
   OPENVR_TAG: v2.15.6
+  LIGHTHOUSE_TAG: 2.1.0
+  LIGHTHOUSE_HEADER_SHA256: 4ba763d111f90af32fa0203aa2a0ffbcc9f530155d0b9d8709ab60a0b011c023
   VCPKG_MAX_CONCURRENCY: 4
   # vcpkg's built packages (Ceres takes most of a cold build), reused between runs: see
   # the "vcpkg cache" steps. vcpkg itself is checked out at vcpkg.json's builtin-baseline,
@@ -42,6 +44,14 @@ jobs:
           sudo mkdir -p /usr/include/openvr /usr/share/licenses/openvr
           sudo cp "$RUNNER_TEMP"/openvr/headers/*.h /usr/include/openvr/
           sudo cp "$RUNNER_TEMP/openvr/LICENSE" /usr/share/licenses/openvr/
+      - name: Lighthouse BLE ABI header
+        run: |
+          header_dir="$RUNNER_TEMP/lighthouse-abi"
+          mkdir -p "$header_dir"
+          curl --fail --location --retry 3 -o "$header_dir/lighthouse.h" \
+            "https://github.com/ShayBox/Lighthouse/releases/download/$LIGHTHOUSE_TAG/lighthouse.h"
+          (cd "$header_dir" && echo "$LIGHTHOUSE_HEADER_SHA256  lighthouse.h" | sha256sum -c -)
+          echo "LIGHTHOUSE_INCLUDE_DIR=$header_dir" >> "$GITHUB_ENV"
       - name: vcpkg at the baseline
         run: |
           baseline=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
@@ -102,6 +112,14 @@ jobs:
           sudo mkdir -p /usr/include/openvr /usr/share/licenses/openvr
           sudo cp "$RUNNER_TEMP"/openvr/headers/*.h /usr/include/openvr/
           sudo cp "$RUNNER_TEMP/openvr/LICENSE" /usr/share/licenses/openvr/
+      - name: Lighthouse BLE ABI header
+        run: |
+          header_dir="$RUNNER_TEMP/lighthouse-abi"
+          mkdir -p "$header_dir"
+          curl --fail --location --retry 3 -o "$header_dir/lighthouse.h" \
+            "https://github.com/ShayBox/Lighthouse/releases/download/$LIGHTHOUSE_TAG/lighthouse.h"
+          (cd "$header_dir" && echo "$LIGHTHOUSE_HEADER_SHA256  lighthouse.h" | sha256sum -c -)
+          echo "LIGHTHOUSE_INCLUDE_DIR=$header_dir" >> "$GITHUB_ENV"
       - name: vcpkg at the baseline
         run: |
           baseline=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")

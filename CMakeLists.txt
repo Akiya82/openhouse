@@ -39,6 +39,19 @@ option(LH_BUILD_VIEWER "Build GLFW/OpenGL diagnostic viewer if available" ON)
 option(LH_BUILD_TESTS "Build tests" ON)
 option(LH_BUILD_ORACLE_TESTS "Build tests that dlopen the original driver_lighthouse.so" ON)
 
+set(LIGHTHOUSE_INCLUDE_DIR "$ENV{LIGHTHOUSE_INCLUDE_DIR}" CACHE PATH
+    "Optional ShayBox Lighthouse include directory for checking the BLE ABI")
+if(LIGHTHOUSE_INCLUDE_DIR)
+  set(lighthouse_header "${LIGHTHOUSE_INCLUDE_DIR}/lighthouse.h")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${lighthouse_header}")
+  file(READ "${lighthouse_header}" lighthouse_abi)
+  # 2.1.0 declares two unscoped Unknown enumerators. Rename the error enumerator
+  # in the build copy without changing any of the types or values.
+  string(REPLACE "Unknown = -99," "LighthouseErrorUnknown = -99," lighthouse_abi "${lighthouse_abi}")
+  file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/lh/lighthouse_abi.h"
+       CONTENT "${lighthouse_abi}" @ONLY)
+endif()
+
 include(GNUInstallDirs)
 
 # The build's version stamp (cmake/build_id.cmake), redone on every build: lh/build_id.h for
@@ -325,6 +338,9 @@ if(LH_BUILD_VIEWER)
                      apps/openhouse-overlay/telemetry_client.cpp apps/openhouse-overlay/log_view.cpp
                      apps/openhouse-overlay/views.cpp)
       target_include_directories(openhouse-overlay PRIVATE src ${OPENVR_INCLUDE_DIR})
+      if(LIGHTHOUSE_INCLUDE_DIR)
+        target_compile_definitions(openhouse-overlay PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+      endif()
       target_link_libraries(openhouse-overlay PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
       if(WIN32)
         target_link_libraries(openhouse-overlay PRIVATE winhttp shell32)
@@ -427,6 +443,11 @@ if(LH_BUILD_TESTS)
     add_library(lh_test_ble SHARED tests/openvr/fake_lighthouse_ble.cpp)
     add_executable(lh_openvr_component_tests tests/openvr/test_components.cpp tests/openvr/test_base_channels.cpp src/openvr/hand_skeleton.cpp src/openvr/raw_alignment.cpp src/openvr/steam_rooms.cpp src/openvr/room_publisher.cpp src/openvr/host_frame.cpp src/openvr/telemetry_server.cpp src/openvr/pairing_mailbox.cpp apps/openhouse-overlay/base_channels.cpp)
     target_include_directories(lh_openvr_component_tests PRIVATE src tests apps/openhouse-overlay ${OPENVR_INCLUDE_DIR})
+    target_include_directories(lh_test_ble PRIVATE apps/openhouse-overlay)
+    if(LIGHTHOUSE_INCLUDE_DIR)
+      target_compile_definitions(lh_openvr_component_tests PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+      target_compile_definitions(lh_test_ble PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+    endif()
     target_compile_definitions(lh_openvr_component_tests PRIVATE LH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     target_link_libraries(lh_openvr_component_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main ${CMAKE_DL_LIBS})
     target_link_libraries(lh_openvr_component_tests PRIVATE lh_test_ble)

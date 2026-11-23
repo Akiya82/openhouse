@@ -18,6 +18,39 @@ viewer::Base Station(const char* serial, const char* channel, double observed = 
   base.channelObservedAt = observed;
   return base;
 }
+
+#ifdef _WIN32
+constexpr auto kDataHome = "LOCALAPPDATA";
+#else
+constexpr auto kDataHome = "XDG_DATA_HOME";
+#endif
+
+void SetDataHome(const std::filesystem::path& path) {
+#ifdef _WIN32
+  _wputenv_s(L"LOCALAPPDATA", path.c_str());
+#else
+  if (path.empty()) unsetenv(kDataHome);
+  else setenv(kDataHome, path.c_str(), 1);
+#endif
+}
+
+struct BleTestData {
+  const std::filesystem::path previous = lh::platform::FsPath(lh::platform::Env(kDataHome));
+  const std::filesystem::path directory = std::filesystem::temp_directory_path() /
+      ("openhouse-ble-test-" + std::to_string(lh::platform::ProcessId()));
+
+  BleTestData() { SetDataHome(directory); }
+  ~BleTestData() {
+    SetDataHome(previous);
+    std::error_code error;
+    std::filesystem::remove(directory / "alternate/openhouse/base-channels.lock", error);
+    std::filesystem::remove(directory / "alternate/openhouse", error);
+    std::filesystem::remove(directory / "alternate", error);
+    std::filesystem::remove(directory / "openhouse/base-channels.lock", error);
+    std::filesystem::remove(directory / "openhouse", error);
+    std::filesystem::remove(directory, error);
+  }
+};
 }  // namespace
 
 TEST(BaseChannels, PlansDeterministicMovesAndReservesCachedChannels) {
@@ -52,6 +85,7 @@ TEST(BaseChannels, ConfirmsOnlyANewerDirectObservationOfTheExpectedTarget) {
 }
 
 TEST(BaseChannels, DiscoveryChecksAllAdaptersBeforeOneExplicitWrite) {
+  const BleTestData testData;
 #ifdef _WIN32
   _putenv_s("OPENHOUSE_LIGHTHOUSE_BLE", LH_TEST_BLE);
 #else
@@ -64,6 +98,16 @@ TEST(BaseChannels, DiscoveryChecksAllAdaptersBeforeOneExplicitWrite) {
   EXPECT_EQ(lh_fake_ble_writes(), 0);
   EXPECT_TRUE(prepared.write().empty());
   EXPECT_EQ(lh_fake_ble_writes(), 1);
+
+  auto confirmationLock = std::move(prepared.lock);
+  prepared = {};
+  SetDataHome(testData.directory / "alternate");
+  auto competing = DiscoverBaseChannel(change);
+  EXPECT_FALSE(competing.write);
+  EXPECT_EQ(competing.error, "Another overlay is changing a base station channel");
+  EXPECT_EQ(lh_fake_ble_writes(), 1);
+  competing = {};
+  confirmationLock.reset();
 
   lh_fake_ble_scenario(1);
   const auto duplicate = DiscoverBaseChannel(change);

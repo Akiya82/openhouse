@@ -19,7 +19,8 @@
 //           "receivers":[{"serial","connected"}],
 //           "settings":{"positionSmoothingMs","rotationSmoothingMs","predictWithAcceleration",
 //                       "hideLostDevices","mixedLight","mixedLight...","host","steamvr",
-//                       "recording","recordingPath","reportBusy","report":{"count","path","error"},"steamRooms"}}
+//                       "recording","recordingPath","reportBusy","report":{"count","path","error"},"steamRooms",
+//                       "trackerNames":{"LHR-...":"..."}}}
 //
 // Clients may send commands, one JSON object per line (openhouse-overlay):
 //   {"type":"command","id":N,"cmd":"set","key":"<SteamVR settings key>","value":V}
@@ -27,6 +28,9 @@
 //   {"type":"command","id":N,"cmd":"resetRoom"}           {"cmd":"saveReport"}
 //   {"type":"command","id":N,"cmd":"identify"|"powerOff","serial":"LHR-..."}
 //   {"type":"command","id":N,"cmd":"enable","serial":"LHR-...","enabled":B}
+//   {"type":"command","id":N,"cmd":"renameTracker","serial":"LHR-...","name":"..."}
+//       Names are trimmed of spaces and limited to 63 UTF-8 bytes without ASCII control characters.
+//       An empty name clears the alias for a known tracker.
 //   {"type":"command","id":N,"cmd":"pair","receiver":"<dongle serial>","seconds":S}
 // and get {"type":"reply","id":N,"ok":B,"error":"..."} back. Under SteamVR "set" writes the
 // settings page's value (kept); elsewhere it lasts for the session.
@@ -37,10 +41,13 @@
 // when the room is reset (SteamVR settings, or its file deleted while running).
 #pragma once
 
+#include <cstddef>
+
 namespace lh::telemetry {
 
 constexpr int kProtocolVersion = 1;
 constexpr int kDefaultPort = 36840;
+constexpr std::size_t kTrackerNameMaxBytes = 63;
 // LH_TELEMETRY_PORT, else kDefaultPort; 0 turns the server off.
 int PortFromEnvironment();
 

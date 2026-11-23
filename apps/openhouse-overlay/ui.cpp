@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <fstream>
 
+#include "common/tracker_names.hpp"
+#include "common/ui_name_fonts.hpp"
 #include "common/ui_theme.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/version.hpp"
@@ -41,21 +43,6 @@ std::filesystem::path SettingsPath() {
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return std::filesystem::path(xdg) / "lh" / "overlay.json";
   const char* home = std::getenv("HOME");
   return std::filesystem::path(home ? home : ".") / ".config" / "lh" / "overlay.json";
-#endif
-}
-
-std::filesystem::path NameFallbackFont() {
-#ifdef _WIN32
-  return lh::platform::FsPath(lh::platform::Env("WINDIR")) / "Fonts" / "segoeui.ttf";
-#else
-  const char* candidates[] = {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                              "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-                              "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"};
-  for (const auto* path : candidates) {
-    std::error_code error;
-    if (std::filesystem::is_regular_file(path, error)) return path;
-  }
-  return {};
 #endif
 }
 
@@ -226,21 +213,12 @@ void Ui::SetUpImGui(int k) {
   ImFontConfig font;
   font.OversampleH = font.OversampleV = 1;
   font.PixelSnapH = true;
-  const auto fallback = NameFallbackFont();
-  std::error_code error;
-  const bool haveFallback = !fallback.empty() && std::filesystem::is_regular_file(fallback, error);
-  const auto path = fallback.u8string();
   auto add = [&](float size) {
     font.SizePixels = size;
-    ImFont* base = io.Fonts->AddFontDefault(&font);
-    if (haveFallback) {
-      ImFontConfig merge;
-      merge.MergeMode = true;
-      io.Fonts->AddFontFromFileTTF(reinterpret_cast<const char*>(path.c_str()), size, &merge);
-    }
-    return base;
+    return io.Fonts->AddFontDefault(&font);
   };
   add(13.f * k);
+  lh::ui::MergeTrackerNameFonts(*io.Fonts);
   g_title = add(13.f * (k + 1));
   g_huge = add(13.f * (k + 2));
   // Plain ImGui, with roomy frames: easy to hit with a laser pointer.
@@ -652,12 +630,22 @@ void Ui::Overview() {
   if (BigButton("Copy vrserver logs")) CopyServerLog();
 }
 
-void Ui::CommitTrackerName(const char* name, uint64_t edit) {
+void Ui::CancelTrackerName(uint64_t edit) {
+  if (edit == renameEdit_) renameSerial_.clear();
+}
+
+void Ui::CommitTrackerName(std::string_view name, uint64_t edit) {
   if (renameSerial_.empty() || edit != renameEdit_) return;
   const std::string serial = std::move(renameSerial_);
   renameSerial_.clear();
   if (!client_.Connected() || renameConnection_ != client_.ConnectionGeneration()) {
     Toast("Tracker name not saved: driver connection changed", true);
+    return;
+  }
+  name = lh::telemetry::TrimTrackerName(name);
+  if (name.size() > lh::telemetry::kTrackerNameMaxBytes) {
+    Toast("Tracker name is too long (" + std::to_string(lh::telemetry::kTrackerNameMaxBytes) +
+          " UTF-8 bytes maximum)", true);
     return;
   }
   try {
@@ -677,9 +665,8 @@ void Ui::Devices() {
     if (selectedDevice_.empty()) selectedDevice_ = d.serial;
     ImGui::PushID(d.serial.c_str());
     Dot(DeviceColor(d));
-    char label[96];
-    std::snprintf(label, sizeof label, "%s\n%s", DeviceName(d).c_str(), d.serial.c_str());
-    if (SelectableDeviceLabel(label, selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
+    const std::string label = DeviceName(d) + "\n" + d.serial;
+    if (SelectableDeviceLabel(label.c_str(), selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
       selectedDevice_ = d.serial;
     ImGui::PopID();
   }
@@ -689,7 +676,7 @@ void Ui::Devices() {
   const Device* d = nullptr;
   for (const auto& x : s.devices) if (x.serial == selectedDevice_) d = &x;
   if (!d) { ImGui::TextDisabled("No device selected"); ImGui::EndChild(); return; }
-  ImGui::PushFont(g_title);
+  ImGui::PushFont(nullptr, g_title->LegacySize);
   ImGui::TextUnformatted(DeviceName(*d).c_str());
   ImGui::PopFont();
   ImGui::TextDisabled("%s  %s", d->model.c_str(), d->serial.c_str());
@@ -741,7 +728,7 @@ void Ui::Devices() {
       }
       ImGui::SameLine();
       if (BigButton("Cancel")) {
-        renameSerial_.clear();
+        CancelTrackerName(renameEdit_);
         ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();

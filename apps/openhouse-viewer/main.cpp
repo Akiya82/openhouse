@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 
+#include "common/ui_name_fonts.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/telemetry.hpp"
 #include "log_view.hpp"
@@ -137,7 +138,10 @@ int main() {
   glfwSwapInterval(1);
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGui::GetIO().IniFilename = nullptr;  // our own settings file; the layout is fixed
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = nullptr;  // our own settings file; the layout is fixed
+  io.Fonts->AddFontDefault();
+  lh::ui::MergeTrackerNameFonts(*io.Fonts);
   ImGui::StyleColorsDark();
   ImGui::GetStyle().WindowRounding = 0;
   ImGui::GetStyle().FrameRounding = 3;

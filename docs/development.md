@@ -24,7 +24,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build
 ```
-Needs Eigen, Ceres, nlohmann-json and GTest (and glfw for the viewers). The tests use short recordings from `tests/data/captures`.
+Needs Eigen, Ceres, nlohmann-json and GTest. The viewers also need GLFW and OpenGL. On Linux, install the FreeType development package (`libfreetype-dev` on Debian and Ubuntu, `freetype-devel` on Fedora). The tests use short recordings from `tests/data/captures`.
 
 For the release packages:
 - `scripts/build-linux.sh` builds and packages the Linux one

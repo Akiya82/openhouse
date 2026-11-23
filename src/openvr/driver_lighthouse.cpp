@@ -58,6 +58,7 @@ constexpr const char* kStockFile = "driver_lighthouse.so.stock";
 #include "steam_rooms.hpp"
 #include "room_publisher.hpp"
 #include "telemetry_server.hpp"
+#include "tracker_names.hpp"
 #include "lh/log_level.hpp"
 #include "lh/telemetry.hpp"
 #include "lh/version.hpp"
@@ -1901,7 +1902,7 @@ class Provider : public IServerTrackedDeviceProvider {
       if (!type || value == j.end()) { *error = "unknown setting " + key; return false; }
       if (*type == SettingType::Bool && !value->is_boolean()) { *error = key + " takes true or false"; return false; }
       if (*type == SettingType::Number && !value->is_number()) { *error = key + " takes a number"; return false; }
-      if (!UpdateSettings([&](nlohmann::json& s) { SetSetting(s, key, *value); })) {
+      if (!UpdateSettings([&](nlohmann::json& s) { SetSetting(s, key, *value); return true; })) {
         *error = "couldn't save " + SettingsPath();
         return false;
       }
@@ -1930,26 +1931,10 @@ class Provider : public IServerTrackedDeviceProvider {
     }
     const std::string serial = text("serial");
     if (cmd == "renameTracker") {
-      const auto device = std::find_if(snapshot_.devices.begin(), snapshot_.devices.end(), [&](const auto& state) {
-        return state.info.serial == serial && state.info.role == lh::DeviceRole::Tracker;
-      });
-      if (device == snapshot_.devices.end()) { *error = "unknown tracker " + serial; return false; }
       const auto value = j.find("name");
-      if (value == j.end() || !value->is_string()) { *error = "name must be a string"; return false; }
-      const std::string input = value->get<std::string>();
-      const auto first = input.find_first_not_of(' ');
-      const auto last = input.find_last_not_of(' ');
-      const std::string name = first == std::string::npos ? "" : input.substr(first, last - first + 1);
-      if (name.size() > 63 || std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; })) {
-        *error = "enter up to 63 UTF-8 bytes without control characters";
-        return false;
-      }
-      if (!UpdateSettings([&](nlohmann::json& settings) {
-            auto& names = settings["trackerNames"];
-            if (!names.is_object()) names = nlohmann::json::object();
-            if (name.empty()) names.erase(serial);
-            else names[serial] = name;
-          })) {
+      const auto name = lh::openvr::ValidateTrackerRename(snapshot_.devices, serial, value == j.end() ? nlohmann::json{} : *value, error);
+      if (!name) return false;
+      if (!UpdateSettings([&](nlohmann::json& settings) { return lh::openvr::SetTrackerName(settings, serial, *name); })) {
         *error = "couldn't save " + SettingsPath();
         return false;
       }
@@ -2034,32 +2019,34 @@ class Provider : public IServerTrackedDeviceProvider {
   // with "set"; a hand edit is picked up within a second (ApplyTuning runs every second).
   static std::string SettingsPath() { return lh::platform::ConfigDirectory() + "/settings.json"; }
   static nlohmann::json ReadSettings() {
-    std::ifstream in(std::filesystem::u8path(SettingsPath()));
+    std::ifstream in(lh::platform::FsPath(SettingsPath()));
     if (!in) return nlohmann::json::object();
     nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
     return j.is_object() ? j : nlohmann::json::object();
   }
-  // Read, change, write back (whatever else is in it stays). False: not written.
-  bool UpdateSettings(const std::function<void(nlohmann::json&)>& change) {
+  // Preserve unrelated settings and skip the write if the callback reports no change.
+  bool UpdateSettings(const std::function<bool(nlohmann::json&)>& change) {
     try {
-      const std::string path = SettingsPath();
+      const std::string settingsPath = SettingsPath();
+      const auto path = lh::platform::FsPath(settingsPath);
       nlohmann::json j = nlohmann::json::object();
       {
-        std::ifstream in(std::filesystem::u8path(path));
+        std::ifstream in(path);
         if (in) {
           j = nlohmann::json::parse(in, nullptr, false);
           // Never overwrite a file we can't read: its controllers and roles would be lost.
-          if (!j.is_object()) { Log("settings " + path + " isn't valid JSON: not changed"); return false; }
+          if (!j.is_object()) { Log("settings " + settingsPath + " isn't valid JSON: not changed"); return false; }
         }
       }
-      change(j);
-      std::filesystem::create_directories(std::filesystem::u8path(path).parent_path());
-      const std::string temp = path + ".tmp";
+      if (!change(j)) return true;
+      std::filesystem::create_directories(path.parent_path());
+      auto temp = path;
+      temp += ".tmp";
       {
-        std::ofstream out(std::filesystem::u8path(temp));
+        std::ofstream out(temp);
         out << j.dump(2) << "\n";
         out.close();
-        if (!out) { Log("cannot write " + temp); return false; }
+        if (!out) { Log("cannot write " + settingsPath + ".tmp"); return false; }
       }
       lh::platform::ReplaceFile(temp, path);
       return true;
@@ -2116,7 +2103,10 @@ class Provider : public IServerTrackedDeviceProvider {
       moved.push_back(key);
     }
     if (moved.empty()) return;
-    if (UpdateSettings([&](nlohmann::json& j) { for (const auto& [k, v] : values.items()) SetSetting(j, k, v); }))
+    if (UpdateSettings([&](nlohmann::json& j) {
+          for (const auto& [k, v] : values.items()) SetSetting(j, k, v);
+          return true;
+        }))
       Log("moved " + std::to_string(moved.size()) + " settings from SteamVR's settings to " + SettingsPath());
   }
 

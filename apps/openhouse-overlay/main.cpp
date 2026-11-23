@@ -18,6 +18,8 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl2.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -47,6 +49,7 @@ using namespace openhouse::overlay;
 constexpr int kTextureWidth = 2128, kTextureHeight = 1330;
 constexpr float kOverlayWidthMeters = 2.5f;
 constexpr const char* kOverlayKey = "openhouse.overlay";
+constexpr uint32_t kTrackerKeyboardMaxChars = 256;
 
 int TelemetryPort() {
   const int port = lh::telemetry::PortFromEnvironment();
@@ -223,7 +226,8 @@ int RunOverlay() {
   ui.SetInVR(true);
   ui.SetNameKeyboard([&](const char* current, uint64_t edit) {
     return overlay->ShowKeyboardForOverlay(main, vr::k_EGamepadTextInputModeNormal, vr::k_EGamepadTextInputLineModeSingleLine,
-                                           vr::KeyboardFlag_Modal, "Tracker name", 63, current, edit) == vr::VROverlayError_None;
+                                           vr::KeyboardFlag_Modal, "Tracker name", kTrackerKeyboardMaxChars,
+                                           current, edit) == vr::VROverlayError_None;
   });
   ui.SetLogo(UploadRgba(kLogoRgba, kLogoSize, kLogoSize));
 
@@ -265,12 +269,16 @@ int RunOverlay() {
           break;
         }
         case vr::VREvent_KeyboardDone: {
-          char name[64]{};
-          const uint32_t size = overlay->GetKeyboardText(name, sizeof name);
-          if (size < sizeof name || (size == sizeof name && name[sizeof name - 1] == '\0'))
-            ui.CommitTrackerName(name, event.data.keyboard.uUserValue);
+          // Allow four UTF-8 bytes per character before checking the storage limit.
+          std::array<char, 4 * kTrackerKeyboardMaxChars + 1> name{};
+          const uint32_t size = overlay->GetKeyboardText(name.data(), static_cast<uint32_t>(name.size()));
+          const auto end = size > name.size() ? name.end() : std::find(name.begin(), name.end(), '\0');
+          ui.CommitTrackerName(std::string_view(name.data(), end - name.begin()), event.data.keyboard.uUserValue);
           break;
         }
+        case vr::VREvent_KeyboardClosed:
+          ui.CancelTrackerName(event.data.keyboard.uUserValue);
+          break;
         case vr::VREvent_ScrollSmooth: io.AddMouseWheelEvent(event.data.scroll.xdelta, event.data.scroll.ydelta); break;
         case vr::VREvent_FocusLeave: io.AddMousePosEvent(-FLT_MAX, -FLT_MAX); break;
         default: break;

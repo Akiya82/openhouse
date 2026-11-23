@@ -310,7 +310,15 @@ if(LH_BUILD_VIEWER)
       third_party/imgui/imgui_widgets.cpp third_party/imgui/backends/imgui_impl_glfw.cpp
       third_party/imgui/backends/imgui_impl_opengl2.cpp)
     target_include_directories(lh_imgui PUBLIC third_party/imgui)
+    target_compile_definitions(lh_imgui PUBLIC IMGUI_USE_WCHAR32)
     target_link_libraries(lh_imgui PUBLIC glfw OpenGL::GL)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # Fedora's Noto CJK uses CFF2 outlines, which stb_truetype cannot load.
+      find_package(Freetype REQUIRED)
+      target_sources(lh_imgui PRIVATE third_party/imgui/misc/freetype/imgui_freetype.cpp)
+      target_compile_definitions(lh_imgui PRIVATE IMGUI_ENABLE_FREETYPE)
+      target_link_libraries(lh_imgui PRIVATE Freetype::Freetype)
+    endif()
     target_compile_options(lh_imgui PRIVATE -w)
     add_executable(lhviz apps/lhviz/main.cpp $<TARGET_OBJECTS:lh_runtime>)
     target_include_directories(lhviz PRIVATE include)
@@ -327,6 +335,9 @@ if(LH_BUILD_VIEWER)
                    apps/openhouse-viewer/log_view.cpp apps/openhouse-viewer/views.cpp)
     target_include_directories(openhouse-viewer PRIVATE src)
     target_link_libraries(openhouse-viewer PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json)
+    if(MSVC)
+      target_link_options(openhouse-viewer PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+    endif()
     install(TARGETS openhouse-viewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # openhouse-overlay: the management app, a SteamVR dashboard overlay or a window. SteamVR's
     # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
@@ -404,6 +415,7 @@ if(LH_BUILD_TESTS)
   add_executable(lh_unit_tests
     tests/unit/test_platform.cpp
     tests/unit/test_version.cpp
+    tests/unit/test_tracker_names.cpp
     tests/unit/test_tracking_source.cpp
     tests/unit/test_pose_solver.cpp
     tests/unit/test_tracker.cpp
@@ -415,7 +427,7 @@ if(LH_BUILD_TESTS)
     tests/unit/test_rotor_reference.cpp
     src/runtime/mixed_light.cpp)
   target_include_directories(lh_unit_tests PRIVATE src)
-  target_link_libraries(lh_unit_tests PRIVATE lh_tracking GTest::gtest_main)
+  target_link_libraries(lh_unit_tests PRIVATE lh_tracking nlohmann_json::nlohmann_json GTest::gtest_main)
   if(WIN32)
     target_link_libraries(lh_unit_tests PRIVATE advapi32 winhttp)
   endif()

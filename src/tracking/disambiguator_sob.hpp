@@ -102,6 +102,7 @@ class SobDisambiguator {
   std::map<int, std::pair<BaseConfig, BaseDynamicState>> known_;
   std::bitset<kChannels> blocked_;
   void Announce(Channel& c, int channel, const BaseConfig& cfg, BaseDynamicState dyn);
+  void QueueConfig(int channel, const BaseConfig& cfg, BaseDynamicState dyn);
   bool active_ = false;
   int nextUniqueId_ = 0;
   std::array<Channel, kChannels> channels_{};

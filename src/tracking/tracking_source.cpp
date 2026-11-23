@@ -137,6 +137,11 @@ bool TrackingSource::PopFrame(OpticalFrame* out) {
   return UseMulti() ? multi_.PopFrame(out) : tdm_.PopFrame(out);
 }
 
+bool TrackingSource::PopSobBaseConfig(BaseConfig* config, BaseDynamicState* dynamic) {
+  std::lock_guard lock(mutex_);
+  return sob_.PopBaseConfig(config, dynamic);
+}
+
 bool TrackingSource::PopBaseConfig(BaseConfig* config, BaseDynamicState* dynamic) {
   std::lock_guard lock(mutex_);
   if (sob_.PopBaseConfig(config, dynamic)) return true;

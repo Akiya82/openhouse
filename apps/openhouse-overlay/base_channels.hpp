@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,9 +21,11 @@ std::vector<BaseChannelChange> ResolveBaseChannels(const viewer::State& state);
 bool CanChangeBaseChannel(const viewer::State& state, const BaseChannelChange& change, bool automatic);
 bool BaseChannelObserved(const viewer::State& state, const BaseChannelChange& change, double after);
 bool HaveBaseChannelBackend();
+class BaseChannelLock;
 struct BaseChannelDiscovery {
   std::function<std::string()> write;
   std::string error;
+  std::shared_ptr<BaseChannelLock> lock{};
 };
 
 // Discovery and the returned operation run on workers. The UI revalidates the

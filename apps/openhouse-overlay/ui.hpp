@@ -61,6 +61,7 @@ class Ui {
   BaseChannelChange channelChange_;
   bool automaticChannelChange_ = false;
   uint64_t channelConnection_ = 0, autoChannelConnection_ = 0;
+  std::shared_ptr<BaseChannelLock> channelLock_;
   std::future<BaseChannelDiscovery> channelDiscovery_;
   struct ChannelWriteResult {
     std::string error;

@@ -26,6 +26,23 @@ Where each base station is, how well it's placed (uncertainty), its faults and w
 
 <img src="../images/overlay-base-stations.png" alt="Base stations" width="720">
 
+#### Channel management
+
+Select a Lighthouse 2.0 station and use **Change channel** to move it to an
+unused channel. **Automatically resolve channel conflicts** keeps one station
+on its current channel and moves the others one at a time. The toggle starts
+off each time you open the overlay.
+
+OpenHouse pauses tracking and room learning from both stations on a shared
+channel. Devices that can only see those stations lose optical tracking until
+the conflict clears. Keep the station visible after the move so the driver can
+confirm its new channel. If the room map is wrong, use **Reset room** after
+giving the stations distinct channels.
+
+Channel changes require a Bluetooth LE adapter and the optional Lighthouse BLE
+library. Follow the [installation instructions](../ai/driver/lh2_channels.md)
+to enable these controls.
+
 ### Dongles
 Each dongle, the devices paired to it, and a button to put a single dongle into pairing mode. Doorman dongles show their slots too. For more information and per-slot pairing of Doorman dongles, use the [dongle manager](doorman.md#the-dongle-manager).
 

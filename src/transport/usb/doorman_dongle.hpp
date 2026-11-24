@@ -158,6 +158,8 @@ class DoormanDongle {
     // status) and then made to rejoin, so the cause shows in the log.
     double lastDataT = 0, hostBusyT = -1e9; bool streamed = false;
     std::string name; bool haveName = false; int nameSeq = -1;   // its name on the dongle (0x35)
+    // IMU sample timestamps out of step (the air codec garbling them): count in a row, and the last.
+    uint32_t lastImuTicks = 0; bool haveImuTicks = false; int garbledImu = 0; double garbledRejoinT = -1e9;
     int silentStage = 0; std::array<uint32_t, 15> silentRaw{};
     uint32_t logPolls = 0, logOk = 0, logBytes = 0, logDrops = 0; double logT = 0; bool logHave = false;   // the log line's last counters   // from feature 0x05 (devices without 'H', e.g. stock main firmware)
   };
@@ -174,6 +176,7 @@ class DoormanDongle {
   void OnFrame(int slot, double t, const uint8_t* f, int n, bool last);
   void WatchSilent(int slot, double now);
   void OnRadioStatus(int slot, const uint8_t* f, int n);
+  void CheckImuStream(int slot, double now, const uint8_t* f);
   void OnIdent(int slot, const uint8_t* f, int n);
   void Attach(int slot, const std::string& config);
   void Detach(int slot, bool handedOver = false);   // handedOver: its USB cable carries it now

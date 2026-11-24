@@ -526,6 +526,7 @@ void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool la
       return;
     case 'p': {
       if (n != 18) return;
+      CheckImuStream(slot, t, f);
       std::memcpy(s.ring[s.ringPos].data(), f + 1, 17);
       if (s.ringN == 0) s.ring[1] = s.ring[2] = s.ring[0];
       s.ringPos = (s.ringPos + 1) % 3;
@@ -783,6 +784,33 @@ void DoormanDongle::WatchSilent(int i, double now) {
   }
 }
 
+// The air codec codes each IMU sample against the ones before it (doorman_codec.h), so the dongle's
+// decoder must step exactly as the radio's coder. One corrupted answer that passed the radio's
+// CRC-16 puts it out of step for good: every sample after it decodes as plausible garbage, each
+// timestamp ~31 s on and the accelerometer ramping by a constant step, and the device sits
+// connected, streaming, and never tracking until it rejoins (a power cycle did it). The data
+// still flows, so WatchSilent never sees it. Its timestamps give it away: a run of samples that go
+// back or leap is answered with a rejoin, which resets the codec on both sides.
+void DoormanDongle::CheckImuStream(int i, double now, const uint8_t* f) {
+  Slot& s = slots_[i];
+  uint32_t ticks;
+  std::memcpy(&ticks, f + 13, 4);
+  constexpr uint32_t kMaxStepTicks = 48000000u / 5;   // 200 ms of the device's 48 MHz clock
+  const uint32_t step = ticks - s.lastImuTicks;
+  const bool sane = !s.haveImuTicks || (step > 0 && step < kMaxStepTicks);
+  s.lastImuTicks = ticks;
+  s.haveImuTicks = true;
+  if (sane) { s.garbledImu = 0; return; }
+  if (++s.garbledImu < 25 || now - s.garbledRejoinT < 10) return;
+  s.garbledImu = 0;
+  s.garbledRejoinT = now;
+  log_(LogLevel::Warn, "Doorman Dongle " + serial_ + " slot " + std::to_string(i) +
+                           (s.serial.empty() ? std::string() : " (" + s.serial + ")") +
+                           ": IMU stream garbled (the air codec out of step); making it rejoin");
+  const uint8_t a = uint8_t(i);
+  Send(kCmdRejoin, &a, 1);
+}
+
 void DoormanDongle::OnRadioStatus(int slot, const uint8_t* f, int n) {
   uint32_t ver, frames, empty;
   std::memcpy(&ver, f + 2, 4);
@@ -807,6 +835,8 @@ void DoormanDongle::OnRadioStatus(int slot, const uint8_t* f, int n) {
 
 void DoormanDongle::ResetSlot(int slot) {
   Slot& s = slots_[slot];
+  s.haveImuTicks = false;
+  s.garbledImu = 0;
   s.streamed = false;
   s.silentStage = 0;
   if (s.attached) Detach(slot);

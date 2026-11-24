@@ -2047,6 +2047,9 @@ class Provider : public IServerTrackedDeviceProvider {
         *error = "couldn't save " + SettingsPath();
         return false;
       }
+      // On a Doorman Dongle that keeps names: there too, so the name goes with the dongle.
+      for (const auto& r : session_->Receivers())
+        if (r.kind == "openhouse" && r.keepsName && r.connected == serial) session_->SetReceiverName(r.serial, *name);
       ApplyTuning(false);
       return true;
     }
@@ -2250,6 +2253,14 @@ class Provider : public IServerTrackedDeviceProvider {
                 {"predictWithAcceleration", acceleration}, {"useSteamVRRooms", flag(f, "useSteamVRRooms", true)}};
     if (const auto names = f.find("trackerNames"); names != f.end() && names->is_object())
       applied_["trackerNames"] = *names;
+    // A Doorman Dongle keeps its devices' names (firmware 0x0025+): those go with the dongle, so
+    // they win over this PC's settings.
+    for (const auto& r : session_->Receivers())
+      if (r.kind == "openhouse" && r.keepsName && !r.connected.empty() && !r.name.empty()) {
+        auto& entry = applied_["trackerNames"][r.connected];
+        // A name over the dongle's 59 bytes is kept cut there: the whole one here stays.
+        if (!entry.is_string() || entry.get_ref<const std::string&>().rfind(r.name, 0) != 0) entry = r.name;
+      }
     // 1.0 and 2.0 base stations together (ai/driver/mixed_stations.md): settings.json
     // "mixedLight", true/false or an object (session.cpp LoadSettings has the fields).
     lh::MixedLightOptions mixed = session_->MixedLight();

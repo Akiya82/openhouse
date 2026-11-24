@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -53,6 +54,7 @@ class Ui {
   int selectedSlot_ = 0;  // Radio page
   int pendingSlot_ = -1;  // slot a confirmation is about
   char rename_[64] = {};
+  std::set<std::string> movedNames_;  // dongle/pairing id whose remembered name was put on the dongle
   // remembered devices, by pairing id: serial, model, nickname (settings file)
   struct Known { std::string serial, model, nickname; };
   std::map<std::string, Known> known_;

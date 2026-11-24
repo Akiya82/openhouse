@@ -746,16 +746,6 @@ void Ui::Devices() {
       ImGui::EndPopup();
     }
   }
-  ImGui::SeparatorText("Light");
-  if (d->coverage.empty()) ImGui::TextDisabled("None");
-  for (const auto& c : d->coverage) {
-    const bool used = std::find(d->bases.begin(), d->bases.end(), c.base) != d->bases.end();
-    char text[64];
-    std::snprintf(text, sizeof text, "%.1f sensors, %d sweeps", c.sensors, c.frames);
-    ImGui::ProgressBar(float(std::min(c.sensors / 12.0, 1.0)), ImVec2(ImGui::GetFontSize() * 18, 0), text);
-    ImGui::SameLine();
-    ImGui::Text("%s%s", BaseName(s, c.base).c_str(), used ? "" : " (unused)");
-  }
   ImGui::SeparatorText("Actions");
   const bool canBuzz = d->role != "hmd" && d->connected;
   ImGui::BeginDisabled(!canBuzz);
@@ -771,6 +761,16 @@ void Ui::Devices() {
   Tip("Not tracked while off");
   if (changed)
     Send(json{{"cmd", "enable"}, {"serial", d->serial}, {"enabled", enabled}}.dump(), (enabled ? "Enable " : "Disable ") + d->serial);
+  ImGui::SeparatorText("Light");
+  if (d->coverage.empty()) ImGui::TextDisabled("None");
+  for (const auto& c : d->coverage) {
+    const bool used = std::find(d->bases.begin(), d->bases.end(), c.base) != d->bases.end();
+    char text[64];
+    std::snprintf(text, sizeof text, "%.1f sensors, %d sweeps", c.sensors, c.frames);
+    ImGui::ProgressBar(float(std::min(c.sensors / 12.0, 1.0)), ImVec2(ImGui::GetFontSize() * 18, 0), text);
+    ImGui::SameLine();
+    ImGui::Text("%s%s", BaseName(s, c.base).c_str(), used ? "" : " (unused)");
+  }
   ImGui::EndChild();
 }
 

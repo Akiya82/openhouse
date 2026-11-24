@@ -17,7 +17,12 @@ static uint32_t us_now(void) { NRF_TIMER1->TASKS_CAPTURE[0] = 1; return NRF_TIME
 #define PAIR_PAGE   0xEC000u
 #endif
 #define PAIR_MAGIC  0x5250484Fu        /* "OHPR" */
-typedef struct { uint32_t magic, used; uint8_t id[DML_SLOTS][8]; } pair_store_t;
+/* Names (cmd 0x34/0x35), the user's own for each paired device, kept here so they go wherever the
+   dongle goes. A page from older firmware ends after id[] (erased: names_magic is 0xFFFFFFFF), and
+   reads as no names. UTF-8, NUL-padded; at most DML_NAME_MAX bytes (what one command carries). */
+#define NAME_MAGIC  0x4D4E484Fu        /* "OHNM" */
+#define DML_NAME_MAX 59
+typedef struct { uint32_t magic, used; uint8_t id[DML_SLOTS][8]; uint32_t names_magic; char name[DML_SLOTS][64]; } pair_store_t;
 static pair_store_t pairs;
 
 static void nvmc_wait(void) { while (!NRF_NVMC->READY) {} }
@@ -25,6 +30,7 @@ static void pairs_load(void)
 {
   memcpy(&pairs, (const void *)PAIR_PAGE, sizeof pairs);
   if (pairs.magic != PAIR_MAGIC) { memset(&pairs, 0, sizeof pairs); pairs.magic = PAIR_MAGIC; }
+  if (pairs.names_magic != NAME_MAGIC) { memset(pairs.name, 0, sizeof pairs.name); pairs.names_magic = NAME_MAGIC; }
 }
 static void pairs_save(void)
 {
@@ -396,7 +402,9 @@ static void join_beacon(void)
     if (to != slot) {
       if (slot >= 0) pairs.used &= ~(1u << slot);
       slot = to;
-      memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot; pairs_save();
+      memcpy(pairs.id[slot], id, 8); pairs.used |= 1u << slot;
+      memset(pairs.name[slot], 0, sizeof pairs.name[slot]);   /* another device: not its name */
+      pairs_save();
     }
     pairing_until_ms = 0;
     just_paired_slot = (uint8_t)slot; just_paired_until_ms = ms_ticks + 35000u;
@@ -597,7 +605,7 @@ int link_stream_pop(uint8_t *rep, int itf)
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 
-int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x33; d = 61 bytes */
+int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x33..0x35; d = 61 bytes */
 {
   uint8_t i = in[2] < DML_SLOTS ? in[2] : 0;
   slot_t *s = &sl[i];
@@ -671,9 +679,25 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x33;
     return 1;
   }
   case 0x26:                                                /* forget slot (0xFF = all) */
-    if (in[2] == 0xFF) pairs.used = 0; else if (in[2] < DML_SLOTS) pairs.used &= ~(1u << in[2]);
+    if (in[2] == 0xFF) { pairs.used = 0; memset(pairs.name, 0, sizeof pairs.name); }
+    else if (in[2] < DML_SLOTS) { pairs.used &= ~(1u << in[2]); memset(pairs.name[in[2]], 0, sizeof pairs.name[in[2]]); }
     pairs_save();
     return 1;
+  case 0x34: {                                              /* set a slot's name: [slot][len][UTF-8] (len 0 clears) */
+    const uint8_t n = in[3];
+    if (in[2] >= DML_SLOTS || !((pairs.used >> in[2]) & 1) || n > DML_NAME_MAX) { *st = 2; return 1; }
+    char name[64] = {0};
+    memcpy(name, in + 4, n);
+    if (memcmp(name, pairs.name[in[2]], sizeof name)) { memcpy(pairs.name[in[2]], name, sizeof name); pairs_save(); }
+    d[0] = in[2]; return 1;
+  }
+  case 0x35: {                                              /* a slot's name: [slot] -> [len][UTF-8] */
+    if (in[2] >= DML_SLOTS) { *st = 2; return 1; }
+    const char *name = pairs.name[in[2]];
+    uint8_t n = 0;
+    while (n < DML_NAME_MAX && name[n]) n++;
+    d[0] = n; memcpy(d + 1, name, n); return 1;
+  }
   case 0x27:                                                /* channels: mask, loss % per hop channel */
     d[0] = (uint8_t)mask; d[1] = (uint8_t)(mask >> 8);
     for (int k = 0; k < DML_NHOP; k++) { d[2 + k] = dml_hop_ch[k]; d[18 + k] = chs[k].loss_pct; }

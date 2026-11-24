@@ -225,6 +225,8 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
   const fs::path ourLogs = fs::path(platform::DataDirectory()) / "logs";
   for (const char* name : {"openhouse.txt", "openhouse.previous.txt"})
     files.push_back({std::string("logs/") + name, ourLogs / name});
+  for (const auto& e : fs::directory_iterator(ourLogs, ec))   // the apps' crash records (common/crash_log.hpp)
+    if (Utf8(e.path().filename()).ends_with("-crash.txt")) files.push_back({"logs/" + Utf8(e.path().filename()), e.path()});
 
   std::ostringstream info;
   info << "openhouse " << kVersion << "\n"

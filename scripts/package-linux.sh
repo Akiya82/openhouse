@@ -23,6 +23,7 @@ for copyright in "$prefix"/share/*/copyright; do
 done
 cp "$repo/third_party/hidapi/LICENSE-bsd.txt" "$out/lh-licenses/hidapi.txt"
 cp "$repo/third_party/imgui/LICENSE.txt" "$out/lh-licenses/imgui.txt"
+for notice in "$repo"/third_party/lighthouse-ble/*.txt; do cp "$notice" "$out/lh-licenses/lighthouse-ble-$(basename "$notice")"; done
 for package in openvr glfw systemd; do
   # -L: copies of what the notices link to (systemd's MIT-0.txt is a link into /usr/share/doc)
   [[ -d /usr/share/licenses/$package ]] && { cp -rL "/usr/share/licenses/$package" "$out/lh-licenses/" 2>/dev/null || true; }
@@ -34,6 +35,8 @@ for app in lhtool lhcapture lhviz openhouse-viewer openhouse-overlay doorman-don
   strip "$out/apps/$app"
   patchelf --remove-rpath "$out/apps/$app"
 done
+# ShayBox's Lighthouse library: the overlay's channel changes over Bluetooth (installed next to it).
+python3 "$repo/scripts/fetch-lighthouse-ble.py" linux "$out/apps" > /dev/null
 # Runnable straight out of the archive.
 chmod 755 "$out/openhouse-installer" "$out"/apps/*
 tar czf "$repo/dist/openhouse-linux-x64.tar.gz" -C "$repo/dist" openhouse-linux-x64

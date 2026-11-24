@@ -94,7 +94,7 @@ void TelemetryClient::Handle(const std::string& line) {
       Device x;
       x.serial = d.value("serial", "");
       x.role = d.value("role", "");
-      if (x.role == "tracker") x.name = lh::telemetry::TrackerDisplayName(j, x.serial);
+      x.name = lh::telemetry::TrackerDisplayName(j, x.serial);   // trackers from the overlay, any device from its dongle
       x.model = d.value("model", "");
       x.hand = d.value("hand", "");
       x.state = d.value("state", "");

@@ -35,7 +35,8 @@ struct SlotState {
   bool used = false, active = false;
   std::string pairId;  // the radio's 8-byte id, hex
   Identity id;
-  std::string nickname;  // the user's own name for it (settings)
+  std::string nickname;  // the user's own name for it (on the dongle, 0x0025+; else settings)
+  bool nameRead = false;  // the dongle's name for this slot has been read (firmware with names)
   int rssiDongle = 0, rssiDevice = 0;  // dBm, last
   int rssiMin = 0, rssiMax = 0;        // dBm, over the last poll
   uint32_t msSinceResponse = 0;
@@ -63,6 +64,7 @@ struct DongleState {
   uint32_t uptimeMs = 0, resetReason = 0;
   uint32_t crashCount = 0, crashType = 0, crashPc = 0;
   bool linkOn = true;
+  bool names = false;    // keeps the devices' names (firmware 0x0025+, cmd 0x34/0x35)
   // pairing
   bool pairing = false;
   int pairTarget = -1;   // slot the pairing goes to (-1: first free)
@@ -108,6 +110,8 @@ class Dongle {
   void BankUpdate(std::vector<uint8_t> image, std::function<void(float)> progress, Done done);
   void ClearCrash(Done done);
   void SetNickname(int slot, const std::string& name);
+  // Stores the name on the dongle (firmware with names): it goes wherever the dongle goes.
+  void SetName(int slot, std::string name, Done done);
   // Names learned elsewhere (the driver's telemetry, the remembered list), by pairing id.
   void SetKnown(const std::string& pairId, const Identity& id);
 

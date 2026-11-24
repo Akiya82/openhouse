@@ -23,6 +23,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include "common/crash_log.hpp"
 #include "driver_check.hpp"
 #include <cstdlib>
 #include <vector>
@@ -320,6 +321,7 @@ int RunOverlay() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  lh::crash::Install("openhouse-overlay");
   bool overlay = false;
   std::string driverDir;
   for (int i = 1; i < argc; ++i) {

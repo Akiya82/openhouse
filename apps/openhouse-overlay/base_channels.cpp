@@ -77,7 +77,19 @@ auto BackendPath() {
 #else
   constexpr const char* filename = "liblighthouse.so";
 #endif
-  return lh::platform::FsPath(override.empty() ? lh::platform::DataDirectory() + "/" + filename : override);
+  if (!override.empty()) return lh::platform::FsPath(override);
+  // Next to the overlay first: the packages ship it there (apps/), and the installer puts it
+  // next to the installed overlay, which is the data directory.
+  std::error_code ec;
+#ifdef _WIN32
+  wchar_t exe[MAX_PATH * 4];
+  const DWORD n = GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
+  const auto here = std::filesystem::path(std::wstring(exe, n)).parent_path() / filename;
+#else
+  const auto here = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path() / filename;
+#endif
+  if (std::filesystem::is_regular_file(here, ec)) return here;
+  return lh::platform::FsPath(lh::platform::DataDirectory() + "/" + filename);
 }
 
 constexpr int kChannels = 16;

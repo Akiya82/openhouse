@@ -162,6 +162,12 @@ jobs:
           name: openhouse-windows-x64
           path: dist/openhouse-windows-x64.zip
           if-no-files-found: error
+      # Unstripped binaries for reading crash records (common/crash_log.hpp); not part of a release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openhouse-windows-x64-symbols
+          path: dist/openhouse-windows-x64-symbols.zip
+          retention-days: 90
 
   # Code signing through SignPath (signpath.io), for release builds only: a manual run ("Run
   # workflow") by the repository owner, which builds with --release. Pushes, tags, pull

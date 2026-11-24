@@ -22,7 +22,8 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
-constexpr uint8_t kCmdRejoin = 0x33;
+constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35;
+constexpr size_t kNameMax = 59;   // what the dongle keeps (link.c DML_NAME_MAX)
 constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
 uint32_t Rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
@@ -284,6 +285,26 @@ void DoormanDongle::Pump(double now) {
     }
     if (!line.empty()) log_(LogLevel::Info, "Doorman Dongle " + serial_ + " link (30 s):" + line);
   }
+  {   // names kept on the dongle: writes first, then every paired slot's every 2 s
+    std::vector<std::pair<int, std::string>> writes;
+    { std::lock_guard lock(mutex_); writes.swap(nameWrites_); }
+    for (const auto& [slot, name] : writes) {
+      uint8_t a[2 + kNameMax] = {uint8_t(slot), uint8_t(name.size())};
+      std::memcpy(a + 2, name.data(), name.size());
+      Send(kCmdSetName, a, 2 + name.size());
+      slots_[slot].name = name;   // shown at once; the next read confirms it
+      nextNames_ = 0;
+    }
+    if (now >= nextNames_) {
+      nextNames_ = now + 2.0;
+      for (int i = 0; i < kSlots; ++i) {
+        if (!slots_[i].used) { slots_[i].name.clear(); slots_[i].haveName = false; continue; }
+        const uint8_t a = uint8_t(i);
+        Send(kCmdGetName, &a, 1);
+        slots_[i].nameSeq = seq_;
+      }
+    }
+  }
   std::optional<int> pair;
   int pairSlot = -1;
   std::deque<std::pair<int, std::vector<uint8_t>>> downs;
@@ -452,6 +473,14 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
     std::copy(std::begin(v), std::end(v), s.raw.begin());
     s.polls = v[0]; s.respOk = v[1]; s.framesUp = v[5]; s.bytesUp = v[6]; s.drops = v[7];
     s.rssiD = -std::abs(int32_t(v[10])); s.rssiT = -std::abs(int32_t(v[11]));   // dongle keeps magnitudes
+  } else if (r[0] == kCmdGetName) {
+    for (auto& s : slots_) {
+      if (s.nameSeq != r[1]) continue;
+      s.nameSeq = -1;
+      s.haveName = r[2] == 0;   // older firmware: not a command it knows
+      if (s.haveName) s.name.assign(reinterpret_cast<const char*>(d + 1), std::min<size_t>(d[0], kNameMax));
+      break;
+    }
   } else if (r[0] == kCmdIdent && n >= 19) {
     for (int i = 0; i < kSlots; ++i) {
       Slot& s = slots_[i];
@@ -848,6 +877,21 @@ bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64
   return true;
 }
 
+bool DoormanDongle::SetName(int slot, const std::string& nameIn) {
+  if (slot < 0 || slot >= kSlots) return false;
+  std::string name = nameIn;
+  if (name.size() > kNameMax) {   // cut on a character boundary (UTF-8)
+    size_t n = kNameMax;
+    while (n > 0 && (uint8_t(name[n]) & 0xC0) == 0x80) --n;
+    name.resize(n);
+  }
+  std::lock_guard lock(mutex_);
+  if (!opened_) return false;
+  for (auto& st : statsCache_) if (st.slot == slot) st.name = name;   // seen at once
+  nameWrites_.emplace_back(slot, std::move(name));
+  return true;
+}
+
 bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
   if (!opened_) return false;
@@ -874,6 +918,7 @@ void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its ow
       st.rssiDongle = s.rssiD; st.rssiDevice = s.rssiT;
     }
     st.devicesOnDongle = joined;
+    st.name = s.name; st.haveName = s.haveName;
     out.push_back(st);
   }
   std::lock_guard lock(mutex_);

@@ -526,6 +526,7 @@ std::vector<UsbTransport::Receiver> UsbTransport::Receivers() const {
       r.lossPercent = st.lossPercent; r.dropsPerSec = st.dropsPerSec;
       r.rssiDongle = st.rssiDongle; r.rssiDevice = st.rssiDevice; r.devicesOnDongle = st.devicesOnDongle;
       r.paired = st.used;
+      r.name = st.name; r.keepsName = st.haveName;
       slots.push_back(r);
     }
   }
@@ -588,6 +589,17 @@ void UsbTransport::PumpDoorman(double now) {
   }
   // No lock held: a device detaching here calls back into OnDeviceGone through the sink.
   for (const auto& dongle : dongles) dongle->Pump(now);
+}
+
+bool UsbTransport::SetReceiverName(const std::string& receiver, const std::string& name) {
+  for (const auto& dongle : DoormanDongles()) {
+    const std::string& serial = dongle->Serial();
+    if (receiver.size() != serial.size() + 2 || receiver.compare(0, serial.size(), serial) != 0 || receiver[serial.size()] != '/') continue;
+    const char c = receiver.back();
+    if (c < '0' || c >= '0' + DoormanDongle::kSlots) continue;
+    return dongle->SetName(c - '0', name);
+  }
+  return false;
 }
 
 bool UsbTransport::SetPairing(const std::string& receiver, int milliseconds) {

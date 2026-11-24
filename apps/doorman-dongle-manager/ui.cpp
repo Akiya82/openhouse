@@ -318,7 +318,12 @@ void Ui::Poll(double now) {
       if (id.serial.empty() && k != known_.end() && !k->second.serial.empty())
         id = {k->second.serial, k->second.model, "remembered"};
       if (!id.serial.empty() && id.serial != s.id.serial) d->SetKnown(s.pairId, id);
-      if (k != known_.end() && k->second.nickname != s.nickname) d->SetNickname(i, k->second.nickname);
+      if (!st.names) {   // older firmware: the name lives in our settings only
+        if (k != known_.end() && k->second.nickname != s.nickname) d->SetNickname(i, k->second.nickname);
+      } else if (s.nameRead && s.nickname.empty() && k != known_.end() && !k->second.nickname.empty() &&
+                 movedNames_.insert(st.serial + "/" + s.pairId).second) {
+        d->SetName(i, k->second.nickname, nullptr);   // a name from before the dongle kept them: moved onto it
+      }
     }
   }
   if (knownDirty_ && now - lastSave_ > 2.0) {  // a file write: not every frame
@@ -631,6 +636,8 @@ void Ui::SlotCard(const DongleState& d, int i, float width) {
     if (ImGui::InputText("##name", rename_, sizeof rename_, ImGuiInputTextFlags_EnterReturnsTrue)) {
       known_[s.pairId].nickname = rename_;
       knownDirty_ = true;
+      if (dongle->Snapshot().names) dongle->SetName(i, rename_, Report("Rename"));
+      else dongle->SetNickname(i, rename_);
       ImGui::CloseCurrentPopup();
     }
     ImGui::TextDisabled("Enter to save");

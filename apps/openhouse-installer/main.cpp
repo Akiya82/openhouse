@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/crash_log.hpp"
 #include "logo_rgba.h"
 #include "ui.hpp"
 
@@ -108,4 +109,7 @@ int Run(const std::string& mode) {
 // --update (the overlay's Update / Reinstall): download the latest release and hand over to its
 // installer; --install (that installer) and --repair (the overlay's Fix, from the package kept at
 // install): install right away; --uninstall (its Uninstall openhouse): uninstall right away.
-int main(int argc, char** argv) { return Run(argc > 1 ? argv[1] : ""); }
+int main(int argc, char** argv) {
+  lh::crash::Install("openhouse-installer");
+  return Run(argc > 1 ? argv[1] : "");
+}

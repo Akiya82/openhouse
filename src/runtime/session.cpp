@@ -212,6 +212,7 @@ class SessionImpl final : public Session, public InputSinkBase {
         o.kBytesPerSec = r.kBytesPerSec; o.framesPerSec = r.framesPerSec; o.lossPercent = r.lossPercent;
         o.dropsPerSec = r.dropsPerSec; o.rssiDongle = r.rssiDongle; o.rssiDevice = r.rssiDevice;
         o.devicesOnDongle = r.devicesOnDongle;
+        o.name = r.name; o.keepsName = r.keepsName;
         out.push_back(o);
       }
     return out;
@@ -225,6 +226,9 @@ class SessionImpl final : public Session, public InputSinkBase {
     (void)path;
     return false;
 #endif
+  }
+  bool SetReceiverName(const std::string& receiver, const std::string& name) override {
+    return usb_ && usb_->SetReceiverName(receiver, name);
   }
   bool SetPairing(const std::string& receiver, double seconds) override {
     return usb_ && usb_->SetPairing(receiver, int(std::lround(seconds * 1000)));

@@ -14,6 +14,11 @@
 
 namespace openhouse::installer {
 namespace {
+#ifdef _WIN32
+constexpr const char* kBleLibrary = "lighthouse.dll";
+#else
+constexpr const char* kBleLibrary = "liblighthouse.so";
+#endif
 using ordered_json = nlohmann::ordered_json;
 
 constexpr const char* kMarker = "liblh session started";       // in every openhouse driver
@@ -436,6 +441,7 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
       for (const auto& e : fs::directory_iterator(here / "lh-libs", ec)) CopyOver(e.path(), saved / "lh-libs" / e.path().filename());
     }
     if (const fs::path o = tools / (std::string("openhouse-overlay") + kExe); fs::exists(o, ec)) CopyOver(o, saved / "apps" / o.filename());
+    if (const fs::path b = tools / kBleLibrary; fs::exists(b, ec)) CopyOver(b, saved / "apps" / b.filename());
 #ifndef _WIN32
     fs::permissions(saved / "openhouse-installer", fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
                     fs::perms::others_read | fs::perms::others_exec, ec);
@@ -447,6 +453,8 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
   if (fs::exists(overlay, ec)) {
     const fs::path installed = p.data / overlay.filename();
     CopyOver(overlay, installed);
+    // ShayBox's Lighthouse library, where the overlay looks for it: its channel changes over Bluetooth.
+    if (const fs::path b = tools / kBleLibrary; fs::exists(b, ec)) CopyOver(b, p.data / kBleLibrary);
     const fs::path manifest = p.data / "openhouse-overlay.vrmanifest";
     WriteManifest(manifest, kOverlayKey, installed, "--overlay --driver \"" + Utf8(p.directory) + "\"", "openhouse",
                   "openhouse's devices, base stations, room and settings in the SteamVR dashboard");
@@ -500,7 +508,7 @@ void UninstallDriver(const fs::path& steamvr, const std::function<void(const std
 #endif
   // Only the files the installer put there: the folder also holds the user's recordings.
   for (const char* name : {"update-checker", "update-checker.exe", "update-checker.vrmanifest", "openhouse-installer", "openhouse-installer.exe", "openhouse-overlay",
-                           "openhouse-overlay.exe", "openhouse-overlay.vrmanifest", "openhouse-monado-watch"})
+                           "openhouse-overlay.exe", "openhouse-overlay.vrmanifest", "openhouse-monado-watch", kBleLibrary})
     RemoveFile(p.data / name);
   fs::remove_all(p.data / "package", ec);
   fs::remove_all(p.data / "update", ec);

@@ -711,6 +711,7 @@ struct PairingSession : lh::Session {
   void SetOutputTuning(double, double, bool) override {}
   void SetMixedLight(const lh::MixedLightOptions&) override {}
   std::vector<Receiver> Receivers() const override { return receivers; }
+  bool SetReceiverName(const std::string&, const std::string&) override { return false; }
   bool SetPairing(const std::string& receiver, double seconds) override {
     pairing.emplace_back(receiver, seconds);
     return true;

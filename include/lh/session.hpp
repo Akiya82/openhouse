@@ -299,8 +299,12 @@ class Session {
     double dropsPerSec = 0;      // frames lost on the dongle (openhouse)
     int rssiDongle = 0, rssiDevice = 0;   // dBm (openhouse), 0 unknown
     int devicesOnDongle = 0;     // openhouse: devices joined on the whole dongle
+    std::string name;            // openhouse: the user's name for the slot's device, kept on the dongle
+    bool keepsName = false;      // openhouse: the dongle keeps names (firmware 0x0025+)
   };
   virtual std::vector<Receiver> Receivers() const = 0;
+  // Stores a name on an openhouse slot ("OHDG-.../3"); false if there's no such slot.
+  virtual bool SetReceiverName(const std::string& receiver, const std::string& name) = 0;
   // Pairing mode on a receiver for `seconds` (0 leaves it); false if not plugged in.
   virtual bool SetPairing(const std::string& receiver, double seconds) = 0;
   // Live USB: the radio of the receiver with Bluetooth, for SteamVR's base station power

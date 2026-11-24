@@ -19,7 +19,8 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 // Commands (doorman/dongle-fw/src/dongle.h, link.c)
 constexpr uint8_t kInfo = 0x01, kBootloader = 0x10, kReset = 0x12, kClearCrash = 0x14, kLink = 0x20, kDown = 0x21,
                   kScan = 0x22, kStats = 0x23, kPair = 0x24, kSlotsCmd = 0x25, kForget = 0x26, kChannels = 0x27,
-                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A;
+                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A, kSetName = 0x34, kGetName = 0x35;
+constexpr size_t kNameMax = 59;  // what the dongle keeps (link.c DML_NAME_MAX)
 
 hid_device* H(void* p) { return static_cast<hid_device*>(p); }
 uint32_t Rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
@@ -81,6 +82,23 @@ void Dongle::Queue(std::function<void()> action) {
 void Dongle::SetNickname(int slot, const std::string& name) {
   std::lock_guard lock(mutex_);
   if (slot >= 0 && slot < kSlots) state_.slots[slot].nickname = name;
+}
+
+void Dongle::SetName(int slot, std::string name, Done done) {
+  // Cut to what the dongle keeps, on a character boundary (UTF-8).
+  if (name.size() > kNameMax) {
+    size_t n = kNameMax;
+    while (n > 0 && (uint8_t(name[n]) & 0xC0) == 0x80) --n;
+    name.resize(n);
+  }
+  Queue([=, this] {
+    uint8_t a[2 + kNameMax] = {uint8_t(slot), uint8_t(name.size())};
+    std::memcpy(a + 2, name.data(), name.size());
+    Reply r;
+    const bool ok = Command(kSetName, a, 2 + name.size(), &r) && r.status == 0;
+    if (ok) { std::lock_guard lock(mutex_); state_.slots[slot].nickname = name; }
+    if (done) done(ok, ok ? "Name saved on the dongle" : "the dongle didn't take the name");
+  });
 }
 
 void Dongle::SetKnown(const std::string& pairId, const Identity& id) {
@@ -278,7 +296,7 @@ void Dongle::Poll(double now) {
         auto& s = state_.slots[i];
         const uint8_t* e = r.data.data() + (i - first) * 10;
         const std::string id = e[0] ? Hex(e + 2, 8) : std::string();
-        if (id != s.pairId) { s.pairId = id; s.id = {}; s.nickname.clear(); identTried_[i] = 0; configTried_[i] = 0; configNext_[i] = 0; }
+        if (id != s.pairId) { s.pairId = id; s.id = {}; s.nickname.clear(); s.nameRead = false; identTried_[i] = 0; configTried_[i] = 0; configNext_[i] = 0; }
         if (!id.empty() && s.id.serial.empty())
           for (const auto& [k, v] : known_)
             if (k == id) s.id = v;
@@ -296,6 +314,18 @@ void Dongle::Poll(double now) {
     }
     const uint8_t keep = 0xFF;
     if (Command(kLink, &keep, 1, &r)) { std::lock_guard lock(mutex_); state_.linkOn = r.data[0]; }
+    // names, kept on the dongle (0x0025+): every paired slot's, once a second
+    bool names = false;
+    { std::lock_guard lock(mutex_); names = state_.firmware >= 0x0025; state_.names = names; }
+    for (int i = 0; names && i < kSlots; ++i) {
+      { std::lock_guard lock(mutex_); if (state_.slots[i].pairId.empty()) continue; }
+      const uint8_t a = uint8_t(i);
+      if (!Command(kGetName, &a, 1, &r) || r.status != 0) continue;
+      const size_t n = std::min<size_t>(r.data[0], kNameMax);
+      std::lock_guard lock(mutex_);
+      state_.slots[i].nickname.assign(reinterpret_cast<const char*>(r.data.data() + 1), n);
+      state_.slots[i].nameRead = true;
+    }
     // identities: 'H' from our firmware, tried a few times per slot as it joins
     for (int i = 0; i < kSlots; ++i) {
       bool want;

@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 
+#include "common/crash_log.hpp"
 #include "common/ui_name_fonts.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/telemetry.hpp"
@@ -128,6 +129,7 @@ void Section(const char* title) {
 }  // namespace
 
 int main() {
+  lh::crash::Install("openhouse-viewer");
   if (!glfwInit()) {
     std::fprintf(stderr, "openhouse-viewer: no display\n");
     return 1;

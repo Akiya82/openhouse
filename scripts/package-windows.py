@@ -40,6 +40,11 @@ licenses.mkdir(exist_ok=True)
 for copyright in (prefix / 'share').glob('*/copyright'):
     shutil.copy2(copyright, licenses / (copyright.parent.name + '.txt'))
 shutil.copy2(repo / 'third_party/imgui/LICENSE.txt', licenses / 'imgui.txt')
+for notice in (repo / 'third_party/lighthouse-ble').glob('*.txt'):
+    shutil.copy2(notice, licenses / ('lighthouse-ble-' + notice.name))
+# ShayBox's Lighthouse library: the overlay's channel changes over Bluetooth (installed next to it).
+# Built with MSVC (VCRUNTIME140, which SteamVR installs); without it the overlay just can't change channels.
+subprocess.run([sys.executable, str(repo / 'scripts/fetch-lighthouse-ble.py'), 'windows', str(out / 'apps')], check=True, stdout=subprocess.DEVNULL)
 shutil.copy2(repo / 'LICENSE', out / 'LICENSE.txt')
 if not (build / 'VERSION.txt').is_file():
     sys.exit(f'Missing build artifact: {build / "VERSION.txt"}')
@@ -65,6 +70,15 @@ if gpl.is_file():
 for exe in list(out.rglob('*.exe')) + list(out.rglob('*.dll')):
     exe.chmod(0o755)
 archive = shutil.make_archive(str(repo / 'dist/openhouse-windows-x64'), 'zip', out.parent, out.name)
+# The unstripped binaries, to turn a crash record's module+offset (common/crash_log.hpp) into
+# functions: x86_64-w64-mingw32-addr2line -fpCe FILE 0x140000000+OFFSET. Not shipped.
+symbols = repo / 'dist/openhouse-windows-x64-symbols'
+shutil.rmtree(symbols, ignore_errors=True)
+symbols.mkdir()
+for source, target in files.items():
+    shutil.copy2(source, symbols / target.name)
+shutil.make_archive(str(symbols), 'zip', symbols.parent, symbols.name)
+shutil.rmtree(symbols)
 print(f'Packaged {archive}')
 for item in artifacts:
     print(f"  {item['file']}: {(out / item['file']).stat().st_size / 1048576:.1f} MiB")

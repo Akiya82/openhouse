@@ -21,6 +21,18 @@ It reaches the clients through telemetry, in the `state` line's `settings` objec
 `settings` for its Settings page, and the viewer reads the same key. Both use
 `lh::telemetry::TrackerDisplayName`, so the two copies of the client cannot disagree about it.
 
+## Names kept on a Doorman Dongle
+
+A Doorman Dongle (firmware 0x0025+) keeps a name per paired slot in flash with its pairings
+(cmd 0x34 set, 0x35 read; at most 59 bytes; forgetting or re-pairing the slot clears it), so the
+name goes wherever the dongle goes. The dongle manager writes there when renaming (and moves a name
+it had only in its own settings onto the dongle once). The driver reads every paired slot's name
+every 2 s and lays them over `trackerNames` in the published settings: the dongle's name wins,
+except where this PC's name is longer and starts with it (cut at the dongle's 59 bytes). A rename
+from the overlay of a device on such a dongle is written to both. Dongle names may belong to any
+device (an Index controller too), so the clients show a name for any role; renaming from the
+overlay stays trackers only.
+
 ## The command
 
 ```json

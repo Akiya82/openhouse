@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/crash_log.hpp"
 #include "dongle_logo_rgba.h"
 #include "logo_rgba.h"
 #include "ui.hpp"
@@ -54,6 +55,7 @@ GLuint UploadRgba(const uint8_t* rgba, int w, int h) {
 }  // namespace
 
 int main() {
+  lh::crash::Install("doorman-dongle-manager");
   if (!glfwInit()) { std::fprintf(stderr, "doorman-dongle-manager: no display\n"); return 1; }
   // OPENHOUSE_DONGLE_SCALE=1|2|3: the UI size (default: 2 on screens over 1080 lines, else 1)
   int scale = 1;

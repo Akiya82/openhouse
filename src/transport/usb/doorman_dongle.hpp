@@ -108,6 +108,9 @@ class DoormanDongle {
   // Pairing mode; slot >= 0: into that slot (replacing what's paired there; dongle fw >= 4),
   // -1: the dongle's first free slot. False while the dongle isn't open.
   bool Pair(int milliseconds, int slot = -1);
+  // The user's name for a slot's device, kept on the dongle (firmware 0x0025+, cmd 0x34). Any
+  // thread; false if the dongle isn't open.
+  bool SetName(int slot, const std::string& name);
   const std::string& Serial() const { return serial_; }   // any thread; also while it isn't open
   std::vector<DeviceId> Connected() const;
   // The device was reported gone: its slot shows none until the next stats refresh says otherwise.
@@ -117,6 +120,7 @@ class DoormanDongle {
     int slot = 0; bool used = false, active = false; DeviceId serial;
     double kBytesPerSec = 0, framesPerSec = 0, lossPercent = -1, dropsPerSec = 0;
     int rssiDongle = 0, rssiDevice = 0, devicesOnDongle = 0;
+    std::string name; bool haveName = false;   // the name kept on the dongle (haveName: it keeps names)
   };
   std::vector<SlotStat> SlotStats() const;
 
@@ -153,6 +157,7 @@ class DoormanDongle {
     // Silent while connected: data stopped but the slot still answers. Logged (with the radio's own
     // status) and then made to rejoin, so the cause shows in the log.
     double lastDataT = 0, hostBusyT = -1e9; bool streamed = false;
+    std::string name; bool haveName = false; int nameSeq = -1;   // its name on the dongle (0x35)
     int silentStage = 0; std::array<uint32_t, 15> silentRaw{};
     uint32_t logPolls = 0, logOk = 0, logBytes = 0, logDrops = 0; double logT = 0; bool logHave = false;   // the log line's last counters   // from feature 0x05 (devices without 'H', e.g. stock main firmware)
   };
@@ -219,6 +224,8 @@ class DoormanDongle {
   std::array<double, kSlots> readsAfter_{};   // Pump thread
   std::deque<std::pair<int, std::vector<uint8_t>>> downlinks_;
   std::optional<int> pairMs_;
+  std::vector<std::pair<int, std::string>> nameWrites_;   // SetName, sent by Pump; under mutex_
+  double nextNames_ = 0;
   int pairSlot_ = -1;
   std::vector<EndpointInfo> eps_;
   std::vector<SlotStat> statsCache_;   // under mutex_

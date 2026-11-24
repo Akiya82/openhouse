@@ -51,6 +51,8 @@ typedef struct {
   uint32_t polls, resp_ok, crc_err, timeouts, dup, frames_up, bytes_up, drops, down_frames, down_resends;
   uint32_t rssi_d16, rssi_t16, t_missed, t_crc;
   uint8_t last_missed, last_crc, have_tel;
+  uint8_t dup_run;                      /* consecutive out-of-order answers (a stalled uplink) */
+  uint32_t skip_until;                  /* ms_ticks until which this slot is not polled */
   dmc_state_t codec; uint32_t air_bytes, bad_frames;
   uint16_t dev_drops, dev_reply_drops;   /* the radio's own drop totals (its 'D' frames) */
   uint8_t rssi_last_d, rssi_last_t, rssi_min_d, rssi_max_d;
@@ -247,6 +249,12 @@ static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
 }
 
 /* ---------------- one poll ---------------- */
+/* Consecutive out-of-order answers after which a slot is left alone so its radio rejoins. At the
+   poll rate (a few hundred a second per slot) this is a few hundred ms of a link that is receiving
+   answers but cannot advance, not a loss burst. */
+#define DUP_RUN_LIMIT 64
+static int slot_skipping(const slot_t *s) { return s->skip_until && (int32_t)(ms_ticks - s->skip_until) < 0; }
+
 static int poll_slot(uint8_t i)              /* 1: it answered */
 {
   slot_t *s = &sl[i];
@@ -285,7 +293,18 @@ static int poll_slot(uint8_t i)              /* 1: it answered */
   uint8_t dack = (r[2] & DML_F_DSEQ) ? 1 : 0;
   if (s->down_len) { if (dack == s->dseq) { s->down_len = 0; s->dseq ^= 1; } else s->down_resends++; }
   uint8_t seq = r[2] & DML_F_SEQ_MASK;
-  if (seq != ((s->last_seq + 1) & DML_F_SEQ_MASK)) { s->dup++; return 1; }   /* duplicate / out of order */
+  if (seq != ((s->last_seq + 1) & DML_F_SEQ_MASK)) {                          /* duplicate / out of order */
+    s->dup++;
+    /* Go-back gives one or two of these in a row. A long run means the radio is repeating a seq we
+       already accepted and cannot hear which one we want - a POLL whose ack bits were corrupted but
+       whose CRC passed, and whose answer was lost (issue #130). Nothing we send can break that, so
+       leave the slot alone for longer than the radio's 1 s "dongle gone" timeout: it rejoins, which
+       resets the sequence on both sides. DUP_RUN_LIMIT is well above any loss burst: a lost answer
+       is a timeout, not a dup. */
+    if (++s->dup_run >= DUP_RUN_LIMIT) { s->dup_run = 0; s->skip_until = ms_ticks + 1200; }
+    return 1;
+  }
+  s->dup_run = 0;
   s->last_seq = seq;
   s->air_bytes += (uint32_t)(n - DML_RESP_HDR);
   /* Kept and decoded while the radio is busy with the next exchange (decode_some): decoding here took
@@ -325,6 +344,7 @@ static void slot_reset(uint8_t i)
 {
   slot_t *s = &sl[i];
   s->last_seq = 7; s->dseq = 0; s->down_len = 0; s->have_tel = 0;
+  s->dup_run = 0; s->skip_until = 0;
   dmc_reset(&s->codec);
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0;
@@ -480,7 +500,7 @@ void link_poll(void)
   plan = 0;
   int n = 0;
   for (int i = 0; i < DML_SLOTS; i++)
-    if ((pairs.used >> i) & 1 && sl[i].active) { plan |= 1u << i; n++; }
+    if (((pairs.used >> i) & 1) && sl[i].active && !slot_skipping(&sl[i])) { plan |= 1u << i; n++; }
   /* bigger responses amortise the ~450 us per-slot overhead: 6 x 120 B = 6.3 ms cycle, ~18 kB/s per device
      (72 B gave 12.9 kB/s, too little headroom for resends; queues overflowed). 7-8 devices: 176 B, 9.9 ms
      and ~17.7 kB/s each at 8, over the ~13 kB/s a device sends at its worst (LH1, two bases) */

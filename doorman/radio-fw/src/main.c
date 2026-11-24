@@ -642,6 +642,7 @@ static uint8_t ob[3], on;              /* outstanding (sent, unacked) buffers, o
 static uint8_t send_i;                 /* next ob[] entry to (re)send */
 static uint8_t next_seq;
 static uint8_t armed;                  /* buffer the next auto-TX sends */
+static uint8_t sent_max;               /* seq of the last RESP that has actually gone out */
 static uint8_t jreq[2 + DML_JREQ_LEN];
 static uint8_t last_dseq = 1;
 
@@ -867,6 +868,7 @@ static void go_joined(uint32_t base, uint8_t slot)
   joined = 1; my_slot = slot; net_base = base;
   dmc_reset(&codec); uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
   on = 0; send_i = 0; next_seq = 0; last_dseq = 1; have_cycle = 0;
+  sent_max = 7;                    /* nothing sent yet: the dongle acks 7 until it has our seq 0 */
   mask = 0xFFFF; cur_ch = dml_hop_ch[0]; period_us = 2000; max_resp = DML_MAXLEN;
   last_poll_us = now_us();
   set_addr(base, (uint8_t)(DML_SLOT_PREFIX + slot));
@@ -926,6 +928,7 @@ static void exchange_done(void)                            /* our RESP pb[armed]
   for (int i = 0; i < on; i++) if (ob[i] == armed) pos = i;
   if (poll_ok && on && ob[0] != armed) send_i = 0;         /* an older one is still unacked: lost, go back */
   else send_i = (uint8_t)(pos + 1);
+  sent_max = pb[armed][3] & DML_F_SEQ_MASK;                /* what this exchange actually sent */
 }
 
 /* Recovery updater over the radio link (works without the main MCU): a downlink frame starting
@@ -998,6 +1001,11 @@ __attribute__((noipa)) static void handle_poll(const uint8_t *p, int len)   /* n
   last_cycle = cyc; have_cycle = 1;
   poll_rssi = (uint8_t)NRF_RADIO->RSSISAMPLE;
   poll_ack = p[2] & DML_F_SEQ_MASK;
+  /* The ack names the last RESP the dongle accepted, so it can only name a seq that has already
+     gone out. An ack ahead of that had its bits corrupted while the CRC still passed; believing
+     it drops buffers the dongle is still waiting for, and the exchange that would have delivered
+     them is never sent again. Issue #130: the uplink then stalls until the device rejoins. */
+  if ((uint8_t)((sent_max - poll_ack) & 7) > 3) poll_ok = 0;
   mask = (uint16_t)(p[4] | p[5] << 8);
   if (p[6]) period_us = p[6] * 50u;
   max_resp = p[7] >= DML_RESP_HDR + 2 && p[7] <= DML_MAXLEN ? p[7] : DML_MAXLEN;

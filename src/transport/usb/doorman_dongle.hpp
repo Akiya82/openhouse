@@ -149,6 +149,11 @@ class DoormanDongle {
     bool haveStats = false; double statsT = 0;
     uint32_t polls = 0, respOk = 0, framesUp = 0, bytesUp = 0, drops = 0;
     double kBps = 0, fps = 0, loss = -1, dps = 0; int rssiD = 0, rssiT = 0;
+    std::array<uint32_t, 15> raw{};   // the last 0x23 reply as is
+    // Silent while connected: data stopped but the slot still answers. Logged (with the radio's own
+    // status) and then made to rejoin, so the cause shows in the log.
+    double lastDataT = 0, hostBusyT = -1e9; bool streamed = false;
+    int silentStage = 0; std::array<uint32_t, 15> silentRaw{};
     uint32_t logPolls = 0, logOk = 0, logBytes = 0, logDrops = 0; double logT = 0; bool logHave = false;   // the log line's last counters   // from feature 0x05 (devices without 'H', e.g. stock main firmware)
   };
   struct FeatureWait {
@@ -162,6 +167,8 @@ class DoormanDongle {
   void Send(uint8_t cmd, const uint8_t* args, size_t n);
   void OnReport(double t, const uint8_t* r, int n, bool last);
   void OnFrame(int slot, double t, const uint8_t* f, int n, bool last);
+  void WatchSilent(int slot, double now);
+  void OnRadioStatus(int slot, const uint8_t* f, int n);
   void OnIdent(int slot, const uint8_t* f, int n);
   void Attach(int slot, const std::string& config);
   void Detach(int slot, bool handedOver = false);   // handedOver: its USB cable carries it now

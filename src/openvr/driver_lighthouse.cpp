@@ -30,6 +30,9 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <memory>
@@ -149,8 +152,52 @@ Recorder g_recorder;
 lh::openvr::TelemetryServer g_telemetry;
 const lh::LogLevel g_logLevel = lh::MinimumLogLevelFromEnvironment();
 
+// Always on, as SteamVR's vrserver.txt: <data dir>/logs/openhouse.txt, the run before as
+// openhouse.previous.txt. Info and up (or what LH_LOG_LEVEL asks for, if lower), whatever the host keeps.
+class LogFile {
+ public:
+  void Line(lh::LogLevel level, const std::string& text, const std::string& serial) {
+    std::lock_guard lock(mutex_);
+    if (!tried_) Open();
+    if (!out_) return;
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    const int ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", &tm);
+    char msPart[8];
+    std::snprintf(msPart, sizeof msPart, ".%03d", ms);
+    out_ << stamp << msPart << " [" << lh::LogLevelName(level) << "] " << (serial.empty() ? "" : serial + ": ") << text << '\n';
+    out_.flush();   // a crashed vrserver keeps every line
+    if (++lines_ % 1000 == 0 && out_.tellp() > kMaxBytes) { out_.close(); Open(); }   // a run that logs without end
+  }
+ private:
+  static constexpr std::streamoff kMaxBytes = 64ll << 20;
+  void Open() {
+    tried_ = true;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::u8path(lh::platform::DataDirectory()) / "logs";
+    fs::create_directories(dir, ec);
+    fs::rename(dir / "openhouse.txt", dir / "openhouse.previous.txt", ec);
+    out_.open(dir / "openhouse.txt", std::ios::out | std::ios::trunc);
+  }
+  std::mutex mutex_;
+  std::ofstream out_;
+  bool tried_ = false;
+  uint64_t lines_ = 0;
+};
+LogFile g_logFile;
+
 void Log(lh::LogLevel level, const std::string& text, const std::string& serial = {}, double time = SteadyNow()) {
   g_telemetry.Log(time, level, serial, text);
+  if (level >= std::min(g_logLevel, lh::LogLevel::Info)) g_logFile.Line(level, text, serial);
   if (level >= g_logLevel && VRDriverLog())
     VRDriverLog()->Log(("lh: [" + std::string(lh::LogLevelName(level)) + "] " + text + "\n").c_str());
 }
@@ -259,6 +306,7 @@ struct DeviceStatic {
   // apps don't list it, while TrackingOverrides can still use it (e.g. a tracker on the head standing
   // in for the headset). As the stock driver (0x2e8120): a class it doesn't know is Invalid.
   bool hidden = false;
+  bool tundraTracker = false;
 };
 
 class Device : public ITrackedDeviceServerDriver {
@@ -289,7 +337,7 @@ class Device : public ITrackedDeviceServerDriver {
     container_ = VRProperties()->TrackedDeviceToPropertyContainer(objectId);
     SetProperties();
     if (info_.role == lh::DeviceRole::Controller) CreateInputs();
-    else if (info_.role == lh::DeviceRole::Tracker && HtcTracker()) CreateTrackerInputs();
+    else if (info_.role == lh::DeviceRole::Tracker && (HtcTracker() || info_.tundraTracker)) CreateTrackerInputs();
     active_ = true;
     return VRInitError_None;
   }
@@ -470,7 +518,7 @@ class Device : public ITrackedDeviceServerDriver {
       VRProperties()->SetFloatProperty(container_, Prop_DeviceBatteryPercentage_Float, float(battery_) / 100.0f);
       VRProperties()->SetBoolProperty(container_, Prop_DeviceIsCharging_Bool, charging_);
     }
-    if (info_.role == lh::DeviceRole::Controller || (info_.role == lh::DeviceRole::Tracker && HtcTracker())) {
+    if (info_.role == lh::DeviceRole::Controller || u.input || hadInput_) {
       if (u.input && p.deviceIsConnected) { UpdateInputs(*u.input, now); hadInput_ = true; }
       else if (hadInput_) { lh::ControllerInput neutral; neutral.hostTime = now; UpdateInputs(neutral, now); hadInput_ = false; }
       if (info_.role == lh::DeviceRole::Controller && now - lastSkeletonSent_ >= kSkeletonInterval) SendSkeleton(now);
@@ -742,6 +790,7 @@ class Device : public ITrackedDeviceServerDriver {
       created(i, path, in->CreateBooleanComponent(c, path, &handles_[i]));
     };
     b(SystemClick, "/input/power/click");
+    if (info_.tundraTracker) return;  // built-in button only
     b(MenuClick, "/input/application_menu/click");
     b(GripClick, "/input/grip/click");
     b(TriggerClick, "/input/trigger/click");
@@ -1548,6 +1597,7 @@ class Provider : public IServerTrackedDeviceProvider {
       info.resourceRoot = d.info.resourceRoot;
       info.inputProfile = d.info.inputProfile;
       info.registeredType = d.info.registeredType;
+      info.tundraTracker = d.info.IsTundraTracker();
       info.hidden = EqualsNoCase(d.info.deviceClass, "null");
       Add(info, info.hidden ? TrackedDeviceClass_Invalid
                 : d.info.role == lh::DeviceRole::Controller ? TrackedDeviceClass_Controller

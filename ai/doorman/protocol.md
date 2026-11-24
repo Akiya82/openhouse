@@ -137,6 +137,7 @@ and `doorman_link.py`. Older two-interface firmware isn't supported.
 | 0x2D | timing `[adaptive 0/1, 0xFF keeps]`: reply period, slot, slot budget, exchange avg/max (u32 us), adaptive, max resp, decode avg/max (u32 us at 22/26); counters reset on read |
 | 0x2E | deferred decode `[0/1, 0xFF keeps]` (default 1) |
 | 0x2F | re-poll missed slots in the same cycle `[0/1, 0xFF keeps]`, then re-polls and answered (u32). Default 0 |
+| 0x33 | rejoin `[slot]`: the slot is not polled for 1.2 s, so its radio rejoins (status 2: not paired). The host sends it when a connected device has sent nothing for 6 s |
 | 0x29 | live `[first]` (6 slots per reply, as 0x25): per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 

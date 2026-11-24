@@ -22,6 +22,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
+constexpr uint8_t kCmdRejoin = 0x33;
 constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
 uint32_t Rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
@@ -316,13 +317,18 @@ void DoormanDongle::Pump(double now) {
     const uint8_t args[2] = {uint8_t(std::clamp((*pair + 999) / 1000, 0, 255)), uint8_t(pairSlot + 1)};
     Send(kCmdPair, args, 2);
   }
-  for (auto& [slot, frame] : downs) Downlink(slot, frame.data(), frame.size());
+  for (auto& [slot, frame] : downs) {
+    Downlink(slot, frame.data(), frame.size());
+    if (slot >= 0 && slot < kSlots) slots_[slot].hostBusyT = now;
+  }
   for (const auto& r : requests) {
     const uint8_t f[3] = {0xC5, r.tag, r.id};   // the radio answers [0xC4][tag][reply]
     Downlink(r.slot, f, 3);
+    if (r.slot >= 0 && r.slot < kSlots) slots_[r.slot].hostBusyT = now;
   }
   for (int i = 0; i < kSlots; ++i) {
     Slot& s = slots_[i];
+    WatchSilent(i, now);
     if (s.workerDone) {
       s.worker.join();
       s.workerDone = false;
@@ -443,6 +449,7 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
       s.loss = dp ? 100.0 * (1.0 - double(std::min(dok, dp)) / dp) : -1;
     }
     s.haveStats = true; s.statsT = t;
+    std::copy(std::begin(v), std::end(v), s.raw.begin());
     s.polls = v[0]; s.respOk = v[1]; s.framesUp = v[5]; s.bytesUp = v[6]; s.drops = v[7];
     s.rssiD = -std::abs(int32_t(v[10])); s.rssiT = -std::abs(int32_t(v[11]));   // dongle keeps magnitudes
   } else if (r[0] == kCmdIdent && n >= 19) {
@@ -462,6 +469,15 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
 
 void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool last) {
   Slot& s = slots_[slot];
+  if (f[0] == 'p' || f[0] == 'q' || f[0] == 's') {
+    if (s.silentStage)
+      log_(LogLevel::Warn, "Doorman Dongle " + serial_ + " slot " + std::to_string(slot) + ": data back after " +
+                                  std::to_string(int(t - s.lastDataT)) + " s");
+    s.silentStage = 0;
+    s.lastDataT = t;
+    s.streamed = true;
+  }
+  if (f[0] == 0xF0 && n >= 36 && f[1] == 'X') { OnRadioStatus(slot, f, n); return; }
   switch (f[0]) {
     case 0xC4: {
       if (n < 2) return;
@@ -694,8 +710,76 @@ void DoormanDongle::Attach(int slot, const std::string& configIn) {
   log_(LogLevel::Info, s.serial + ": connected on Doorman Dongle " + serial_ + " slot " + std::to_string(slot));
 }
 
+namespace {
+std::string SlotCounters(const std::array<uint32_t, 15>& v, const std::array<uint32_t, 15>* since) {
+  static const char* kNames[] = {"polls", "resp_ok", "crc_err", "timeouts", "dup", "frames_up", "bytes_up", "drops",
+                                 "down_frames", "down_resends", "rssi_dongle", "rssi_device", "device_missed",
+                                 "device_crc", "ms_since_resp"};
+  std::string out;
+  for (int k = 0; k < 15; ++k) {
+    const bool delta = since && k != 10 && k != 11 && k != 14;
+    out += std::string(k ? " " : "") + kNames[k] + (delta ? " +" : " ") +
+           std::to_string(delta ? v[size_t(k)] - (*since)[size_t(k)] : v[size_t(k)]);
+  }
+  return out;
+}
+}  // namespace
+
+// A device that streamed and then went quiet while its slot still answers: the stall that needs a
+// power cycle. At 3 s the dongle's counters and the radio's own status go to the log; at 6 s the
+// counters again (what kept moving), then the dongle makes it rejoin (firmware 0x0024 and newer).
+void DoormanDongle::WatchSilent(int i, double now) {
+  Slot& s = slots_[i];
+  if (!s.active || !s.streamed || !s.haveStats) { s.silentStage = 0; return; }
+  // Talking to its main MCU (a firmware update, a config read) can pause its data: left alone.
+  if (now - s.hostBusyT < 10) { s.lastDataT = std::max(s.lastDataT, now - 2); return; }
+  const double quiet = now - s.lastDataT;
+  const std::string who = "Doorman Dongle " + serial_ + " slot " + std::to_string(i) +
+                          (s.serial.empty() ? std::string() : " (" + s.serial + ")");
+  if (s.silentStage == 0 && quiet > 3) {
+    s.silentStage = 1;
+    s.silentRaw = s.raw;
+    log_(LogLevel::Warn, who + ": connected but no data for 3 s; " + SlotCounters(s.raw, nullptr));
+    const uint8_t ask[2] = {0xF0, 'X'};   // the radio's status, if its uplink still works
+    Downlink(i, ask, sizeof ask);
+  } else if (s.silentStage == 1 && quiet > 6) {
+    s.silentStage = 2;
+    log_(LogLevel::Warn, who + ": still no data at 6 s, last 3 s: " + SlotCounters(s.raw, &s.silentRaw) +
+                                "; making it rejoin");
+    const uint8_t a = uint8_t(i);
+    Send(kCmdRejoin, &a, 1);
+  } else if (s.silentStage == 2 && quiet > 20) {
+    s.silentStage = 3;
+    log_(LogLevel::Warn, who + ": still connected with no data after the rejoin; " + SlotCounters(s.raw, &s.silentRaw));
+  }
+}
+
+void DoormanDongle::OnRadioStatus(int slot, const uint8_t* f, int n) {
+  uint32_t ver, frames, empty;
+  std::memcpy(&ver, f + 2, 4);
+  std::memcpy(&frames, f + 11, 4);
+  std::memcpy(&empty, f + 15, 4);
+  char b[200];
+  std::snprintf(b, sizeof b, ": radio 0x%08x, main MCU frames %u (empty %u), safe %d, safe request %d, sleep %d, "
+                "replies queued %d B, quick boots %d", ver, frames, empty, f[19] & 1, (f[19] >> 1) & 1, (f[19] >> 2) & 1,
+                f[34], f[35]);
+  std::string line = "Doorman Dongle " + serial_ + " slot " + std::to_string(slot) + b;
+  if (n >= 60) {
+    line += ", main MCU ops:";
+    for (int k = 0; k < 6; ++k) {
+      const uint8_t* o = f + 36 + 4 * k;
+      if (!o[3]) continue;
+      std::snprintf(b, sizeof b, " %02x %02x %02x x%d", o[0], o[1], o[2], o[3]);
+      line += b;
+    }
+  }
+  log_(slots_[size_t(slot)].silentStage ? LogLevel::Warn : LogLevel::Info, line);
+}
+
 void DoormanDongle::ResetSlot(int slot) {
   Slot& s = slots_[slot];
+  s.streamed = false;
+  s.silentStage = 0;
   if (s.attached) Detach(slot);
   s.serial.clear();
   s.noIdent = false;

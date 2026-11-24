@@ -222,6 +222,9 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
   const fs::path logs = fs::path(platform::SteamRoot()) / "logs";
   for (const char* name : {"vrserver.txt", "vrserver.previous.txt"})
     files.push_back({std::string("steamvr/") + name, logs / name});
+  const fs::path ourLogs = fs::path(platform::DataDirectory()) / "logs";
+  for (const char* name : {"openhouse.txt", "openhouse.previous.txt"})
+    files.push_back({std::string("logs/") + name, ourLogs / name});
 
   std::ostringstream info;
   info << "openhouse " << kVersion << "\n"

@@ -508,8 +508,8 @@ bool SessionImpl::Haptic(const std::string& serial, double frequency, double amp
   std::lock_guard lock(mutex_);
   const auto d = devices_.find(serial);
   if (!running_ || !usb_ || !Enabled(serial) || d == devices_.end() || !d->second.attached ||
-      (d->second.info.role != DeviceRole::Controller && !d->second.input) || !std::isfinite(frequency) ||
-      !std::isfinite(amplitude) || !std::isfinite(duration)) return false;
+      (d->second.info.role != DeviceRole::Controller && (!d->second.input || d->second.info.IsTundraTracker())) ||
+      !std::isfinite(frequency) || !std::isfinite(amplitude) || !std::isfinite(duration)) return false;
   usb_->Haptic(serial, frequency, amplitude, duration);
   return true;
 #else
@@ -700,7 +700,7 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     // Tundra Trackers ship an identity head, so their pose (and model) came out bottom-up.
     // The stock driver replaces exactly that case (in 0x1dec60): plus_x -1,0,0,
     // plus_z 0,0,-1 (180 deg about Y), position 0,0,0.001577.
-    if (d.info.manufacturer == "Tundra Labs" && d.info.model == "Tundra Tracker" &&
+    if (d.info.IsTundraTracker() &&
         objectFromHead.isApprox(Eigen::Isometry3d::Identity(), 1e-9)) {
       AxesRotation(json{{"plus_x", {-1.0, 0.0, 0.0}}, {"plus_z", {0.0, 0.0, -1.0}}, {"position", {0.0, 0.0, 0.001577}}},
                    &objectFromHead);
@@ -727,13 +727,11 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     models_[id] = d.tracker->ImuModel();
     for (const auto& [serial, b] : bases_) d.tracker->OnBaseConfig(b.config, b.dynamic);
     PushIdentities();
-    // HTC's trackers report their pogo pins and power button in the wand's input format (the
-    // stock driver reads them with the wand's button ids; libsurvive with the wand's bits), so
-    // they get the wand's decoder. Other makers' trackers (Tundra) keep their inputs ignored.
-    const bool htcTracker = d.info.role == DeviceRole::Tracker &&
-                            (d.info.manufacturer.empty() || Lower(d.info.manufacturer) == "htc");
+    // HTC tracker inputs and the Tundra power button use the wand's button bits.
+    const bool htc = d.info.manufacturer.empty() || Lower(d.info.manufacturer) == "htc";
     if (d.info.role == DeviceRole::Controller) d.input.emplace(d.info.controllerType);
-    else if (htcTracker) d.input.emplace(ControllerType::ViveWand);
+    else if (d.info.role == DeviceRole::Tracker && (htc || d.info.IsTundraTracker()))
+      d.input.emplace(ControllerType::ViveWand);
     else d.input.reset();
     Emit(SessionEventType::DeviceActivated, id,
          id + " activated as " + ToString(d.info.role) + (d.info.model.empty() ? "" : " (" + d.info.model + ")") +
@@ -1122,7 +1120,7 @@ void SessionImpl::OnInput(const DeviceId& id, const InputReport& report) {
   Tick();
   if (!Enabled(id)) return;
   auto found = devices_.find(id);
-  if (found == devices_.end() || !found->second.input) return;  // no decoder: inputs ignored (non-HTC trackers)
+  if (found == devices_.end() || !found->second.input) return;  // no input decoder for this device
   auto& d = found->second;
   d.input->Apply(report, d.haveClock ? HostTime(d, report.time) : now_);
 }

@@ -933,6 +933,40 @@ TEST(SessionReplay, BootstrapsDespiteOneBadSensor) {
 #endif
 }
 
+#ifdef LH_TEST_USB
+TEST(SessionReplay, TundraPowerButton) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("lh-tundra-button-" + std::to_string(lh::platform::ProcessId()));
+  std::filesystem::create_directories(dir);
+  usb::EndpointInfo ep;
+  ep.kind = usb::EndpointKind::Wireless;
+  ep.serial = "LHR-TUNDRA";
+  ep.configJson = R"({"device_class":"generic_tracker","manufacturer":"Tundra Labs","model_number":"Tundra Tracker",
+                      "lighthouse_config":{"modelPoints":[[0,0,0]],"modelNormals":[[0,1,0]]}})";
+
+  for (bool release : {false, true}) {
+    usb::RawCaptureWriter writer;
+    ASSERT_TRUE(writer.Open((dir / "input.lhraw").string()));
+    writer.WriteEndpoint(ep);
+    // One Watchman slot carrying the system button, optionally followed by a release.
+    uint8_t report[30] = {0x23, 0, 3, 0, 0xf1, 0x08};
+    writer.WriteReport(1.0, ep.ep, true, report, sizeof(report));
+    if (release) {
+      report[5] = 0;
+      writer.WriteReport(1.1, ep.ep, true, report, sizeof(report));
+    }
+    writer.Close();
+    const auto result = Replay((dir / "room.json").string(), dir.string());
+    ASSERT_EQ(result.last.devices.size(), 1u);
+    const auto& device = result.last.devices.front();
+    EXPECT_EQ(device.info.role, DeviceRole::Tracker);
+    ASSERT_TRUE(device.input.has_value());
+    EXPECT_EQ(device.input->systemClick, !release);
+  }
+  std::filesystem::remove_all(dir);
+}
+#endif
+
 TEST(SessionReplay, ControllerPowerCycleStartsFreshTrackingEpoch) {
 #ifndef LH_TEST_USB
   GTEST_SKIP() << "replay built without USB/capture layer";

@@ -2,10 +2,15 @@
 // window. It talks to the running driver over its telemetry (lh/telemetry.hpp): the state
 // and log it streams, and commands for settings and actions.
 #pragma once
+#include <array>
 #include <cstdint>
+#include <functional>
+#include <future>
 #include <map>
 #include <string>
+#include <string_view>
 
+#include "base_channels.hpp"
 #include "log_view.hpp"
 #include "telemetry_client.hpp"
 #include "views.hpp"
@@ -20,6 +25,9 @@ class Ui {
   static void SetUpImGui(int k);
   void SetLogo(uint64_t texture) { logo_ = texture; }  // an ImTextureID (GL texture)
   void SetInVR(bool inVR) { inVR_ = inVR; }
+  void SetNameKeyboard(std::function<bool(const char*, uint64_t)> keyboard) { nameKeyboard_ = std::move(keyboard); }
+  void CommitTrackerName(std::string_view name, uint64_t edit);
+  void CancelTrackerName(uint64_t edit);
 
   void Poll(double now);                // telemetry, replies
   void Draw(float width, float height);  // one frame, inside ImGui::NewFrame/Render
@@ -32,6 +40,10 @@ class Ui {
   void Overview();
   void Devices();
   void Bases();
+  void BaseChannelControls(const viewer::Base& base);
+  void PollBaseChannels();
+  void SetBaseChannel(BaseChannelChange change, bool automatic = false);
+  void CancelBaseChannelChange(const std::string& error);
   void Dongles();
   void Map();
   void SettingsPage();
@@ -50,11 +62,27 @@ class Ui {
   void Toast(const std::string& text, bool error = false);
 
   viewer::TelemetryClient client_;
+  const bool haveChannelBackend_ = HaveBaseChannelBackend();
+  bool autoChannels_ = false;
+  BaseChannelChange channelChange_;
+  bool automaticChannelChange_ = false;
+  uint64_t channelConnection_ = 0, autoChannelConnection_ = 0;
+  std::shared_ptr<BaseChannelLock> channelLock_;
+  std::future<BaseChannelDiscovery> channelDiscovery_;
+  struct ChannelWriteResult {
+    std::string error;
+    double completedAt;
+  };
+  std::future<ChannelWriteResult> channelWrite_;
+  double channelConfirmationDeadline_ = 0, channelConfirmationAfter_ = 0;
   viewer::LogView logs_;
   viewer::Detail detail_ = viewer::Detail::Basic;
   UpdateCheck update_;
   Page page_ = Page::Overview;
-  std::string selectedDevice_, selectedBase_;
+  std::string selectedDevice_, selectedBase_, renameSerial_;
+  std::array<char, 256> trackerName_{};
+  std::function<bool(const char*, uint64_t)> nameKeyboard_;
+  uint64_t renameConnection_ = 0, renameEdit_ = 0;
   uint64_t reportCount_ = UINT64_MAX;  // the driver's report count last seen (MAX: none yet)
   std::string reportPath_, reportError_;
   bool showReport_ = false;

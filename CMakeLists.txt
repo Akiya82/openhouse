@@ -39,6 +39,19 @@ option(LH_BUILD_VIEWER "Build GLFW/OpenGL diagnostic viewer if available" ON)
 option(LH_BUILD_TESTS "Build tests" ON)
 option(LH_BUILD_ORACLE_TESTS "Build tests that dlopen the original driver_lighthouse.so" ON)
 
+set(LIGHTHOUSE_INCLUDE_DIR "$ENV{LIGHTHOUSE_INCLUDE_DIR}" CACHE PATH
+    "Optional ShayBox Lighthouse include directory for checking the BLE ABI")
+if(LIGHTHOUSE_INCLUDE_DIR)
+  set(lighthouse_header "${LIGHTHOUSE_INCLUDE_DIR}/lighthouse.h")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${lighthouse_header}")
+  file(READ "${lighthouse_header}" lighthouse_abi)
+  # 2.1.0 declares two unscoped Unknown enumerators. Rename the error enumerator
+  # in the build copy without changing any of the types or values.
+  string(REPLACE "Unknown = -99," "LighthouseErrorUnknown = -99," lighthouse_abi "${lighthouse_abi}")
+  file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/lh/lighthouse_abi.h"
+       CONTENT "${lighthouse_abi}" @ONLY)
+endif()
+
 include(GNUInstallDirs)
 
 # The build's version stamp (cmake/build_id.cmake), redone on every build: lh/build_id.h for
@@ -297,7 +310,15 @@ if(LH_BUILD_VIEWER)
       third_party/imgui/imgui_widgets.cpp third_party/imgui/backends/imgui_impl_glfw.cpp
       third_party/imgui/backends/imgui_impl_opengl2.cpp)
     target_include_directories(lh_imgui PUBLIC third_party/imgui)
+    target_compile_definitions(lh_imgui PUBLIC IMGUI_USE_WCHAR32)
     target_link_libraries(lh_imgui PUBLIC glfw OpenGL::GL)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # Fedora's Noto CJK uses CFF2 outlines, which stb_truetype cannot load.
+      find_package(Freetype REQUIRED)
+      target_sources(lh_imgui PRIVATE third_party/imgui/misc/freetype/imgui_freetype.cpp)
+      target_compile_definitions(lh_imgui PRIVATE IMGUI_ENABLE_FREETYPE)
+      target_link_libraries(lh_imgui PRIVATE Freetype::Freetype)
+    endif()
     target_compile_options(lh_imgui PRIVATE -w)
     add_executable(lhviz apps/lhviz/main.cpp $<TARGET_OBJECTS:lh_runtime>)
     target_include_directories(lhviz PRIVATE include)
@@ -314,16 +335,23 @@ if(LH_BUILD_VIEWER)
                    apps/openhouse-viewer/log_view.cpp apps/openhouse-viewer/views.cpp)
     target_include_directories(openhouse-viewer PRIVATE src)
     target_link_libraries(openhouse-viewer PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json)
+    if(MSVC)
+      target_link_options(openhouse-viewer PRIVATE /ENTRY:mainCRTStartup)  # a GUI app with main()
+    endif()
     install(TARGETS openhouse-viewer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # openhouse-overlay: the management app, a SteamVR dashboard overlay or a window. SteamVR's
     # OpenVR client library is loaded from the SteamVR install at run time (not linked/shipped).
     if(OPENVR_INCLUDE_DIR)
       add_executable(openhouse-overlay WIN32 apps/openhouse-overlay/main.cpp apps/openhouse-overlay/ui.cpp
+                     apps/openhouse-overlay/base_channels.cpp
                      apps/openhouse-overlay/openvr_runtime.cpp apps/openhouse-overlay/update_check.cpp
                      apps/openhouse-overlay/driver_check.cpp
                      apps/openhouse-overlay/telemetry_client.cpp apps/openhouse-overlay/log_view.cpp
                      apps/openhouse-overlay/views.cpp)
       target_include_directories(openhouse-overlay PRIVATE src ${OPENVR_INCLUDE_DIR})
+      if(LIGHTHOUSE_INCLUDE_DIR)
+        target_compile_definitions(openhouse-overlay PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+      endif()
       target_link_libraries(openhouse-overlay PRIVATE lh_common lh_report lh_imgui nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
       if(WIN32)
         target_link_libraries(openhouse-overlay PRIVATE winhttp shell32)
@@ -387,6 +415,7 @@ if(LH_BUILD_TESTS)
   add_executable(lh_unit_tests
     tests/unit/test_platform.cpp
     tests/unit/test_version.cpp
+    tests/unit/test_tracker_names.cpp
     tests/unit/test_tracking_source.cpp
     tests/unit/test_pose_solver.cpp
     tests/unit/test_tracker.cpp
@@ -398,7 +427,7 @@ if(LH_BUILD_TESTS)
     tests/unit/test_rotor_reference.cpp
     src/runtime/mixed_light.cpp)
   target_include_directories(lh_unit_tests PRIVATE src)
-  target_link_libraries(lh_unit_tests PRIVATE lh_tracking GTest::gtest_main)
+  target_link_libraries(lh_unit_tests PRIVATE lh_tracking nlohmann_json::nlohmann_json GTest::gtest_main)
   if(WIN32)
     target_link_libraries(lh_unit_tests PRIVATE advapi32 winhttp)
   endif()
@@ -423,10 +452,18 @@ if(LH_BUILD_TESTS)
   endif()
   add_test(NAME unit COMMAND lh_unit_tests)
   if(TARGET driver_lighthouse)
-    add_executable(lh_openvr_component_tests tests/openvr/test_components.cpp src/openvr/hand_skeleton.cpp src/openvr/raw_alignment.cpp src/openvr/steam_rooms.cpp src/openvr/room_publisher.cpp src/openvr/host_frame.cpp src/openvr/telemetry_server.cpp src/openvr/pairing_mailbox.cpp)
-    target_include_directories(lh_openvr_component_tests PRIVATE src tests ${OPENVR_INCLUDE_DIR})
+    add_library(lh_test_ble SHARED tests/openvr/fake_lighthouse_ble.cpp)
+    add_executable(lh_openvr_component_tests tests/openvr/test_components.cpp tests/openvr/test_base_channels.cpp src/openvr/hand_skeleton.cpp src/openvr/raw_alignment.cpp src/openvr/steam_rooms.cpp src/openvr/room_publisher.cpp src/openvr/host_frame.cpp src/openvr/telemetry_server.cpp src/openvr/pairing_mailbox.cpp apps/openhouse-overlay/base_channels.cpp)
+    target_include_directories(lh_openvr_component_tests PRIVATE src tests apps/openhouse-overlay ${OPENVR_INCLUDE_DIR})
+    target_include_directories(lh_test_ble PRIVATE apps/openhouse-overlay)
+    if(LIGHTHOUSE_INCLUDE_DIR)
+      target_compile_definitions(lh_openvr_component_tests PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+      target_compile_definitions(lh_test_ble PRIVATE LH_CHECK_LIGHTHOUSE_ABI)
+    endif()
     target_compile_definitions(lh_openvr_component_tests PRIVATE LH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-    target_link_libraries(lh_openvr_component_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main)
+    target_link_libraries(lh_openvr_component_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main ${CMAKE_DL_LIBS})
+    target_link_libraries(lh_openvr_component_tests PRIVATE lh_test_ble)
+    target_compile_definitions(lh_openvr_component_tests PRIVATE LH_TEST_BLE="$<TARGET_FILE:lh_test_ble>")
     add_test(NAME openvr_components COMMAND lh_openvr_component_tests)
     find_library(OPENVR_API_LIBRARY openvr_api)
     if(OPENVR_API_LIBRARY)

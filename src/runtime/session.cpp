@@ -30,6 +30,7 @@
 #include "room_map.hpp"
 #include "room_solver.hpp"
 #include "rotor_reference.hpp"
+#include "sob_channels.hpp"
 #include "tracking/disambiguator_sob.hpp"
 #include "tracking/tracked_object.hpp"
 
@@ -290,17 +291,15 @@ class SessionImpl final : public Session, public InputSinkBase {
     bool lh1Keyframes = true;
     double nextKeyframeCheck = 0;
   };
-  struct Base {
-    BaseConfig config;
-    BaseDynamicState dynamic;
-    bool seen = false;
-  };
+  std::bitset<sob::kChannels> conflictedChannels_;
 
   // level: as given, else ClassifyLog(text).
   void Emit(SessionEventType type, const std::string& serial, std::string text, std::optional<LogLevel> level = {});
   void Tick() { if (options_.replayPath.empty()) now_ = std::max(now_, SteadyNow()); }
   void Touch(Device& d, double deviceTime);
   void Process(const DeviceId& id, Device& d);
+  void ObserveBaseConfig(const DeviceId& id, const BaseConfig& config, const BaseDynamicState& dynamic);
+  void ApplyBaseCalibration(const SessionBase& base);
   void UpdateLightMode(const DeviceId& id, Device& d);
   void UpdateLh1Keyframes(const DeviceId& id, Device& d);
   void UpdateMixedLight(const DeviceId& id, Device& d);
@@ -354,7 +353,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   SessionOptions options_;
   mutable std::mutex mutex_;
   std::map<DeviceId, Device> devices_;
-  std::map<uint32_t, Base> bases_;
+  std::map<uint32_t, SessionBase> bases_;
   std::map<uint32_t, tdm::TdmDisambiguator::Identity> identities_;
   RoomMap room_;
   std::string roomPath_, settingsPath_, preinitDir_;
@@ -725,7 +724,8 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
     StartMixedLight(d);
     models_[id] = d.tracker->ImuModel();
-    for (const auto& [serial, b] : bases_) d.tracker->OnBaseConfig(b.config, b.dynamic);
+    for (const auto& [serial, b] : bases_)
+      if (!room_.Conflicted(serial)) d.tracker->OnBaseConfig(b.config, b.dynamic);
     PushIdentities();
     // HTC tracker inputs and the Tundra power button use the wand's button bits.
     const bool htc = d.info.manufacturer.empty() || Lower(d.info.manufacturer) == "htc";
@@ -1095,7 +1095,12 @@ void SessionImpl::OnLh2BeamWord(const DeviceId& id, const Lh2BeamWord& word) {
     found->second.lh1Only = false;
     StartMixedLight(found->second);
   }
-  found->second.tracker->OnLh2BeamWord(word);
+  auto& tracker = *found->second.tracker;
+  tracker.OnLh2BeamWord(word);
+  // Associate direct OOTX with this beam word's host time, even if IMU delivery stalls.
+  BaseConfig config;
+  BaseDynamicState dynamic;
+  while (tracker.Source().PopSobBaseConfig(&config, &dynamic)) ObserveBaseConfig(id, config, dynamic);
   // MixedLightOptions::rotorReference: what the word says of its rotor's timing, for the devices in LH1 mode.
   Device& d = found->second;
   if (mixedActive_ && mixed_.rotorReference && d.haveClock && word.channel >= 0 && word.channel < sob::kChannels)
@@ -1141,7 +1146,9 @@ void SessionImpl::OnBattery(const DeviceId& id, const BatteryReport& b) {
 void SessionImpl::Process(const DeviceId& id, Device& d) {
   if (now_ - lastAdvance_ >= 0.01) { lastAdvance_ = now_; room_.Advance(now_); }
   std::vector<std::pair<BaseConfig, BaseDynamicState>> decoded;
-  d.tracker->Process(&decoded);
+  BaseConfig config;
+  BaseDynamicState dynamic;
+  while (d.tracker->Source().PopBaseConfig(&config, &dynamic)) decoded.emplace_back(config, dynamic);
   tdm::TdmDisambiguator::Identity identity;
   bool newIdentity = false;
   while (d.tracker->Source().PopIdentity(&identity)) {
@@ -1151,29 +1158,8 @@ void SessionImpl::Process(const DeviceId& id, Device& d) {
     stored = identity;
   }
   if (newIdentity) PushIdentities();
-  for (const auto& [config, dynamic] : decoded) {
-    auto& base = bases_[config.serial];
-    const bool first = !base.seen;
-    if (first) {
-      char text[128];
-      std::snprintf(text, sizeof text, "base %08X: firmware %u, gravity %.3f %.3f %.3f", config.serial,
-                    unsigned(dynamic.firmwareVersion), dynamic.accelDir[0], dynamic.accelDir[1], dynamic.accelDir[2]);
-      Emit(SessionEventType::Log, "", text, LogLevel::Debug);
-    }
-    const bool newChannel = dynamic.sobChannel >= 0 && base.dynamic.sobChannel != dynamic.sobChannel;
-    base.config = config;
-    base.dynamic = dynamic;
-    if (newChannel) PushIdentities();  // the other devices identify this LH2 base at once
-    base.seen = true;
-    room_.OnBaseSeen(config, dynamic);
-    for (auto& [otherId, other] : devices_)
-      if (other.tracker && otherId != id) other.tracker->OnBaseConfig(config, dynamic);
-    if (first) {
-      char text[96];
-      std::snprintf(text, sizeof text, "%s seen by %s (mode %d)", BaseName(config.serial).c_str(), id.c_str(), dynamic.mode);
-      Emit(SessionEventType::BaseStationSeen, BaseName(config.serial), text);
-    }
-  }
+  for (const auto& [config, dynamic] : decoded) ObserveBaseConfig(id, config, dynamic);
+  d.tracker->Process();
   TakeKeyframes(d);
   CollectLogs(&d);
   const auto out = d.tracker->Output();
@@ -1185,9 +1171,52 @@ void SessionImpl::Process(const DeviceId& id, Device& d) {
   MaybeSave();
 }
 
+void SessionImpl::ObserveBaseConfig(const DeviceId& id, const BaseConfig& config, const BaseDynamicState& dynamic) {
+  const int ch = dynamic.sobChannel;
+  const bool blocked = ch >= 0 && ch < sob::kChannels && conflictedChannels_[ch];
+  if (blocked && (dynamic.cached || !config.valid || config.cal.size() != 14)) return;
+
+  auto& base = bases_[config.serial];
+  if (!base.Accepts(dynamic)) return;
+  if (blocked && base.HasDirectChannel(ch)) {
+    base.channelObservedAt = now_;
+    return;
+  }
+  const bool first = !base.seen;
+  if (first) {
+    char text[128];
+    std::snprintf(text, sizeof text, "base %08X: firmware %u, gravity %.3f %.3f %.3f", config.serial,
+                  unsigned(dynamic.firmwareVersion), dynamic.accelDir[0], dynamic.accelDir[1], dynamic.accelDir[2]);
+    Emit(SessionEventType::Log, "", text, LogLevel::Debug);
+  }
+  const bool newChannel = ch >= 0 &&
+      (first || base.dynamic.sobChannel != ch || base.dynamic.cached != dynamic.cached);
+  const bool wasConflicted = room_.Conflicted(config.serial);
+  base.config = config;
+  base.dynamic = dynamic;
+  base.seen = true;
+  if (ch >= 0 && !dynamic.cached) base.channelObservedAt = now_;
+  if (newChannel) PushIdentities();
+  if (!wasConflicted && !room_.Conflicted(config.serial)) ApplyBaseCalibration(base);
+  if (first) {
+    char text[96];
+    std::snprintf(text, sizeof text, "%s seen by %s (mode %d)", BaseName(config.serial).c_str(), id.c_str(), dynamic.mode);
+    Emit(SessionEventType::BaseStationSeen, BaseName(config.serial), text);
+  }
+}
+
+void SessionImpl::ApplyBaseCalibration(const SessionBase& base) {
+  room_.OnBaseSeen(base.config, base.dynamic);
+  for (auto& [id, device] : devices_)
+    if (device.tracker) device.tracker->OnBaseConfig(base.config, base.dynamic);
+}
+
 void SessionImpl::TakeKeyframes(Device& d) {
   for (uint32_t base : room_.TakeRelearned()) keyframes_.DropBase(base);
   for (auto& k : d.tracker->TakeKeyframes()) {
+    if (room_.Conflicted(k->primary) ||
+        std::any_of(k->samples.begin(), k->samples.end(), [&](const auto& entry) { return room_.Conflicted(entry.first); }))
+      continue;
     std::optional<Eigen::Isometry3d> pose;
     if (const RoomBase* primary = room_.Base(k->primary)) pose = primary->worldFromBase * k->primaryFromDevice;
     if (keyframes_.Add(std::move(k), pose)) { newKeyframes_ = true; ++addedKeyframes_; }
@@ -1206,7 +1235,7 @@ bool SessionImpl::SolveDue() const {
   if (!room_.Active() || !room_.Origin()) return false;
   // Locating a seen base quickly matters most; refinement can be slower.
   bool missing = false;
-  for (const auto& [serial, b] : bases_) missing |= b.seen && !room_.Base(serial);
+  for (const auto& [serial, b] : bases_) missing |= b.seen && !room_.Conflicted(serial) && !room_.Base(serial);
   return now_ - lastSolve_ >= (missing ? 0.1 : solveInterval_);
 }
 
@@ -1221,7 +1250,7 @@ RoomSolveInput SessionImpl::SolveInput() {
   // the solver held every placed base fixed, so one placed wrong (re-aimed while the
   // origin was off) was never found, and the room fit 2 deg off forever. One placed base
   // in view, the best placed, holds the gauge instead; the others are solved against it.
-  if (const auto o = bases_.find(in.origin); o == bases_.end() || !o->second.seen) {
+  if (const auto o = bases_.find(in.origin); o == bases_.end() || !o->second.seen || room_.Conflicted(in.origin)) {
     uint32_t gauge = 0;
     int best = -1;
     for (const auto& b : room_.Bases()) {
@@ -1443,15 +1472,37 @@ void SessionImpl::SolverMain() {
 void SessionImpl::PushIdentities() {
   std::vector<tdm::TdmDisambiguator::Identity> all;
   for (const auto& [serial, id] : identities_) all.push_back(id);
-  std::map<int, std::pair<BaseConfig, BaseDynamicState>> channels;  // LH2: one channel per base, every device
-  for (const auto& [serial, b] : bases_)
-    if (b.dynamic.sobChannel >= 0 && b.config.valid && b.config.cal.size() == 14)
-      channels[b.dynamic.sobChannel] = {b.config, b.dynamic};
+  auto channels = ResolveSobChannels(bases_);
+  for (int ch = 0; ch < sob::kChannels; ++ch) {
+    if (channels.blocked[ch] && !conflictedChannels_[ch]) {
+      const auto [first, second] = channels.firstConflict[ch];
+      char text[240];
+      std::snprintf(text, sizeof text,
+                    "Lighthouse 2.0 channel %d conflict: %s and %s. Tracking on this channel is paused. Assign a different channel to one base, then reset the room if its map is wrong.",
+                    ch + 1, BaseName(first).c_str(), BaseName(second).c_str());
+      Emit(SessionEventType::Log, "", text, LogLevel::Warn);
+    } else if (!channels.blocked[ch] && conflictedChannels_[ch]) {
+      Emit(SessionEventType::Log, "", "Lighthouse 2.0 channel " + std::to_string(ch + 1) + " conflict cleared");
+    }
+  }
+  for (uint32_t serial : channels.conflictedBases) {
+    if (room_.Conflicted(serial)) continue;
+    keyframes_.DropBase(serial);
+    lastSolved_.erase(serial);
+  }
+  std::vector<uint32_t> cleared;
+  if (conflictedChannels_.any()) {
+    for (const auto& [serial, base] : bases_)
+      if (room_.Conflicted(serial) && !channels.conflictedBases.contains(serial)) cleared.push_back(serial);
+  }
+  room_.SetConflictedBases(std::move(channels.conflictedBases));
+  conflictedChannels_ = channels.blocked;
   for (auto& [id, d] : devices_)
     if (d.tracker) {
       d.tracker->Source().SetKnownIdentities(all);
-      d.tracker->Source().SetKnownSobChannels(channels);
+      d.tracker->Source().SetKnownSobChannels(channels.known, channels.blocked);
     }
+  for (uint32_t serial : cleared) ApplyBaseCalibration(bases_.at(serial));
 }
 
 void SessionImpl::CollectLogs(Device* d) {
@@ -1533,6 +1584,7 @@ SessionSnapshot SessionImpl::Snapshot() const {
     s.mode = b.dynamic.mode;
     // lhbs multi channels are its slot (1-4 on the display), stock ones A, b, c.
     s.lh2 = b.dynamic.sobChannel >= 0;
+    s.channelObservedAt = b.channelObservedAt;
     if (b.dynamic.sobChannel >= 0) s.channel = std::to_string(b.dynamic.sobChannel + 1);  // LH2: 1-16
     else if (b.dynamic.multiSlot >= 0) s.channel = std::to_string(b.dynamic.multiSlot + 1);
     else if (b.dynamic.mode >= 1 && b.dynamic.mode <= 3) s.channel = std::string(1, "Abc"[b.dynamic.mode - 1]);
@@ -1897,7 +1949,8 @@ void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {
       d.tracker->SetReportAcceleration(reportAcceleration_);
       d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
       StartMixedLight(d);
-      for (const auto& [base, b] : bases_) d.tracker->OnBaseConfig(b.config, b.dynamic);
+      for (const auto& [base, b] : bases_)
+        if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
       PushIdentities();
     }
     d.lastState = TrackingState::Disconnected;
@@ -1932,7 +1985,8 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
     d.tracker->SetReportAcceleration(reportAcceleration_);
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
     StartMixedLight(d);
-    for (const auto& [base, b] : bases_) d.tracker->OnBaseConfig(b.config, b.dynamic);
+    for (const auto& [base, b] : bases_)
+      if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
     d.lastState = TrackingState::Disconnected;
   }
   PushIdentities();

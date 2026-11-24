@@ -281,7 +281,7 @@ class Device : public ITrackedDeviceServerDriver {
     basePublished_ = false;
     skeletonInput_ = {};
     lastSkeletonSent_ = -1e300;
-    battery_ = -1; universe_ = 0; hadInput_ = false;
+    battery_ = -1; universe_ = 0; hadInput_ = false; autoHand_ = 0;
     std::fill(std::begin(sent_), std::end(sent_), false);
     std::fill(std::begin(handles_), std::end(handles_), k_ulInvalidInputComponentHandle);
     haptic_ = skeletonHandle_ = skeletonOtherHandle_ = k_ulInvalidInputComponentHandle;
@@ -327,6 +327,21 @@ class Device : public ITrackedDeviceServerDriver {
   bool IsHmd() const { return info_.role == lh::DeviceRole::Hmd; }
   // "left_hand" / "right_hand" for a controller, else "".
   std::string Hand() const { return info_.role == lh::DeviceRole::Controller ? info_.controllerRole : std::string(); }
+  // A wand with no hand set: its hand follows where it is, as SteamVR's own driver does.
+  bool AutoHandWand() const {
+    return info_.role == lh::DeviceRole::Controller && info_.controllerType == lh::ControllerType::ViveWand &&
+           info_.controllerRole.empty();
+  }
+  // 0 none yet, else TrackedControllerRole_LeftHand / _RightHand.
+  int AutoHand() const { return autoHand_; }
+  void SetAutoHand(int role) {
+    if (role == autoHand_ || !Active()) return;
+    autoHand_ = role;
+    VRProperties()->SetInt32Property(container_, Prop_ControllerRoleHint_Int32,
+                                     role ? role : int(TrackedControllerRole_Invalid));
+    VRServerDriverHost()->VendorSpecificEvent(id_, VREvent_TrackedDeviceRoleChanged, {}, 0);
+    if (role) Log(info_.serial + ": " + (role == TrackedControllerRole_LeftHand ? "left" : "right") + " hand");
+  }
   std::string StringProperty(ETrackedDeviceProperty prop) const {
     if (!Active()) return {};
     char value[256] = {};
@@ -945,7 +960,7 @@ class Device : public ITrackedDeviceServerDriver {
       // Used after a minute of rest: this one is in the hand now (the other on a hip,
       // a shelf): it becomes the primary for its hand.
       const auto t = std::chrono::steady_clock::now();
-      if (t - lastUse_ > std::chrono::seconds(60))
+      if (t - lastUse_ > std::chrono::seconds(60) && !autoHand_)
         VRProperties()->SetInt32Property(container_, Prop_ControllerHandSelectionPriority_Int32, NextHandPriority());
       lastUse_ = t;
     }
@@ -1006,6 +1021,7 @@ class Device : public ITrackedDeviceServerDriver {
   lh::openvr::PublishedPose* published_ = nullptr;  // AttachExternal: handed every pose we publish
   std::atomic<bool> powerOffRequested_{false};
   std::chrono::steady_clock::time_point lastUse_{};
+  int autoHand_ = 0;
   static int32_t NextHandPriority() {
     static std::atomic<int32_t> next{1000};
     return ++next;
@@ -1485,6 +1501,7 @@ class Provider : public IServerTrackedDeviceProvider {
         auto found = devices_.find(u.serial);
         if (found != devices_.end()) found->second->Update(u, SteadyNowFor(now));
       }
+      AssignWandHands(updates);
       HandleCommands();
       if (now - lastSettings_ >= 0.25) {
         lastSettings_ = now;
@@ -1868,6 +1885,48 @@ class Provider : public IServerTrackedDeviceProvider {
   }
 
   // Main thread: what clients asked for since the last pass. Each gets a reply.
+  // Wands with no hand set, as SteamVR's own driver: once both are seen with the
+  // headset, the one to the headset's right is the right hand. Kept until a wand turns
+  // off; one turned on later takes the free hand.
+  void AssignWandHands(const std::vector<lh::DeviceUpdate>& updates) {
+    const lh::DeviceUpdate* hmd = nullptr;
+    struct Wand { Device* d; const lh::DeviceUpdate* u; };
+    std::vector<Wand> wands;
+    for (const auto& u : updates) {
+      auto found = devices_.find(u.serial);
+      if (found == devices_.end() || !found->second || !found->second->Active()) continue;
+      Device* d = found->second.get();
+      if (d->IsHmd()) { if (u.pose.valid) hmd = &u; continue; }
+      if (!d->AutoHandWand()) continue;
+      if (!u.connected || !u.enabled) { d->SetAutoHand(0); continue; }
+      wands.push_back({d, &u});
+    }
+    if (wands.size() != 2) return;
+    Wand& a = wands[0];
+    Wand& b = wands[1];
+    const int L = TrackedControllerRole_LeftHand, R = TrackedControllerRole_RightHand;
+    if (a.d->AutoHand() && a.d->AutoHand() != b.d->AutoHand()) {
+      if (!b.d->AutoHand()) b.d->SetAutoHand(a.d->AutoHand() == L ? R : L);
+      return;
+    }
+    if (b.d->AutoHand() && !a.d->AutoHand()) { a.d->SetAutoHand(b.d->AutoHand() == L ? R : L); return; }
+    if (!hmd || !a.u->pose.valid || !b.u->pose.valid) return;
+    auto pos = [](const lh::DeviceUpdate& u) {
+      const auto& p = u.pose.worldFromImu.position;
+      return Eigen::Vector3d(p[0], p[1], p[2]);
+    };
+    const auto& ho = hmd->pose.worldFromImu.orientation;
+    const auto& hh = hmd->pose.imuFromHead.orientation;
+    const Eigen::Quaterniond worldFromHead = Eigen::Quaterniond(ho[0], ho[1], ho[2], ho[3]) *
+                                             Eigen::Quaterniond(hh[0], hh[1], hh[2], hh[3]);
+    const Eigen::Vector3d right = worldFromHead * Eigen::Vector3d::UnitX();
+    const Eigen::Vector3d head = pos(*hmd);
+    const double da = right.dot(pos(*a.u) - head), db = right.dot(pos(*b.u) - head);
+    if (std::abs(da - db) < 0.1) return;  // side by side in front: wait until they part
+    a.d->SetAutoHand(da > db ? R : L);
+    b.d->SetAutoHand(da > db ? L : R);
+  }
+
   void HandleCommands() {
     for (const auto& c : g_telemetry.TakeCommands()) {
       const nlohmann::json j = nlohmann::json::parse(c.json, nullptr, false);

@@ -42,6 +42,9 @@ inline int SlotToGiveUp(const double lastUsed[4], double now) {
 class LighthouseDirect {
  public:
   static constexpr double kSaturatedJerkScale = 10;  // process noise while the accelerometer saturates
+  // Blind (no light for kBlindAfter s): velocity capped at kBlindMaxSpeed m/s and faded with
+  // the time constant kBlindFade s (see ImuUpdate).
+  static constexpr double kBlindAfter = 0.1, kBlindMaxSpeed = 6.0, kBlindFade = 0.2;
   explicit LighthouseDirect(TrackedObjectModel model, double opticalTimeout = 0.5);
   // Not stock, off by default (the oracle tests compare against the original):
   // multi-start acquisition (solver::SolveMultiStart) and per-row innovation gating

@@ -194,6 +194,8 @@ class DeviceTracker {
   std::map<uint32_t, std::deque<std::pair<double, int>>> recentUsed_;  // (sync time, sensors) of used frames, 0.5 s
   std::optional<double> switchedAt_;
   double acquiredAt_ = 0;
+  double firstTrackedAt_ = 0;  // first acquire since this device attached (keyframe votes)
+  static constexpr double kVoteSettle = 10;  // s from it before its keyframes may vote a base moved
   bool multiRoom_ = false;  // a lhbs multi-station frame was seen  // device time of the last (re)acquisition  // device time of the last deliberate primary switch  // base -> sync time of its last frame the filter used
   double sweepInterval_ = 1.0 / 60;  // of the last frame's base
   double inertialLag_ = 0.12;  // s behind the newest IMU sample the filter may advance without light

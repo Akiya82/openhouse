@@ -405,6 +405,15 @@ void DeviceTracker::CollectKeyframe(const OpticalFrame& frame) {
   k->speed = v.norm();
   k->rate = w.norm();
   k->primaryFromDevice = ref.primaryFromDevice;
+  // Not stock: a device that switched on moments ago may not vote a base moved. Its first
+  // seconds' light can be credited to the wrong base (multi-station slots still settling, IMU
+  // not calibrated): two controllers switched on 10 s apart "saw" a base 205 mm / 15 deg
+  // away, the room relearned it there and then two more bases, and the headset jumped and
+  // tilted at every handover. Counted from the device's first lock, not its last reacquire:
+  // a really moved base keeps devices reacquiring, and then no device would ever vote.
+  // (vrchat-01, fastmotionindex against a newer room: the moves seen 13 s later instead of
+  // early false ones; ms4-01's knock unchanged; out of bounds 29 -> 16.)
+  k->settled = f.updateCount >= 201 && firstTrackedAt_ > 0 && Now() - firstTrackedAt_ >= kVoteSettle;
   for (const auto& [key, b] : newest) {
     if (hits[key.first][0] < 4 || hits[key.first][1] < 4) continue;
     auto& out = k->samples[key.first];
@@ -427,6 +436,7 @@ std::vector<std::shared_ptr<const Keyframe>> DeviceTracker::TakeKeyframes() {
 
 void DeviceTracker::OnAcquired() {
   acquiredAt_ = Now();
+  if (firstTrackedAt_ <= 0) firstTrackedAt_ = Now();
   if (carry_ && !carry_->CalibrationHealthy()) {
     Log("discarding invalid cached IMU calibration before reacquisition");
     carry_.reset();

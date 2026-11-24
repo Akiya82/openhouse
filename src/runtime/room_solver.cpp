@@ -505,7 +505,7 @@ RoomSolveOutput SolveRoom(const RoomSolveInput& in) {
     knownBlock.Set(known);
     const double* solvedV = bases.at(base).v;
     for (size_t i = 0; i < kfs.size(); ++i) {
-      if (!use[i]) continue;
+      if (!use[i] || !kfs[i].k->settled) continue;
       const auto s = kfs[i].k->samples.find(base);
       if (s == kfs[i].k->samples.end()) continue;
       auto& a = acc[kfs[i].k->device];

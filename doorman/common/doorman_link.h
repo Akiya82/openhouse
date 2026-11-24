@@ -23,16 +23,18 @@
  *        [us since the assigned slot's poll, u16]           (join address, join channel)
  *        flags bit0: pairing open; assign id = tracker DEVICEID the slot is handed to (0 = none)
  *        the hop fields let a new tracker follow the hops at once (the first hop channel may be off)
+ *        flags bit1: the assigned tracker's coded frames carry the codec's CRC-8 (it asked, JREQ bit1)
  * JREQ  [type][tracker id x8][flags]                               (answer to JOIN)
+ *        flags bit0: pairing mode; bit1: can add the codec's CRC-8 (doorman_codec.h `check`)
  * frames = repeated [len][len bytes]: exactly the frames the tracker MCU and its radio exchange over SPI.
  */
 #pragma once
 #include <stdint.h>
 
 #ifdef DML_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
-#define DML_VERSION        0x6A000023u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
+#define DML_VERSION        0x6A000024u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
 #else
-#define DML_VERSION        0x0A000014u
+#define DML_VERSION        0x0A000015u
 #endif        /* radio fw version reported for 'X' (HTC: 0x576B0104) */
 #define DML_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
 #define DML_JOIN_CHANNEL   80                 /* 2480 MHz */
@@ -57,6 +59,8 @@ enum { DML_POLL = 0x01, DML_RESP = 0x02, DML_JOIN = 0x03, DML_JREQ = 0x04 };
 #define DML_F_SEQ_MASK     0x07
 #define DML_F_DSEQ         0x08
 #define DML_F_DOWN         0x10
+#define DML_JF_PAIR        0x01               /* JOIN: pairing open; JREQ: pairing mode */
+#define DML_JF_CHECK       0x02               /* JREQ: can add the codec CRC-8; JOIN: do (for the assigned id) */
 
 /* channel for a cycle: the (cycle % n)-th allowed hop channel */
 static inline uint8_t dml_channel(uint8_t cycle, uint16_t mask)

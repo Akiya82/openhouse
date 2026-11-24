@@ -15,6 +15,13 @@
  * EG = Exp-Golomb with k adapted per field from a running mean of the values' bit lengths. Values of
  * any size are coded exactly; small ones in a few bits, rare big ones (a new sweep) in a few more.
  *
+ * With `check` set (agreed at join, doorman_link.h DML_JF_CHECK), a coded frame ends with a CRC-8 of
+ * the original frame. Every frame is coded against the state the ones before it left, so one coded frame
+ * that reached the dongle wrong (corrupted in the air, the radio's CRC-16 passing anyway: about one in
+ * 65536 corrupted packets) left the two ends out of step for good: every IMU sample after it decoded as
+ * plausible garbage, timestamps a constant ~31 s apart and readings ramping by a constant step, and the
+ * device sat connected and never tracked until it rejoined. The CRC-8 catches it at that frame.
+ *
  * Both ends keep the same state and change it the same way for every original frame, whether it went
  * over the air coded or raw (dmc_encode changes it even when it returns 0 = send raw; the receiver of a
  * raw frame calls dmc_observe). Reset both on (re)join. */
@@ -37,6 +44,7 @@ typedef struct {
   uint32_t light_t;       /* last LH1 record time */
   uint32_t lh2_t;         /* last LH2 word ts24 */
   int16_t m[DMC_NCTX];   /* running mean of bit lengths, x16 */
+  uint8_t check;          /* coded frames carry a CRC-8 of the original (set after dmc_reset, at join) */
 } dmc_state_t;
 
 static inline void dmc_reset(dmc_state_t *s)
@@ -104,6 +112,15 @@ static inline uint32_t dmc_ug(dmc_r_t *r, dmc_state_t *s, int c)
   uint32_t u = (uint32_t)((x - 1) << k) | dmc_get(r, k);
   dmc_learn(s, c, u);
   return u;
+}
+static inline uint8_t dmc_crc8(const uint8_t *p, int n)   /* CRC-8, poly 0x07 */
+{
+  uint8_t c = 0;
+  for (int i = 0; i < n; i++) {
+    c ^= p[i];
+    for (int b = 0; b < 8; b++) c = (uint8_t)(c & 0x80 ? (c << 1) ^ 0x07 : c << 1);
+  }
+  return c;
 }
 static inline uint16_t dmc_u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static inline uint32_t dmc_u32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -243,11 +260,13 @@ static inline int dmc_encode(dmc_state_t *s, const uint8_t *f, int n, uint8_t *o
   } else if (dmc_is_lh1(f, n)) { o[0] = DMC_LH1; dmc_lh1_walk(s, g, n, &w, 0); }
   else if (dmc_is_lh2(f, n)) { o[0] = DMC_LH2; dmc_lh2_walk(s, g, n, &w, 0); }
   else return 0;
+  if (s->check) dmc_put(&w, dmc_crc8(f, n), 8);
   if (w.over) return 0;
   return 1 + (w.pos + 7) / 8;
 }
 
-/* Decodes a 0xC1/0xC2/0xC3 frame into the original (f: room for 64 bytes); returns its length, 0 = malformed. */
+/* Decodes a 0xC1/0xC2/0xC3 frame into the original (f: room for 64 bytes); returns its length, 0 = malformed
+   or (with check) not the frame that was coded. Either way the two ends are out of step: rejoin. */
 static inline int dmc_decode(dmc_state_t *s, const uint8_t *i, int n, uint8_t *f)
 {
   dmc_r_t r = { i + 1, n - 1, 0, 0 };
@@ -259,6 +278,7 @@ static inline int dmc_decode(dmc_state_t *s, const uint8_t *i, int n, uint8_t *f
     dmc_imu_step(s, f); m = 18;
   } else if (i[0] == DMC_LH1) m = dmc_lh1_walk(s, f, 0, 0, &r);
   else if (i[0] == DMC_LH2) m = dmc_lh2_walk(s, f, 0, 0, &r);
+  if (s->check && !r.bad && m && (uint8_t)dmc_get(&r, 8) != dmc_crc8(f, m)) return 0;
   if (r.bad || (r.pos + 7) / 8 != r.len) return 0;   /* every byte used, only the last one padded */
   return m;
 }

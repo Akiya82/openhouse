@@ -692,9 +692,9 @@ static void pair_start(void)
   pair_mode = 1; pair_since = now_us();
   if (link_enabled && (joined || link_up)) go_unjoined();  /* reports 0x53: the LED shows pairing */
   else if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
-  jreq[10] = 1;
+  jreq[10] = DML_JF_PAIR | DML_JF_CHECK;
 }
-static void pair_end(void) { pair_mode = 0; jreq[10] = 0; }
+static void pair_end(void) { pair_mode = 0; jreq[10] = DML_JF_CHECK; }
 #ifdef DML_IDX
 /* Holding the system button turns the device off. Valve's main firmware leaves that to the
    radio side: it only reports the button (bit 0x2000 of the 0x6e input frame's first word), and
@@ -858,15 +858,15 @@ static void go_unjoined(void)
   radio_stop();
   set_addr(DML_JOIN_BASE, DML_JOIN_PREFIX);
   cur_ch = DML_JOIN_CHANNEL;
-  jreq[0] = DML_JREQ_LEN; jreq[1] = DML_JREQ; jreq[10] = pair_mode;
+  jreq[0] = DML_JREQ_LEN; jreq[1] = DML_JREQ; jreq[10] = (uint8_t)((pair_mode ? DML_JF_PAIR : 0) | DML_JF_CHECK);
   answer_join = 0;
   arm_rx(0);
 }
-static void go_joined(uint32_t base, uint8_t slot)
+static void go_joined(uint32_t base, uint8_t slot, uint8_t check)
 {
   radio_stop();
   joined = 1; my_slot = slot; net_base = base;
-  dmc_reset(&codec); uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
+  dmc_reset(&codec); codec.check = check; uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
   on = 0; send_i = 0; next_seq = 0; last_dseq = 1; have_cycle = 0;
   sent_max = 7;                    /* nothing sent yet: the dongle acks 7 until it has our seq 0 */
   mask = 0xFFFF; cur_ch = dml_hop_ch[0]; period_us = 2000; max_resp = DML_MAXLEN;
@@ -1077,10 +1077,10 @@ static void radio_poll(void)
     }
     if (crc && len >= DML_JOIN_LEN && p[0] == DML_JOIN) {
       uint32_t base; memcpy(&base, p + 1, 4);
-      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < DML_SLOTS && (!pair_mode || p[5])) {
+      if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < DML_SLOTS && (!pair_mode || (p[5] & DML_JF_PAIR))) {
         pair_end();                                         /* paired (or back on its dongle) */
         if (rstate == R_TX) { while (!NRF_RADIO->EVENTS_DISABLED) {} NRF_RADIO->EVENTS_DISABLED = 0; }
-        go_joined(base, p[14]);
+        go_joined(base, p[14], (p[5] & DML_JF_CHECK) ? 1 : 0);   /* an old dongle never sets it */
         mask = (uint16_t)(p[15] | p[16] << 8);                 /* follow the hops from the start */
         if (p[18]) period_us = p[18] * 50u;
         last_cycle = p[17]; have_cycle = 1;

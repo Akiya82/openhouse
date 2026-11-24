@@ -2031,9 +2031,11 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
     d.lastState = TrackingState::Disconnected;
   }
   PushIdentities();
-  // Seen bases are seen again: the first one becomes the new room's origin.
-  for (const auto& [serial, b] : bases_)
-    if (b.seen) room_.OnBaseSeen(b.config, b.dynamic);
+  // The new room has only the bases seen from now on: one switched off stays out instead of
+  // being listed unplaced forever, the room waiting on it (2026-11-24, D7B1AD76 off). Their
+  // calibration stays with the trackers above; each joins the room as its OOTX comes in again,
+  // the first one as the origin.
+  for (auto& [serial, b] : bases_) b.seen = false;
   if (persist_) {
     std::string err;
     // Seen only once it's written: a failed write then looked like the file being

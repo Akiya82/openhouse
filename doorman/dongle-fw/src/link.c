@@ -58,6 +58,8 @@ typedef struct {
   uint32_t rssi_d16, rssi_t16, t_missed, t_crc;
   uint8_t last_missed, last_crc, have_tel;
   uint8_t dup_run;                      /* consecutive out-of-order answers (a stalled uplink) */
+  uint8_t check;                        /* its radio adds the codec CRC-8 (JREQ DML_JF_CHECK) */
+  uint32_t resyncs;                     /* codec out of step: made to rejoin */
   uint32_t skip_until;                  /* ms_ticks until which this slot is not polled */
   dmc_state_t codec; uint32_t air_bytes, bad_frames;
   uint16_t dev_drops, dev_reply_drops;   /* the radio's own drop totals (its 'D' frames) */
@@ -166,7 +168,12 @@ static int decode_step(slot_t *s)
   const uint8_t *f = r + k + 1;
   s->pend_k = (uint8_t)(k + 1 + fl);
   uint8_t g[64]; int gl = fl;
-  if (f[0] >= DMC_IMU && f[0] <= DMC_LH2) { gl = dmc_decode(&s->codec, f, fl, g); f = g; if (!gl) { s->bad_frames++; return 1; } }
+  if (f[0] >= DMC_IMU && f[0] <= DMC_LH2) {
+    gl = dmc_decode(&s->codec, f, fl, g); f = g;
+    /* Not the frame the radio coded: the codec is out of step for good (every frame after it decodes
+       as garbage). Left alone past the radio's 1 s "dongle gone", it rejoins and both ends reset. */
+    if (!gl) { s->bad_frames++; s->resyncs++; s->pend_k = s->pend_n; s->skip_until = ms_ticks + 1200; return 0; }
+  }
   else dmc_observe(&s->codec, f, fl);
   if (f[0] == 'H' && gl <= 16) { memset(s->ident, 0, 16); memcpy(s->ident, f, gl); }
   if (f[0] == 'D' && gl >= 5) { s->dev_drops = (uint16_t)(f[1] | f[2] << 8); s->dev_reply_drops = (uint16_t)(f[3] | f[4] << 8); }
@@ -373,6 +380,7 @@ static void slot_reset(uint8_t i)
   s->last_seq = 7; s->dseq = 0; s->down_len = 0; s->have_tel = 0;
   s->dup_run = 0; s->skip_until = 0;
   dmc_reset(&s->codec);
+  s->codec.check = s->check;
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0;
   s->pend_n = s->pend_k = 0;                               /* the old device's answer isn't for the new codec */
@@ -389,7 +397,10 @@ static void join_beacon(void)
   p[0] = DML_JOIN; memcpy(p + 1, &net_base, 4);
   p[5] = ms_ticks < pairing_until_ms ||
          (assign_left && assign_slot == just_paired_slot && (int32_t)(just_paired_until_ms - ms_ticks) > 0) ? 1 : 0;
-  if (assign_left) { memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--; }
+  if (assign_left) {
+    memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--;
+    if (sl[assign_slot].check) p[5] |= DML_JF_CHECK;        /* only for a radio that asked: an old one reads p[5] as "pairing open" */
+  }
   else { memset(p + 6, 0, 8); p[14] = 0xFF; }
   p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us / 50);
   uint32_t since = 0;
@@ -407,7 +418,7 @@ static void join_beacon(void)
   if (n < DML_JREQ_LEN || r[0] != DML_JREQ) return;
   joins_heard++;
   const uint8_t *id = r + 1;
-  int pairing = r[9] & 1;                                   /* the device is in pairing mode */
+  int pairing = r[9] & DML_JF_PAIR;                         /* the device is in pairing mode */
   int slot = -1;
   for (int i = 0; i < DML_SLOTS; i++) if ((pairs.used >> i) & 1 && memcmp(pairs.id[i], id, 8) == 0) slot = i;
   if (!pairing && pair_any && slot < 0 && pair_target < DML_SLOTS && ms_ticks < pairing_until_ms) {
@@ -437,6 +448,7 @@ static void join_beacon(void)
   }
   if (slot < 0) return;
   memcpy(assign_id, id, 8); assign_slot = (uint8_t)slot; assign_left = 5;
+  sl[slot].check = (r[9] & DML_JF_CHECK) ? 1 : 0;
   slot_reset((uint8_t)slot);
 }
 
@@ -697,6 +709,7 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32.
     put32(d + 12, s->dev_drops); put32(d + 16, s->dev_reply_drops);
     d[20] = (uint8_t)s->upq_hw; d[21] = (uint8_t)(s->upq_hw >> 8); s->upq_hw = 0;   /* USB queue high-water, reset on read */
     put32(d + 22, s->load_bytes);                                                    /* test load queued (0x2B) */
+    put32(d + 26, s->resyncs); d[30] = s->check;                                     /* codec resyncs, CRC-8 on */
     return 1;
   case 0x24:                                                /* pair SECS [SLOT+1] [ANY] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;

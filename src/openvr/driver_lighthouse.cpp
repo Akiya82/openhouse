@@ -263,9 +263,9 @@ bool StockHmdUnwanted(std::string* why) {
 
 std::string HostName() {
 #ifdef _WIN32
-  char path[MAX_PATH]{};
-  GetModuleFileNameA(nullptr, path, MAX_PATH);
-  return std::filesystem::path(path).stem().string();
+  wchar_t path[MAX_PATH]{};
+  GetModuleFileNameW(nullptr, path, MAX_PATH);
+  return lh::platform::PathUtf8(std::filesystem::path(path).stem());
 #else
   std::ifstream comm("/proc/self/comm");
   std::string name;
@@ -1222,7 +1222,7 @@ class Provider : public IServerTrackedDeviceProvider {
     if (!steamFrame_) {
       const std::string roomMap = options.roomMapPath.empty() ? lh::platform::ConfigDirectory() + "/roommap.json"
                                                               : options.roomMapPath;
-      hostFrame_.Load(std::filesystem::path(roomMap).parent_path().string() + "/hostframe.json");
+      hostFrame_.Load(lh::platform::PathUtf8(lh::platform::FsPath(roomMap).parent_path()) + "/hostframe.json");
     }
     Log(steamFrame_ ? "host frame: SteamVR's (" + reference + ")" : "host frame: our room's, pinned to its origin base");
     if (!captureDir.empty()) {

@@ -227,7 +227,7 @@ void RemoveOldUpdateCheck(const Paths& p, const std::function<void(const std::st
 void RemoveMovedAside(const Paths& p) {
   std::error_code ec;
   for (const auto& e : fs::directory_iterator(p.directory, ec))
-    if (e.path().filename().string().find(".old-") != std::string::npos) RemoveFile(e.path());
+    if (Utf8(e.path().filename()).find(".old-") != std::string::npos) RemoveFile(e.path());
 }
 
 // A step after the driver itself: its failure is logged, it doesn't undo or stop the rest.

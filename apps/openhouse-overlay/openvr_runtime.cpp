@@ -2,6 +2,7 @@
 // with openhouse): openvr_api.dll / libopenvr_api.so from <runtime>/bin/<platform>, the
 // runtime named in openvrpaths.vrpath. The OpenVR header's inline helpers (VR_Init,
 // vr::VROverlay(), ...) call the VR_* functions below, which forward to that library.
+#include "platform/platform.hpp"
 #include "openvr_runtime.hpp"
 
 #include <nlohmann/json.hpp>
@@ -40,12 +41,12 @@ std::string g_error;
 
 fs::path VrPathFile() {
 #ifdef _WIN32
-  const char* local = std::getenv("LOCALAPPDATA");
-  return local ? fs::path(local) / "openvr" / "openvrpaths.vrpath" : fs::path();
+  const std::string local = lh::platform::Env("LOCALAPPDATA");
+  return local.empty() ? fs::path() : lh::platform::FsPath(local) / "openvr" / "openvrpaths.vrpath";
 #else
-  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "openvr" / "openvrpaths.vrpath";
-  const char* home = std::getenv("HOME");
-  return home ? fs::path(home) / ".config" / "openvr" / "openvrpaths.vrpath" : fs::path();
+  if (const std::string xdg = lh::platform::Env("XDG_CONFIG_HOME"); !xdg.empty()) return lh::platform::FsPath(xdg) / "openvr" / "openvrpaths.vrpath";
+  const std::string home = lh::platform::Env("HOME");
+  return home.empty() ? fs::path() : lh::platform::FsPath(home) / ".config" / "openvr" / "openvrpaths.vrpath";
 #endif
 }
 
@@ -81,15 +82,15 @@ bool LoadOpenVR() {
   static bool ok = false;
   std::call_once(once, [] {
     const std::string runtime = SteamVRRuntime();
-    if (runtime.empty()) { g_error = "SteamVR isn't installed (no runtime in " + VrPathFile().string() + ")"; return; }
+    if (runtime.empty()) { g_error = "SteamVR isn't installed (no runtime in " + lh::platform::PathUtf8(VrPathFile()) + ")"; return; }
 #ifdef _WIN32
     const fs::path lib = fs::u8path(runtime) / "bin" / "win64" / "openvr_api.dll";
     g_api.library = LoadLibraryW(lib.wstring().c_str());
 #else
-    const fs::path lib = fs::path(runtime) / "bin" / "linux64" / "libopenvr_api.so";
+    const fs::path lib = lh::platform::FsPath(runtime) / "bin" / "linux64" / "libopenvr_api.so";
     g_api.library = dlopen(lib.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
-    if (!g_api.library) { g_error = "can't load " + lib.string(); return; }
+    if (!g_api.library) { g_error = "can't load " + lh::platform::PathUtf8(lib); return; }
     auto get = [](auto*& fn, const char* name) { fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(Symbol(name)); return fn != nullptr; };
     ok = get(g_api.initInternal2, "VR_InitInternal2") && get(g_api.shutdownInternal, "VR_ShutdownInternal") &&
          get(g_api.isHmdPresent, "VR_IsHmdPresent") && get(g_api.isRuntimeInstalled, "VR_IsRuntimeInstalled") &&
@@ -97,7 +98,7 @@ bool LoadOpenVR() {
          get(g_api.errorDescription, "VR_GetVRInitErrorAsEnglishDescription") &&
          get(g_api.getGenericInterface, "VR_GetGenericInterface") &&
          get(g_api.isInterfaceVersionValid, "VR_IsInterfaceVersionValid") && get(g_api.getInitToken, "VR_GetInitToken");
-    if (!ok) g_error = lib.string() + " lacks an OpenVR function";
+    if (!ok) g_error = lh::platform::PathUtf8(lib) + " lacks an OpenVR function";
   });
   return ok;
 }

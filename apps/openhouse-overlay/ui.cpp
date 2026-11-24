@@ -41,16 +41,7 @@ ImFont* g_huge = nullptr;
 const ImVec4 kGood{0.36f, 0.80f, 0.45f, 1}, kWarn{1.00f, 0.78f, 0.30f, 1}, kBad{1.00f, 0.42f, 0.40f, 1},
     kInfo{0.45f, 0.70f, 1.00f, 1}, kOff{0.55f, 0.58f, 0.62f, 1}, kAccent{1.00f, 0.86f, 0.55f, 1};
 
-std::filesystem::path SettingsPath() {
-#ifdef _WIN32
-  const char* base = std::getenv("APPDATA");
-  return std::filesystem::path(base ? base : ".") / "lh" / "overlay.json";
-#else
-  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return std::filesystem::path(xdg) / "lh" / "overlay.json";
-  const char* home = std::getenv("HOME");
-  return std::filesystem::path(home ? home : ".") / ".config" / "lh" / "overlay.json";
-#endif
-}
+std::filesystem::path SettingsPath() { return lh::platform::FsPath(lh::platform::ConfigDirectory()) / "overlay.json"; }
 
 bool SelectableDeviceLabel(const char* label, bool selected, ImGuiSelectableFlags flags, ImVec2 size = {}) {
   const ImVec2 pos = ImGui::GetCursorScreenPos();

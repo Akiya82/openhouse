@@ -1,3 +1,4 @@
+#include "platform/platform.hpp"
 #include "driver_check.hpp"
 
 #include <lh/github.hpp>
@@ -45,16 +46,10 @@ std::mutex g_mutex;
 NoticeState g_notice;
 
 void Log(const std::string& line) {
+  const fs::path dir = lh::platform::FsPath(lh::platform::DataDirectory());
 #ifdef _WIN32
-  const char* base = std::getenv("LOCALAPPDATA");
-  if (!base) return;
-  const fs::path dir = fs::path(base) / "openhouse";
   const auto pid = GetCurrentProcessId();
 #else
-  const char* data = std::getenv("XDG_DATA_HOME");
-  const char* home = std::getenv("HOME");
-  if (!data && !home) return;
-  const fs::path dir = fs::path(data ? data : std::string(home) + "/.local/share") / "openhouse";
   const auto pid = getpid();
 #endif
   std::error_code ec;
@@ -111,7 +106,7 @@ bool StartInstaller(const std::string& mode, std::string* error) {
     if (!ec) installer = dir / kInstaller;
   }
 #endif
-  Log("starting " + installer.string() + " " + mode);
+  Log("starting " + lh::platform::PathUtf8(installer) + " " + mode);
 #ifdef _WIN32
   std::wstring command = L"\"" + installer.wstring() + L"\" " + std::wstring(mode.begin(), mode.end());
   STARTUPINFOW si{sizeof si};
@@ -136,7 +131,7 @@ bool StartInstaller(const std::string& mode, std::string* error) {
   std::vector<char*> envp;
   for (auto& kv : env) envp.push_back(kv.data());
   envp.push_back(nullptr);
-  const std::string path = installer.string();
+  const std::string path = lh::platform::PathUtf8(installer);
   char* argv[] = {const_cast<char*>(path.c_str()), const_cast<char*>(mode.c_str()), nullptr};
   posix_spawnattr_t attr;
   posix_spawnattr_init(&attr);
@@ -410,10 +405,10 @@ std::string JoinedPath(int argc, char** argv, int first) {
 int RunDriverCheck(const std::string& folder, bool underSteamVR) {
   g_underSteamVR = underSteamVR;
   if (folder.empty()) { Log("no driver folder given"); return 2; }
-  const fs::path driver = fs::path(folder) / kDriver;
-  Log("checking " + driver.string());
+  const fs::path driver = lh::platform::FsPath(folder) / kDriver;
+  Log("checking " + lh::platform::PathUtf8(driver));
   std::error_code ec;
-  if (!fs::exists(driver.string() + ".stock", ec)) { Log("no .stock backup: nothing to do"); return 0; }
+  if (!fs::exists(lh::platform::FsPath(lh::platform::PathUtf8(driver) + ".stock"), ec)) { Log("no .stock backup: nothing to do"); return 0; }
   std::ifstream in(driver, std::ios::binary);
   if (!in) { Log("can't read the driver"); return 0; }
   const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

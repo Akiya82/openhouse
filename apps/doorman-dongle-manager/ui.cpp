@@ -1,3 +1,4 @@
+#include "platform/platform.hpp"
 #include "ui.hpp"
 
 #include <imgui.h>
@@ -34,16 +35,7 @@ ImFont* g_huge = nullptr;
 const ImVec4 kGood{0.36f, 0.80f, 0.45f, 1}, kWarn{1.00f, 0.78f, 0.30f, 1}, kBad{1.00f, 0.42f, 0.40f, 1},
     kInfo{0.45f, 0.70f, 1.00f, 1}, kOff{0.55f, 0.58f, 0.62f, 1}, kAccent{1.00f, 0.86f, 0.55f, 1};
 
-fs::path SettingsPath() {
-#ifdef _WIN32
-  const char* base = std::getenv("APPDATA");
-  return fs::path(base ? base : ".") / "lh" / "dongle.json";
-#else
-  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) return fs::path(xdg) / "lh" / "dongle.json";
-  const char* home = std::getenv("HOME");
-  return fs::path(home ? home : ".") / ".config" / "lh" / "dongle.json";
-#endif
-}
+fs::path SettingsPath() { return lh::platform::FsPath(lh::platform::ConfigDirectory()) / "dongle.json"; }
 
 ImU32 U32(const ImVec4& c, float alpha = 1) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); }
 
@@ -885,7 +877,7 @@ void Ui::Firmware(const DongleState& d) {
     // Updates itself: the packaged firmware for the bank that isn't running.
     const fs::path image = PackagedBankImage(lh::dongle_bank::ImageName(d.board, d.softdeviceVariant, d.bank));
     if (image.empty()) ImGui::TextColored(kWarn, "Firmware not found next to the app");
-    else ImGui::TextDisabled("%s", image.filename().string().c_str());
+    else ImGui::TextDisabled("%s", lh::platform::PathUtf8(image.filename()).c_str());
     ImGui::BeginDisabled(image.empty() || updating_);
     if (TintButton(updating_ ? "Updating..." : "Update", kAccent, ImGui::GetFontSize() * 12)) ImGui::OpenPopup("Update?");
     ImGui::EndDisabled();
@@ -940,7 +932,7 @@ void Ui::StartBankUpdate(std::shared_ptr<Dongle> dongle, const fs::path& file) {
   };
   std::ifstream in(file, std::ios::binary);
   std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  if (image.size() < 1024) { set("Can't read " + file.string(), true); return; }
+  if (image.size() < 1024) { set("Can't read " + lh::platform::PathUtf8(file), true); return; }
   updating_ = true;
   set("Writing the firmware...");
   dongle->BankUpdate(std::move(image),
@@ -1002,7 +994,7 @@ void Ui::StartUpdate(std::shared_ptr<Dongle> dongle, const std::string& file, bo
       updating_ = false;
       return;
     }
-    set("Copying onto " + drive.string() + "...");
+    set("Copying onto " + lh::platform::PathUtf8(drive) + "...");
     std::error_code ec;
     fs::copy_file(fs::u8path(file), drive / fs::u8path(file).filename(), fs::copy_options::overwrite_existing, ec);
     std::error_code gone;

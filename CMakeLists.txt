@@ -170,7 +170,7 @@ if(LH_BUILD_USB)
   if(LH_BUILD_TOOLS)
     # liblh's code is built in (as in the driver), so the tool runs on its own.
     add_executable(lhtool apps/lhtool/main.cpp $<TARGET_OBJECTS:lh_runtime>)
-    target_include_directories(lhtool PRIVATE include)
+    target_include_directories(lhtool PRIVATE include src)
     target_link_libraries(lhtool PRIVATE lh_usb lh_tracking Ceres::ceres Eigen3::Eigen nlohmann_json::nlohmann_json)
     if(WIN32)
       target_link_libraries(lhtool PRIVATE advapi32)

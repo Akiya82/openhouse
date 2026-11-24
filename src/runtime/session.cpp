@@ -424,7 +424,7 @@ bool SessionImpl::Start(std::string* error) {
   std::string steamDb = options_.steamDatabasePath;
   if (steamDb.empty()) {
     std::vector<std::string> candidates;
-    if (replay) candidates.push_back((std::filesystem::path(options_.replayPath).parent_path() / "lighthousedb.json").string());
+    if (replay) candidates.push_back(platform::PathUtf8(platform::FsPath(options_.replayPath).parent_path() / "lighthousedb.json"));
     else {
       candidates.push_back(platform::SteamConfigDirectory() + "/lighthousedb.json");
 #ifndef _WIN32
@@ -751,35 +751,35 @@ void SessionImpl::LoadPreinit() {
   if (preinitDir_.empty()) return;
   std::error_code ec;
   std::vector<std::filesystem::path> files;
-  for (const auto& e : std::filesystem::directory_iterator(preinitDir_, ec))
+  for (const auto& e : std::filesystem::directory_iterator(platform::FsPath(preinitDir_), ec))
     if (e.path().extension() == ".json") files.push_back(e.path());
   std::sort(files.begin(), files.end());
   std::lock_guard lock(mutex_);
   for (const auto& file : files) {
-    const std::string config = ReadFile(file.string());
+    const std::string config = ReadFile(platform::PathUtf8(file));
     // The serial: a file named like one (LHR-0704E07A.json, as `lhtool configs` saves
     // them), else the config's own (wired headsets' configs say "LHR-XXXXXXXX").
-    std::string id = file.stem().string();
+    std::string id = platform::PathUtf8(file.stem());
     std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return char(std::toupper(c)); });
     try {
       const json j = json::parse(config);
       if (id.rfind("LHR-", 0) != 0) id = j.value("device_serial_number", "");
     } catch (const std::exception& e) {
-      Emit(SessionEventType::Log, "", "preinit " + file.string() + ": " + e.what(), LogLevel::Warn);
+      Emit(SessionEventType::Log, "", "preinit " + platform::PathUtf8(file) + ": " + e.what(), LogLevel::Warn);
       continue;
     }
     if (id.empty()) {
-      Emit(SessionEventType::Log, "", "preinit " + file.string() + ": no serial (name the file <serial>.json)", LogLevel::Warn);
+      Emit(SessionEventType::Log, "", "preinit " + platform::PathUtf8(file) + ": no serial (name the file <serial>.json)", LogLevel::Warn);
       continue;
     }
     if (devices_.count(id)) continue;
-    preinitFiles_[id] = file.string();
+    preinitFiles_[id] = platform::PathUtf8(file);
     auto& d = devices_[id];
     d.info.serial = id;
     if (SetUpDevice(id, config)) {  // created, not attached: connected but uninitialized until it connects
       // Not a headset: a "connected" one would start the stock driver's display for nothing.
       d.preinitConnected = d.info.role != DeviceRole::Hmd;
-      Emit(SessionEventType::Log, id, id + ": preinitialized from " + file.filename().string() + " (uninitialized)");
+      Emit(SessionEventType::Log, id, id + ": preinitialized from " + platform::PathUtf8(file.filename()) + " (uninitialized)");
     }
   }
 }

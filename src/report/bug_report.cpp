@@ -172,7 +172,7 @@ std::string BugReportDirectory() {
   std::string documents;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &path))) {
     try {
-      documents = fs::path(path).string();
+      documents = Utf8(fs::path(path));
     } catch (const std::exception&) {  // not in the code page: the home fallback below
     }
   }
@@ -216,13 +216,13 @@ std::string SaveBugReportOnce(const BugReportOptions& options, std::string* erro
     files.push_back({std::string("config/") + name, config / name});
   for (const auto& e : fs::directory_iterator(config / "preinit", ec))
     if (e.path().extension() == ".json") files.push_back({"config/preinit/" + Utf8(e.path().filename()), e.path()});
-  const fs::path recording = !options.recording.empty() ? fs::path(options.recording)
-                                                         : NewestRecording(fs::path(platform::DataDirectory()) / "recordings");
+  const fs::path recording = !options.recording.empty() ? platform::FsPath(options.recording)
+                                                         : NewestRecording(platform::FsPath(platform::DataDirectory()) / "recordings");
   if (!recording.empty()) files.push_back({"recording/" + Utf8(recording.filename()), recording});
-  const fs::path logs = fs::path(platform::SteamRoot()) / "logs";
+  const fs::path logs = platform::FsPath(platform::SteamRoot()) / "logs";
   for (const char* name : {"vrserver.txt", "vrserver.previous.txt"})
     files.push_back({std::string("steamvr/") + name, logs / name});
-  const fs::path ourLogs = fs::path(platform::DataDirectory()) / "logs";
+  const fs::path ourLogs = platform::FsPath(platform::DataDirectory()) / "logs";
   for (const char* name : {"openhouse.txt", "openhouse.previous.txt"})
     files.push_back({std::string("logs/") + name, ourLogs / name});
   for (const auto& e : fs::directory_iterator(ourLogs, ec))   // the apps' crash records (common/crash_log.hpp)

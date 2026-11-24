@@ -210,15 +210,15 @@ bool HandSkeleton::Load(const std::string& path, bool left, std::string* error) 
     // the Index driver's squeeze clip. Without them, the glove library's grip pose
     // stands in for the fist.
     namespace fs = std::filesystem;
-    const fs::path anims = fs::path(path).parent_path();
+    const fs::path anims = lh::platform::FsPath(path).parent_path();
     fs::path shared = anims / ".." / ".." / ".." / ".." / "resources" / "anims";
-    if (const char* dir = std::getenv("LH_HAND_ANIMS")) shared = dir;
+    if (const std::string dir = lh::platform::Env("LH_HAND_ANIMS"); !dir.empty()) shared = lh::platform::FsPath(dir);
     hand_.clear(); close_.clear(); squeeze_.clear();
     try {
-      hand_ = LoadFrames((shared / "hand_right_poses.glb").string(), left);
-      close_ = LoadFrames((shared / "hand_right_closeanim.glb").string(), left);
+      hand_ = LoadFrames(lh::platform::PathUtf8(shared / "hand_right_poses.glb"), left);
+      close_ = LoadFrames(lh::platform::PathUtf8(shared / "hand_right_closeanim.glb"), left);
       if (hand_.size() < 15 || close_.size() < 2) throw std::runtime_error("unexpected hand animations");
-      try { squeeze_ = LoadFrames((anims / "indexcontroller_anim_closesqueeze.glb").string(), left); }
+      try { squeeze_ = LoadFrames(lh::platform::PathUtf8(anims / "indexcontroller_anim_closesqueeze.glb"), left); }
       catch (const std::exception&) { squeeze_.clear(); }
     } catch (const std::exception& e) {
       hand_.clear(); close_.clear(); squeeze_.clear();

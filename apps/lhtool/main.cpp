@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 
+#include "platform/platform.hpp"
 #include "lh/input_sink.hpp"
 #include "lh/session.hpp"
 #include "lh/tracker.hpp"
@@ -295,7 +296,7 @@ int ConfigsCommand(int argc, char** argv) {
   } sink;
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
-  if (ec) { fprintf(stderr, "lhtool: cannot create %s: %s\n", dir.string().c_str(), ec.message().c_str()); return 1; }
+  if (ec) { fprintf(stderr, "lhtool: cannot create %s: %s\n", lh::platform::PathUtf8(dir).c_str(), ec.message().c_str()); return 1; }
   lh::usb::UsbTransport transport(&sink, {});
   if (!transport.Start()) { fprintf(stderr, "lhtool: no receivers could be opened (close SteamVR/Monado first)\n"); return 1; }
   fprintf(stderr, "waiting %.0f s for devices (turn on the wireless ones now)\n", seconds);
@@ -307,11 +308,11 @@ int ConfigsCommand(int argc, char** argv) {
     const auto path = dir / (serial + ".json");
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out << config;
-    if (!out) { fprintf(stderr, "lhtool: cannot write %s\n", path.string().c_str()); continue; }
-    printf("%s\n", path.string().c_str());
+    if (!out) { fprintf(stderr, "lhtool: cannot write %s\n", lh::platform::PathUtf8(path).c_str()); continue; }
+    printf("%s\n", lh::platform::PathUtf8(path).c_str());
     ++written;
   }
-  fprintf(stderr, "%d device config(s) saved to %s\n", written, dir.string().c_str());
+  fprintf(stderr, "%d device config(s) saved to %s\n", written, lh::platform::PathUtf8(dir).c_str());
   return written ? 0 : 1;
 }
 

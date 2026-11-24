@@ -19,12 +19,31 @@ A base station is **learning** while openhouse is still working out where it is,
 ### Devices
 Details for each device: its state, battery, position and speed, and which base stations it sees (with how many sensors and sweeps). You can vibrate a device, power it off or disable it here. A disabled device is ignored by openhouse completely.
 
+Trackers can also be **named** here (for example _Waist_, _Left foot_): **Rename tracker** asks for a name, which openhouse keeps by the tracker's hardware serial so it follows that tracker across reconnects and restarts, and **Clear name** goes back to the default label. In the SteamVR dashboard the name is typed on SteamVR's own keyboard; in the desktop window it's an ordinary text box. SteamVR itself keeps identifying the tracker by its serial.
+
 <img src="../images/overlay-devices.png" alt="Devices" width="720">
 
 ### Base stations
 Where each base station is, how well it's placed (uncertainty), its faults and which devices see it.
 
 <img src="../images/overlay-base-stations.png" alt="Base stations" width="720">
+
+#### Channel management
+
+Select a Lighthouse 2.0 station and use **Change channel** to move it to an
+unused channel. **Automatically resolve channel conflicts** keeps one station
+on its current channel and moves the others one at a time. The toggle starts
+off each time you open the overlay.
+
+OpenHouse pauses tracking and room learning from both stations on a shared
+channel. Devices that can only see those stations lose optical tracking until
+the conflict clears. Keep the station visible after the move so the driver can
+confirm its new channel. If the room map is wrong, use **Reset room** after
+giving the stations distinct channels.
+
+Channel changes require a Bluetooth LE adapter and the optional Lighthouse BLE
+library. Follow the [installation instructions](../ai/driver/lh2_channels.md)
+to enable these controls.
 
 ### Dongles
 Each dongle, the devices paired to it, and a button to put a single dongle into pairing mode. Doorman dongles show their slots too. For more information and per-slot pairing of Doorman dongles, use the [dongle manager](doorman.md#the-dongle-manager).

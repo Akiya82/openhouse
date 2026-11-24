@@ -24,7 +24,7 @@ struct LogLine {
 struct Coverage { std::string base; int frames = 0; double sensors = 0; };
 
 struct Device {
-  std::string serial, role, model, hand, state, primary;
+  std::string serial, role, model, hand, state, primary, name;
   bool connected = false, enabled = true, charging = false, valid = false;
   std::optional<int> battery;
   std::array<double, 3> p{}, v{};
@@ -37,6 +37,7 @@ struct Base {
   std::string serial, channel;
   int mode = 0, observations = 0, faults = 0;
   bool seen = false, placed = false, origin = false, locked = false, learned = false, lh2 = false;
+  double channelObservedAt = -1;
   double sigma = 0;
   std::array<double, 3> p{};
   std::array<double, 4> q{1, 0, 0, 0};
@@ -84,6 +85,10 @@ class TelemetryClient {
   const std::string& Host() const { return host_; }
   const std::string& Version() const { return version_; }  // the driver's; empty before 1.0
   int Pid() const { return pid_; }
+  uint64_t ConnectionGeneration() const { return connectionGeneration_; }
+  bool FreshState(double hostTime) const {
+    return Connected() && haveState_ && state_.time <= hostTime && hostTime - state_.time <= 2.0;
+  }
   const State& Current() const { return state_; }
   bool HaveState() const { return haveState_; }
   const std::deque<LogLine>& Logs() const { return logs_; }
@@ -107,6 +112,7 @@ class TelemetryClient {
   std::string buffer_, host_, version_;
   int pid_ = 0;
   bool helloed_ = false, haveState_ = false;
+  uint64_t connectionGeneration_ = 0;
   State state_;
   std::deque<LogLine> logs_;
   uint64_t received_ = 0;

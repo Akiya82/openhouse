@@ -617,7 +617,7 @@ bool KeyframeStore::Add(std::shared_ptr<const Keyframe> keyframe, const std::opt
 
 void KeyframeStore::DropBase(uint32_t base) {
   entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
-                                [&](const Entry& e) { return e.keyframe->samples.count(base) != 0; }),
+                                [&](const Entry& e) { return e.keyframe->primary == base || e.keyframe->samples.contains(base); }),
                  entries_.end());
 }
 

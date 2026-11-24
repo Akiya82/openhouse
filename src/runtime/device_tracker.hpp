@@ -95,8 +95,8 @@ class DeviceTracker {
   void OnPulse(const LightPulse&);
   void OnLh2BeamWord(const Lh2BeamWord& w) { source_.OnLh2BeamWord(w); }
   void OnLh2SensorWord(const Lh2SensorWord& w) { source_.OnLh2SensorWord(w); }
-  // Runs queued work; base configurations decoded by this device are appended.
-  void Process(std::vector<std::pair<BaseConfig, BaseDynamicState>>* decoded);
+  // Runs queued IMU and optical work after the session has processed base identities.
+  void Process();
 
   TrackerOutput Output() const;
   // TDM/disambiguator counters for diagnostics (no effect on tracking).

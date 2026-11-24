@@ -132,6 +132,7 @@ struct BaseStationState {
   double positionVariance = 0, rotationVariance = 0;
   int mode = 0;                 // 1 A, 2 B, 3 C
   bool lh2 = false;             // a 2.0 base station (its light is LH2 words)
+  double channelObservedAt = -1;  // host time of the last directly decoded LH2 OOTX
   std::string channel;          // as its display shows it: "A" "b" "c", lhbs multi "1".."4"; "" unknown
   int faults = 0;
   bool origin = false;

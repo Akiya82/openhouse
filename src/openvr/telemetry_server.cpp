@@ -110,7 +110,7 @@ void TelemetryServer::PublishState(double time, const SessionSnapshot& snapshot,
   for (const auto& b : snapshot.bases) {
     const auto& p = b.worldFromBase.position;
     const auto& q = b.worldFromBase.orientation;
-    bases.push_back({{"serial", b.serial}, {"channel", b.channel}, {"mode", b.mode}, {"lh2", b.lh2}, {"seen", b.seen}, {"placed", b.known},
+    bases.push_back({{"serial", b.serial}, {"channel", b.channel}, {"mode", b.mode}, {"lh2", b.lh2}, {"channelObservedAt", b.channelObservedAt}, {"seen", b.seen}, {"placed", b.known},
                      {"origin", b.origin}, {"locked", b.locked}, {"observations", b.observations},
                      {"sigma", b.sigma}, {"learned", b.known && b.learned},
                      {"status", !b.seen && !b.known ? "not seen" : !b.known ? "not placed" : b.learned ? "learned" : "learning"},

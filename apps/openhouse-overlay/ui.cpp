@@ -8,14 +8,18 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 
+#include "common/tracker_names.hpp"
+#include "common/ui_name_fonts.hpp"
 #include "common/ui_theme.hpp"
 #include "lh/bug_report.hpp"
 #include "lh/version.hpp"
+#include "platform/platform.hpp"
 
 namespace openhouse::overlay {
 namespace {
@@ -24,6 +28,11 @@ using viewer::Base;
 using viewer::Device;
 using viewer::State;
 using viewer::Receiver;
+
+// Windows and Linux share the host monotonic clock with the live driver.
+double HostClockSeconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // The pixel font at 2x (default), 3x (titles) and 4x (big numbers): sharp only at whole multiples.
 ImFont* g_title = nullptr;
@@ -43,12 +52,27 @@ std::filesystem::path SettingsPath() {
 #endif
 }
 
+bool SelectableDeviceLabel(const char* label, bool selected, ImGuiSelectableFlags flags, ImVec2 size = {}) {
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  if (size.y == 0) size.y = ImGui::GetTextLineHeight();
+  const ImVec2 end(pos.x + ImGui::GetContentRegionAvail().x, pos.y + size.y);
+  const bool clicked = ImGui::Selectable("##device", selected, flags, size);
+  if (ImGui::IsItemVisible()) {
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(pos, end, true);
+    draw->AddText(pos, ImGui::GetColorU32(ImGuiCol_Text), label);
+    draw->PopClipRect();
+  }
+  return clicked;
+}
+
 std::string Short(const std::string& serial) {
   const auto dash = serial.find('-');
   return dash == std::string::npos ? serial : serial.substr(dash + 1);
 }
 
 std::string DeviceName(const Device& d) {
+  if (!d.name.empty()) return d.name;
   std::string kind = d.role == "hmd" ? "Headset" : d.role == "controller" ? "Controller" : "Tracker";
   if (d.hand == "left_hand") kind += " (left)";
   else if (d.hand == "right_hand") kind += " (right)";
@@ -195,12 +219,19 @@ void Ui::SetUpImGui(int k) {
   ImFontConfig font;
   font.OversampleH = font.OversampleV = 1;
   font.PixelSnapH = true;
-  font.SizePixels = 13.f * k;
-  io.Fonts->AddFontDefault(&font);
-  font.SizePixels = 13.f * (k + 1);
-  g_title = io.Fonts->AddFontDefault(&font);
-  font.SizePixels = 13.f * (k + 2);
-  g_huge = io.Fonts->AddFontDefault(&font);
+  auto add = [&](float size) {
+    font.SizePixels = size;
+    return io.Fonts->AddFontDefault(&font);
+  };
+  add(13.f * k);
+  lh::ui::MergeTrackerNameFonts(*io.Fonts);
+  // The name fonts merge into the font added just above (MergeMode takes Fonts.back()), so only
+  // that one can draw a name outside ProggyClean's 0x20-0xFF. That is the font every device
+  // label uses, including the detail heading, which scales it with PushFont(nullptr, size).
+  // If a name ever needs g_title or g_huge, merge into those too - at the cost of another copy
+  // of each font file, which is why it isn't done for all three.
+  g_title = add(13.f * (k + 1));
+  g_huge = add(13.f * (k + 2));
   // Plain ImGui, with roomy frames: easy to hit with a laser pointer.
   ImGui::StyleColorsDark();
   ImGuiStyle& style = ImGui::GetStyle();
@@ -236,6 +267,7 @@ void Ui::Send(const std::string& text, const std::string& what) {
 void Ui::Poll(double now) {
   now_ = now;
   client_.Poll(now);
+  PollBaseChannels();
   for (const auto& r : client_.TakeReplies()) {
     const auto it = pending_.find(r.id);
     const std::string what = it == pending_.end() ? "command" : it->second;
@@ -545,7 +577,7 @@ void Ui::Overview() {
       ImGui::PushID(d.serial.c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      if (ImGui::Selectable(DeviceName(d).c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
+      if (SelectableDeviceLabel(DeviceName(d).c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
         selectedDevice_ = d.serial;
         page_ = Page::Devices;
       }
@@ -610,6 +642,31 @@ void Ui::Overview() {
   if (BigButton("Copy vrserver logs")) CopyServerLog();
 }
 
+void Ui::CancelTrackerName(uint64_t edit) {
+  if (edit == renameEdit_) renameSerial_.clear();
+}
+
+void Ui::CommitTrackerName(std::string_view name, uint64_t edit) {
+  if (renameSerial_.empty() || edit != renameEdit_) return;
+  const std::string serial = std::move(renameSerial_);
+  renameSerial_.clear();
+  if (!client_.Connected() || renameConnection_ != client_.ConnectionGeneration()) {
+    Toast("Tracker name not saved: driver connection changed", true);
+    return;
+  }
+  name = lh::telemetry::TrimTrackerName(name);
+  if (name.size() > lh::telemetry::kTrackerNameMaxBytes) {
+    Toast("Tracker name is too long (" + std::to_string(lh::telemetry::kTrackerNameMaxBytes) +
+          " UTF-8 bytes maximum)", true);
+    return;
+  }
+  try {
+    Send(json{{"cmd", "renameTracker"}, {"serial", serial}, {"name", name}}.dump(), "Tracker name");
+  } catch (const json::type_error&) {
+    Toast("Tracker name is not valid UTF-8", true);
+  }
+}
+
 void Ui::Devices() {
   Title("Devices", lh::ui::Icon::Tracker);
   const State& s = client_.Current();
@@ -620,9 +677,8 @@ void Ui::Devices() {
     if (selectedDevice_.empty()) selectedDevice_ = d.serial;
     ImGui::PushID(d.serial.c_str());
     Dot(DeviceColor(d));
-    char label[96];
-    std::snprintf(label, sizeof label, "%s\n%s", DeviceName(d).c_str(), d.serial.c_str());
-    if (ImGui::Selectable(label, selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
+    const std::string label = DeviceName(d) + "\n" + d.serial;
+    if (SelectableDeviceLabel(label.c_str(), selectedDevice_ == d.serial, ImGuiSelectableFlags_None, ImVec2(0, ImGui::GetTextLineHeight() * 2.2f)))
       selectedDevice_ = d.serial;
     ImGui::PopID();
   }
@@ -632,7 +688,7 @@ void Ui::Devices() {
   const Device* d = nullptr;
   for (const auto& x : s.devices) if (x.serial == selectedDevice_) d = &x;
   if (!d) { ImGui::TextDisabled("No device selected"); ImGui::EndChild(); return; }
-  ImGui::PushFont(g_title);
+  ImGui::PushFont(nullptr, g_title->LegacySize);
   ImGui::TextUnformatted(DeviceName(*d).c_str());
   ImGui::PopFont();
   ImGui::TextDisabled("%s  %s", d->model.c_str(), d->serial.c_str());
@@ -651,6 +707,44 @@ void Ui::Devices() {
       Row("Speed", "%.2f m/s", std::sqrt(d->v[0] * d->v[0] + d->v[1] * d->v[1] + d->v[2] * d->v[2]));
     }
     ImGui::EndTable();
+  }
+  if (d->role == "tracker") {
+    if (BigButton("Rename tracker")) {
+      renameSerial_ = d->serial;
+      renameConnection_ = client_.ConnectionGeneration();
+      ++renameEdit_;
+      if (nameKeyboard_) {
+        if (!nameKeyboard_(d->name.c_str(), renameEdit_)) {
+          renameSerial_.clear();
+          Toast("Couldn't open SteamVR keyboard", true);
+        }
+      } else {
+        std::snprintf(trackerName_.data(), trackerName_.size(), "%s", d->name.c_str());
+        ImGui::OpenPopup("Tracker name");
+      }
+    }
+    if (!d->name.empty()) {
+      ImGui::SameLine();
+      if (BigButton("Clear name")) {
+        renameSerial_ = d->serial;
+        renameConnection_ = client_.ConnectionGeneration();
+        CommitTrackerName("", ++renameEdit_);
+      }
+    }
+    if (ImGui::BeginPopupModal("Tracker name", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+      const bool enter = ImGui::InputText("Name", trackerName_.data(), trackerName_.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+      if (BigButton("Save") || enter) {
+        CommitTrackerName(trackerName_.data(), renameEdit_);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (BigButton("Cancel")) {
+        CancelTrackerName(renameEdit_);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
   }
   ImGui::SeparatorText("Light");
   if (d->coverage.empty()) ImGui::TextDisabled("None");
@@ -678,6 +772,101 @@ void Ui::Devices() {
   if (changed)
     Send(json{{"cmd", "enable"}, {"serial", d->serial}, {"enabled", enabled}}.dump(), (enabled ? "Enable " : "Disable ") + d->serial);
   ImGui::EndChild();
+}
+
+void Ui::SetBaseChannel(BaseChannelChange change, bool automatic) {
+  channelChange_ = std::move(change);
+  automaticChannelChange_ = automatic;
+  channelConnection_ = client_.ConnectionGeneration();
+  channelDiscovery_ = std::async(std::launch::async, [request = channelChange_] {
+    try { return DiscoverBaseChannel(request); }
+    catch (const std::exception& e) { return BaseChannelDiscovery{{}, e.what()}; }
+  });
+}
+
+void Ui::CancelBaseChannelChange(const std::string& error) {
+  autoChannels_ = false;
+  channelConfirmationDeadline_ = 0;
+  channelLock_.reset();
+  Toast(error, true);
+}
+
+void Ui::PollBaseChannels() {
+  const State& state = client_.Current();
+  const bool live = client_.FreshState(HostClockSeconds()) && Settings(state).value("live", false);
+  if (client_.ConnectionGeneration() != autoChannelConnection_ || !client_.Connected()) autoChannels_ = false;
+  const bool sameSession = live && channelConnection_ == client_.ConnectionGeneration();
+  if (!sameSession && (channelDiscovery_.valid() || channelWrite_.valid() || channelConfirmationDeadline_)) {
+    autoChannels_ = false;
+    channelConnection_ = 0;
+  }
+  if (channelDiscovery_.valid()) {
+    if (channelDiscovery_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    auto discovery = channelDiscovery_.get();
+    if (!discovery.write) { CancelBaseChannelChange(discovery.error); return; }
+    if (!sameSession || (automaticChannelChange_ && !autoChannels_) ||
+        !CanChangeBaseChannel(state, channelChange_, automaticChannelChange_)) {
+      CancelBaseChannelChange("Channel change cancelled: station or live session changed");
+      return;
+    }
+    channelWrite_ = std::async(std::launch::async, [write = std::move(discovery.write)] {
+      std::string error = write();
+      return ChannelWriteResult{std::move(error), HostClockSeconds()};
+    });
+    channelLock_ = std::move(discovery.lock);
+    return;
+  }
+  if (channelWrite_.valid()) {
+    if (channelWrite_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    const auto result = channelWrite_.get();
+    if (!sameSession || !result.error.empty()) {
+      CancelBaseChannelChange(sameSession ? result.error : "Channel write not confirmed: live session changed");
+      return;
+    }
+    channelConfirmationAfter_ = result.completedAt;
+    channelConfirmationDeadline_ = now_ + 25;
+  }
+  if (channelConfirmationDeadline_) {
+    if (!sameSession) { CancelBaseChannelChange("Channel write not confirmed: live session changed"); return; }
+    if (BaseChannelObserved(state, channelChange_, channelConfirmationAfter_)) {
+      channelConfirmationDeadline_ = 0;
+      channelLock_.reset();
+      Toast(channelChange_.serial + " now on channel " + std::to_string(channelChange_.to));
+    } else {
+      if (now_ >= channelConfirmationDeadline_) CancelBaseChannelChange("New channel not confirmed by the trackers");
+      return;
+    }
+  }
+  if (!autoChannels_ || !haveChannelBackend_ || !live) return;
+  const auto changes = ResolveBaseChannels(state);
+  if (!changes.empty()) SetBaseChannel(changes.front(), true);
+}
+
+void Ui::BaseChannelControls(const Base& base) {
+  if (!base.lh2) return;
+  const State& state = client_.Current();
+  ImGui::SeparatorText("Channel management");
+  if (!haveChannelBackend_) {
+    ImGui::TextDisabled("Install the Lighthouse BLE library to change channels");
+    return;
+  }
+  const bool busy = channelDiscovery_.valid() || channelWrite_.valid() || channelConfirmationDeadline_;
+  if (busy) ImGui::Text("Changing %s to channel %d...", channelChange_.serial.c_str(), channelChange_.to);
+  const bool live = client_.FreshState(HostClockSeconds()) && Settings(state).value("live", false);
+  const auto free = FreeBaseChannels(state.bases);
+  const int from = BaseChannel(base);
+  const bool ready = !free.empty() && CanChangeBaseChannel(state, {base.serial, from, free.front()}, false);
+  ImGui::BeginDisabled(!live || busy || !ready);
+  if (ImGui::BeginCombo("Change channel", base.channel.c_str())) {
+    for (int channel : free)
+      if (ImGui::Selectable(std::to_string(channel).c_str())) SetBaseChannel({base.serial, from, channel});
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(!live);
+  if (ImGui::Checkbox("Automatically resolve channel conflicts", &autoChannels_) && autoChannels_)
+    autoChannelConnection_ = client_.ConnectionGeneration();
+  ImGui::EndDisabled();
 }
 
 void Ui::Bases() {
@@ -723,6 +912,7 @@ void Ui::Bases() {
     else Row("Faults", "None");
     ImGui::EndTable();
   }
+  BaseChannelControls(*b);
   ImGui::SeparatorText("Seen by");
   bool any = false;
   for (const auto& d : s.devices)

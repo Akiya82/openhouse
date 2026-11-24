@@ -66,6 +66,9 @@ typedef struct {
   uint16_t frag_left;                   /* bytes of a big frame still to send as 0x81 fragments */
   uint16_t upq_hw;                      /* most bytes waiting for USB since the last 0x28 read */
   uint8_t pend[DML_MAXLEN], pend_n, pend_k;   /* the last answer's frames, decoded from pend_k on */
+  /* Ghost-follow: the hop state the device took from its last two answered POLLs (when the POLL went out, cycle,
+     announced mask, period as the device keeps it; [0] valid when g_have), and the polls it missed since */
+  uint32_t g_t[2]; uint16_t g_mask[2], g_per[2], g_miss; uint8_t g_cyc[2], g_have;
   uint32_t load_bytes, load_budget;     /* test load (0x2B): filler queued, and owed */   /* raw -dBm; min/max reset on read (0x29) */
 } slot_t;
 static slot_t sl[DML_SLOTS];
@@ -114,6 +117,16 @@ static uint16_t ex_hist[EX_BUCKETS]; static uint32_t ex_hn;
 #define SLOT_GUARD_US 120u
 static uint8_t adaptive = 1, repoll = 0;   /* repoll: tried, ~8% of re-polls were answered (a miss repeats on the same channel) */
 static uint32_t repolls, repolls_ok;
+/* Ghost-follow (cmd 0x32, on by default). A device that missed the one POLL announcing a new mask (or period) keeps
+   hopping on what it heard last (radio main.c: cycle = last + round(dt / P), dml_channel() with the old mask), and
+   hears its dongle again only where the old and new channels happen to coincide: 0.1-1 s, or it rejoins. While a
+   slot misses polls, its POLL goes where the device listens by that same rule, worked out from what the dongle sent
+   in the device's last answered POLL (misses 1, 4, 7, ..), in the one before (2, 5, ..: a POLL received with a bad
+   CRC is still answered but not used), and on the cycle's channel (3, 6, ..). Only within 1 s of the last answered
+   POLL (the device rejoins after that). Where the device's rule gives the cycle's channel, nothing changes.
+   Ghost polls stay out of the per-channel loss statistics. */
+static uint8_t ghost = 1;
+static uint32_t ghost_polls, ghost_ok;
 static uint32_t ex_budget, ex_cycles, ex_sum, ex_n, ex_max;
 void link_set_idle_hook(void (*f)(void)) { idle_hook = f; }
 static int decode_some(void);
@@ -261,7 +274,7 @@ static int txrx(uint8_t ch, uint32_t base, uint8_t prefix, uint32_t wait_us)
 #define DUP_RUN_LIMIT 64
 static int slot_skipping(const slot_t *s) { return s->skip_until && (int32_t)(ms_ticks - s->skip_until) < 0; }
 
-static int poll_slot(uint8_t i)              /* 1: it answered */
+static int poll_slot(uint8_t i, uint8_t ch, uint32_t t_tx)   /* 1: it answered; ch: cur_ch, or a ghost-follow channel */
 {
   slot_t *s = &sl[i];
   while (decode_step(s)) {}                                 /* its last answer first: the ack is for it */
@@ -275,17 +288,25 @@ static int poll_slot(uint8_t i)              /* 1: it answered */
   pkt_tx[0] = (uint8_t)len;
   s->polls++;
   int hop = -1;
-  for (int k = 0; k < DML_NHOP; k++) if (dml_hop_ch[k] == cur_ch) hop = k;
+  if (ch == cur_ch) { for (int k = 0; k < DML_NHOP; k++) if (dml_hop_ch[k] == cur_ch) hop = k; }
+  else ghost_polls++;                                       /* ghost polls stay out of the channel statistics */
   if (hop >= 0) chs[hop].polls++;
-  int n = txrx(cur_ch, net_base, (uint8_t)(DML_SLOT_PREFIX + i), 400);
+  int n = txrx(ch, net_base, (uint8_t)(DML_SLOT_PREFIX + i), 400);
   const uint8_t *r = pkt_rx + 1;
   if (n < DML_RESP_HDR || r[0] != DML_RESP || r[1] != i) {
     if (n == -3) s->crc_err++; else s->timeouts++;
     if (hop >= 0) chs[hop].lost++;
     if (s->active && ms_ticks - s->last_resp_ms > 1000) s->active = 0;
+    if (s->g_miss < 0xFFFF) s->g_miss++;
     return 0;
   }
   s->resp_ok++;
+  if (ch != cur_ch) ghost_ok++;
+  s->g_t[1] = s->g_t[0]; s->g_cyc[1] = s->g_cyc[0]; s->g_mask[1] = s->g_mask[0];
+  s->g_per[1] = s->g_have ? s->g_per[0] : 0;               /* 0: no earlier record */
+  s->g_t[0] = t_tx; s->g_cyc[0] = cycle; s->g_mask[0] = next_mask;
+  s->g_per[0] = (uint16_t)(period_us / 50 * 50); s->g_have = 1;   /* what the device keeps of p[6] */
+  s->g_miss = 0;
   s->active = 1; s->last_resp_ms = ms_ticks;
   if (i == just_paired_slot) just_paired_slot = 0xFF;     /* it joined: its pairing is over, the next one needs pairing open */
   uint8_t rd = (uint8_t)NRF_RADIO->RSSISAMPLE;
@@ -355,6 +376,7 @@ static void slot_reset(uint8_t i)
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0;
   s->pend_n = s->pend_k = 0;                               /* the old device's answer isn't for the new codec */
+  s->g_have = 0; s->g_miss = 0; s->g_per[1] = 0;           /* joined afresh from a beacon: no old hop state */
   s->active = 1; s->last_resp_ms = ms_ticks;               /* poll it right away */
 }
 static uint32_t t_c;                                       /* current cycle start */
@@ -534,7 +556,15 @@ void link_poll(void)
     wait_until(t_c + (uint32_t)k * slot_us);
     k++;
     const uint32_t t0 = us_now();
-    if (!poll_slot(i)) missed |= 1u << i;
+    uint8_t ch = cur_ch;
+    const slot_t *g = &sl[i];
+    if (ghost && g->g_have && g->g_miss % 3 != 0 && t0 - g->g_t[0] < 1000000u) {
+      const int e = g->g_miss % 3 == 2 && g->g_per[1] ? 1 : 0;   /* misses 1, 4, ..: last record; 2, 5, ..: the one before */
+      uint32_t j = (t0 - g->g_t[e] + g->g_per[e] / 2u) / g->g_per[e];   /* the device's own rule */
+      if (j < 1) j = 1;                                    /* it went to the next cycle's channel on that POLL */
+      ch = dml_channel((uint8_t)(g->g_cyc[e] + j), g->g_mask[e]);
+    }
+    if (!poll_slot(i, ch, t0)) missed |= 1u << i;
     const uint32_t dur = us_now() - t0;
     ex_hist[dur / 50 < EX_BUCKETS ? dur / 50 : EX_BUCKETS - 1]++; ex_hn++;
     ex_sum += dur; ex_n++;
@@ -555,9 +585,10 @@ void link_poll(void)
     for (uint8_t i = 0; i < DML_SLOTS && missed; i++) {
       if (!((missed >> i) & 1)) continue;
       missed &= ~(1u << i);
-      if ((int32_t)(t_c + period_us - (us_now() + slot_us)) < 0) break;
+      const uint32_t tr = us_now();
+      if ((int32_t)(t_c + period_us - (tr + slot_us)) < 0) break;
       repolls++;
-      if (poll_slot(i)) repolls_ok++;
+      if (poll_slot(i, cur_ch, tr)) repolls_ok++;
     }
   if (join) {
     wait_until(t_c + (uint32_t)k * slot_us);
@@ -605,7 +636,7 @@ int link_stream_pop(uint8_t *rep, int itf)
 
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 
-int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x33..0x35; d = 61 bytes */
+int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32..0x35; d = 61 bytes */
 {
   uint8_t i = in[2] < DML_SLOTS ? in[2] : 0;
   slot_t *s = &sl[i];
@@ -642,6 +673,10 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x33.
   case 0x2F:                                                /* re-poll missed slots: [0/1, 0xFF keeps] */
     if (in[2] != 0xFF) repoll = in[2];
     d[0] = repoll; put32(d + 1, repolls); put32(d + 5, repolls_ok); return 1;
+  case 0x32:                                                /* ghost-follow: [0/1, 0xFF keeps] */
+    if (in[2] > 1 && in[2] != 0xFF) { *st = 2; return 1; }
+    if (in[2] != 0xFF) ghost = in[2];
+    d[0] = ghost; put32(d + 2, ghost_polls); put32(d + 6, ghost_ok); return 1;
   case 0x33:                                                /* make a slot's radio rejoin: [slot] */
     /* Left out of the plan past the radio's 1 s "dongle gone" timeout, as a long dup run does. The
        host asks for it when a connected device has sent nothing for seconds. */

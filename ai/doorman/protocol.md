@@ -34,6 +34,10 @@ Source of truth: `doorman/common/doorman_link.h` (air format, constants) and
     device with a weak link loses on every channel, and with an absolute threshold it struck
     clean channels until only 4 were left (firmware 0x0005 and older).
   * A device that misses polls keeps hopping on its own clock: `cycle = last + round(dt/period)`.
+  * Ghost-follow (dongle only): a device that missed the POLL announcing a new mask or period keeps
+    hopping on the old one, so while a slot misses polls the dongle polls it where that rule puts it,
+    from what it sent in the device's last two answered POLLs (in turn with the cycle's own channel,
+    within 1 s). Without it, such a device was lost for up to ~1 s, or rejoined. Cmd 0x32.
 * Reliability:
   * Uplink: go-back-N, window 2, 3-bit seq; the POLL carries the ack.
   * Downlink: alternating bit (dseq/dack).
@@ -137,6 +141,7 @@ and `doorman_link.py`. Older two-interface firmware isn't supported.
 | 0x2D | timing `[adaptive 0/1, 0xFF keeps]`: reply period, slot, slot budget, exchange avg/max (u32 us), adaptive, max resp, decode avg/max (u32 us at 22/26); counters reset on read |
 | 0x2E | deferred decode `[0/1, 0xFF keeps]` (default 1) |
 | 0x2F | re-poll missed slots in the same cycle `[0/1, 0xFF keeps]`, then re-polls and answered (u32). Default 0 |
+| 0x32 | ghost-follow `[0/1, 0xFF keeps]` (other values: status 2): on (0), ghost polls sent and answered (u32 at 2 / 6, since start). Default 1 |
 | 0x33 | rejoin `[slot]`: the slot is not polled for 1.2 s, so its radio rejoins (status 2: not paired). The host sends it when a connected device has sent nothing for 6 s |
 | 0x34 | set a slot's name `[slot][len][UTF-8, up to 59 B]`, len 0 clears (status 2: not paired or too long). Kept in flash with the pairings; forgetting or re-pairing the slot clears it |
 | 0x35 | a slot's name `[slot]` -> `[len][UTF-8]` |

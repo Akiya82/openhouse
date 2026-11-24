@@ -58,7 +58,7 @@ include(GNUInstallDirs)
 # LH_VERSION_STRING, VERSION.txt for the packages. Every target waits for it (end of file).
 add_custom_target(lh_build_id ALL
   COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_id.cmake
-  BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/lh/build_id.h ${CMAKE_CURRENT_BINARY_DIR}/VERSION.txt
+  BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/generated/lh/build_id.h ${CMAKE_CURRENT_BINARY_DIR}/generated/lh/build_time.h ${CMAKE_CURRENT_BINARY_DIR}/VERSION.txt
   COMMENT "Version stamp")
 include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 if(WIN32)

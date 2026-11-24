@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 
@@ -22,6 +23,7 @@ constexpr const char* kBleLibrary = "liblighthouse.so";
 using ordered_json = nlohmann::ordered_json;
 
 constexpr const char* kMarker = "liblh session started";       // in every openhouse driver
+constexpr const char* kBuildTimeMarker = "openhouse-build-time:";   // when it was built, Unix seconds
 constexpr const char* kVersionMarker = "openhouse-version:";     // since 1.0.4: "openhouse-version:X.Y.Z;"
 constexpr const char* kCheckKey = "openhouse.updatechecker";
 constexpr const char* kOverlayKey = "openhouse.overlay";
@@ -300,6 +302,11 @@ DriverStatus ReadStatus(const fs::path& steamvr) {
     const size_t start = at + std::char_traits<char>::length(kVersionMarker);
     const size_t end = text.find(';', start);
     if (end != std::string::npos && end - start < 32) st.version = text.substr(start, end - start);
+  }
+  if (const size_t at = text.find(kBuildTimeMarker); at != std::string::npos) {
+    const size_t start = at + std::char_traits<char>::length(kBuildTimeMarker);
+    const size_t end = text.find(';', start);
+    if (end != std::string::npos && end - start < 20) st.buildTime = std::atoll(text.substr(start, end - start).c_str());
   }
   return st;
 }

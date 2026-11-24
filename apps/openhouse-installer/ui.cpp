@@ -1,5 +1,6 @@
 #include "ui.hpp"
 #include "self_update.hpp"
+#include "lh/build_time.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -728,7 +729,11 @@ bool Ui::PackageNewer() {
       std::fprintf(stderr, "openhouse-installer: installed v%s, this package v%s is %s (%s): %s\n", installed.c_str(),
                    lh::kVersion, kOrder[int(o)], how, o == lh::BuildOrder::Newer ? "update" : "reinstall");
     };
-    const lh::BuildOrder quick = lh::CompareBuilds(installed, lh::kVersion, [](const std::string&) { return std::string(); });
+    lh::BuildOrder quick = lh::CompareBuilds(installed, lh::kVersion, [](const std::string&) { return std::string(); });
+    // Two builds of one version: whichever was built later, when both say (no GitHub needed).
+    if (quick == lh::BuildOrder::Unknown && status_.buildTime > 0)
+      quick = LH_BUILD_TIME > status_.buildTime ? lh::BuildOrder::Newer
+            : LH_BUILD_TIME < status_.buildTime ? lh::BuildOrder::Older : lh::BuildOrder::Same;
     if (quick != lh::BuildOrder::Unknown) { order_->store(int(quick)); decided(quick, "by version"); }
     else std::thread([order = order_, installed, decided] {
       const lh::BuildOrder o = lh::CompareBuilds(installed, lh::kVersion, lh::GithubGet);

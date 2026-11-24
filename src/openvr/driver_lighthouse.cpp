@@ -63,6 +63,7 @@ constexpr const char* kStockFile = "driver_lighthouse.so.stock";
 #include "telemetry_server.hpp"
 #include "tracker_names.hpp"
 #include "lh/log_level.hpp"
+#include "lh/build_time.h"
 #include "lh/telemetry.hpp"
 #include "lh/version.hpp"
 #include "lh/bug_report.hpp"
@@ -2326,6 +2327,9 @@ Provider g_provider;
 // The installed version, found by openhouse-installer in the file ("openhouse-version:X.Y.Z;").
 // Exported, so the linker keeps it.
 extern "C" LH_DRIVER_EXPORT const char openhouse_version[] = "openhouse-version:" LH_VERSION_STRING ";";
+// When it was built (Unix seconds, "openhouse-build-time:N;"): the installer orders two builds of
+// one version by it.
+extern "C" LH_DRIVER_EXPORT const char openhouse_build_time[] = "openhouse-build-time:" LH_BUILD_TIME_STRING ";";
 
 extern "C" LH_DRIVER_EXPORT void* HmdDriverFactory(const char* interfaceName, int* returnCode) {
   if (std::strcmp(interfaceName, IServerTrackedDeviceProvider_Version) == 0) return &g_provider;

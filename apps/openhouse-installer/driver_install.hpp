@@ -26,6 +26,7 @@ struct DriverStatus {
   bool driverFound = false;    // SteamVR's lighthouse driver file is there
   bool openhouse = false;      // and it's openhouse's
   std::string version;         // openhouse's version in it ("" for one older than the marker)
+  long long buildTime = 0;     // when that driver was built (Unix seconds), 0 for one older than the marker
   bool backup = false;         // SteamVR's own driver is kept next to it
 };
 DriverStatus ReadStatus(const fs::path& steamvr);

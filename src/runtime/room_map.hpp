@@ -115,6 +115,9 @@ class RoomMap {
   // relearned from fresh keyframes. The origin is relearned against another placed
   // base (OriginGauge), so the room, and what devices report in it, stay put.
   void Bump(uint32_t serial, const std::string& why);
+  // A placed base that is still being learned and that the light disagrees with: kept placed
+  // with its keyframes, freed for the solver to refine (unlocked), not relearned from scratch.
+  void Refine(uint32_t serial, const std::string& why);
   bool OriginRelearning() const { return originRelearn_; }
   uint64_t Bumps() const { return bumps_; }  // Movement and channel conflicts invalidate in-flight solves.
   uint32_t OriginGauge() const;  // the base held fixed meanwhile; 0 if none

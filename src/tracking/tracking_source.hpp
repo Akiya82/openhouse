@@ -37,6 +37,10 @@ class TrackingSource {
   bool PopLog(std::string* out);
   // Fast base identification (see TdmDisambiguator::Identity).
   void SetKnownIdentities(std::vector<tdm::TdmDisambiguator::Identity> identities);
+  // Whether the stations run a multi-station round (lhbs), as this device found it; and the
+  // session's answer, shared with every device.
+  bool MultiLayout() const { std::lock_guard lock(mutex_); return multi_.LayoutKnown(); }
+  void SetMultiLayout(bool known) { std::lock_guard lock(mutex_); if (multi_.LayoutKnown() != known) multi_.SetLayoutKnown(known); }
   bool PopIdentity(tdm::TdmDisambiguator::Identity* out);
   void SetKnownSobChannels(const std::map<int, std::pair<BaseConfig, BaseDynamicState>>& channels,
                            std::bitset<sob::kChannels> blocked = {});

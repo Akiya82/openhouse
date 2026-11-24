@@ -293,9 +293,15 @@ class SessionImpl final : public Session, public InputSinkBase {
     bool scoutCovered = false;  // ScoutCovers, as last logged
     // UpdateLh1Keyframes: as last set on the tracker, and when to look again.
     bool lh1Keyframes = true;
+    bool multiLayout = false;   // what this device's source last said of the multi-station round
     double nextKeyframeCheck = 0;
   };
   std::bitset<sob::kChannels> conflictedChannels_;
+  // The stations run a multi-station round (lhbs): a property of the room, not of one device.
+  // One device finding it (or the stations' OOTX saying stock) tells them all, so a device that
+  // lost the stations' sync doesn't fall back to the two-base path on its own.
+  bool roomMulti_ = false;
+  void ShareMultiLayout(const DeviceId& id, Device& d);
 
   // level: as given, else ClassifyLog(text).
   void Emit(SessionEventType type, const std::string& serial, std::string text, std::optional<LogLevel> level = {});
@@ -730,6 +736,8 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     models_[id] = d.tracker->ImuModel();
     for (const auto& [serial, b] : bases_)
       if (!room_.Conflicted(serial)) d.tracker->OnBaseConfig(b.config, b.dynamic);
+    d.tracker->Source().SetMultiLayout(roomMulti_);   // the room's layout, from the devices before it
+    d.multiLayout = roomMulti_;
     PushIdentities();
     // HTC tracker inputs and the Tundra power button use the wand's button bits.
     const bool htc = d.info.manufacturer.empty() || Lower(d.info.manufacturer) == "htc";
@@ -1164,6 +1172,7 @@ void SessionImpl::Process(const DeviceId& id, Device& d) {
   if (newIdentity) PushIdentities();
   for (const auto& [config, dynamic] : decoded) ObserveBaseConfig(id, config, dynamic);
   d.tracker->Process();
+  ShareMultiLayout(id, d);
   TakeKeyframes(d);
   CollectLogs(&d);
   const auto out = d.tracker->Output();
@@ -1213,6 +1222,18 @@ void SessionImpl::ApplyBaseCalibration(const SessionBase& base) {
   room_.OnBaseSeen(base.config, base.dynamic);
   for (auto& [id, device] : devices_)
     if (device.tracker) device.tracker->OnBaseConfig(base.config, base.dynamic);
+}
+
+void SessionImpl::ShareMultiLayout(const DeviceId& id, Device& d) {
+  const bool mine = d.tracker->Source().MultiLayout();
+  if (mine == d.multiLayout) return;
+  d.multiLayout = mine;
+  if (mine == roomMulti_) return;
+  roomMulti_ = mine;
+  Emit(SessionEventType::Log, "", std::string(mine ? "multi-station round found by " : "stations back in stock mode, seen by ") + id +
+                                      ": told every device");
+  for (auto& [otherId, other] : devices_)
+    if (other.tracker && &other != &d) { other.tracker->Source().SetMultiLayout(mine); other.multiLayout = mine; }
 }
 
 void SessionImpl::TakeKeyframes(Device& d) {
@@ -1377,7 +1398,14 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
   constexpr double kOneDeviceSpan = 10;              // s of one device's keyframes of the base
   const uint32_t origin = room_.Origin();
   if (room_.OriginRelearning()) return false;
-  struct Move { double mm, deg; int strikes, rejected = 0, seen = 0; };
+  struct Move { double mm, deg; int strikes, rejected = 0, seen = 0; bool refine = false; };
+  // Known to a few mm, as a base becomes with keyframes from many sides. Short of that, its
+  // pose came from views of one side (a base that overlaps only one other: placed from in front
+  // of it), and keyframes from elsewhere disagree because they are what refines it, not because
+  // it moved. Knocked, it was unplaced and relearned from in front again, over and over
+  // (D7B1AD76 2026-11-24: placed at 17 mm, 39 of 127 keyframes rejected, knocked every time
+  // its user walked away). Those are refined in place instead.
+  constexpr double kKnownVariance = 0.006 * 0.006;
   std::map<uint32_t, Move> moved;
   int others = 0;
   for (const auto& [serial, b] : out.bases) {
@@ -1399,7 +1427,7 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
     // checkedDevices nor devices, and alone it met a one-device rule.
     if (b.rejected >= 15 && b.rejected * 4 >= b.seen && othersSeen >= 10 && othersRejected * 10 <= othersSeen &&
         b.rejectingDevices >= std::min(2, std::max(1, b.seeingDevices))) {
-      moved[serial] = {0, 0, kStrikes, b.rejected, b.seen};
+      moved[serial] = {0, 0, kStrikes, b.rejected, b.seen, rb->positionVariance > kKnownVariance};
       continue;
     }
     if (b.keyframes <= 0) continue;
@@ -1445,6 +1473,11 @@ bool SessionImpl::LightMovedLockedBase(const RoomSolveOutput& out) {
     if (serial == origin) std::snprintf(why, sizeof why, "the light places every other base elsewhere, %d solves running", d.strikes);
     else if (d.rejected) std::snprintf(why, sizeof why, "the light no longer fits it: %d of its %d keyframes rejected, %d solves running", d.rejected, d.seen, d.strikes);
     else std::snprintf(why, sizeof why, "the light places it %.0f mm / %.2f deg away, %d solves running", d.mm, d.deg, d.strikes);
+    if (d.refine) {   // still being learned: refined in place, its keyframes kept
+      room_.Refine(serial, why);
+      lightCooldown_[serial] = now_ + kCooldown;
+      continue;
+    }
     room_.Bump(serial, why);
     lightCooldown_[serial] = now_ + kCooldown;
     bumped = true;
@@ -1955,6 +1988,8 @@ void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {
       StartMixedLight(d);
       for (const auto& [base, b] : bases_)
         if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
+      d.tracker->Source().SetMultiLayout(roomMulti_);   // the room's layout, from the devices before it
+      d.multiLayout = roomMulti_;
       PushIdentities();
     }
     d.lastState = TrackingState::Disconnected;
@@ -1991,6 +2026,8 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
     StartMixedLight(d);
     for (const auto& [base, b] : bases_)
       if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
+    d.tracker->Source().SetMultiLayout(roomMulti_);   // the room's layout, from the devices before it
+    d.multiLayout = roomMulti_;
     d.lastState = TrackingState::Disconnected;
   }
   PushIdentities();

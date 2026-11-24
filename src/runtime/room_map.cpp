@@ -674,6 +674,17 @@ void RoomMap::CheckAccel(uint32_t serial, const BaseDynamicState& dynamic, const
   Bump(serial, text);
 }
 
+void RoomMap::Refine(uint32_t serial, const std::string& why) {
+  Room* room = ActiveRoom();
+  if (!room || frozen_) return;
+  auto found = room->bases.find(serial);
+  if (found == room->bases.end() || found->second.origin || found->second.relearn) return;
+  Loosen(found->second);
+  char text[200];
+  std::snprintf(text, sizeof text, "Base %08X not placed well yet (%s): refining it", serial, why.c_str());
+  Log(text);
+}
+
 void RoomMap::Bump(uint32_t serial, const std::string& why) {
   Room* room = ActiveRoom();
   if (!room || frozen_) return;

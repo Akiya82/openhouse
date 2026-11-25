@@ -1,5 +1,6 @@
 /* openhouse link v1, dongle side (see common/doorman_link.h): slots, joining/pairing, hopping, go-back-N.
  * Everything is polled from the main loop (no radio interrupts). */
+#pragma GCC optimize("O2")   /* the air codec is decoded here for every device: speed over size (~4700 frames/s at 10) */
 #include <string.h>
 #include "nrf.h"
 #include "doorman_link.h"
@@ -18,7 +19,8 @@ static uint32_t us_now(void) { NRF_TIMER1->TASKS_CAPTURE[0] = 1; return NRF_TIME
 #else
 #define PAIR_PAGE   0xEC000u
 #endif
-#define PAIR_MAGIC  0x5250484Fu        /* "OHPR" */
+#define PAIR_MAGIC  0x3150484Fu        /* "OHP1": DML_SLOTS slots */
+#define PAIR_MAGIC8 0x5250484Fu        /* "OHPR": the 8-slot page of fw 0x0029 and earlier, moved over at boot */
 /* Names (cmd 0x34/0x35), the user's own for each paired device, kept here so they go wherever the
    dongle goes. A page from older firmware ends after id[] (erased: names_magic is 0xFFFFFFFF), and
    reads as no names. UTF-8, NUL-padded; at most DML_NAME_MAX bytes (what one command carries). */
@@ -28,8 +30,20 @@ typedef struct { uint32_t magic, used; uint8_t id[DML_SLOTS][8]; uint32_t names_
 static pair_store_t pairs;
 
 static void nvmc_wait(void) { while (!NRF_NVMC->READY) {} }
+typedef struct { uint32_t magic, used; uint8_t id[8][8]; uint32_t names_magic; char name[8][64]; } pair_store8_t;
+static void pairs_save(void);
 static void pairs_load(void)
 {
+  const pair_store8_t *old = (const pair_store8_t *)PAIR_PAGE;
+  if (old->magic == PAIR_MAGIC8) {                          /* 8 slots: same pairings and names, two slots more */
+    memset(&pairs, 0, sizeof pairs);
+    pairs.magic = PAIR_MAGIC; pairs.used = old->used & 0xFF;
+    memcpy(pairs.id, old->id, sizeof old->id);
+    pairs.names_magic = NAME_MAGIC;
+    if (old->names_magic == NAME_MAGIC) memcpy(pairs.name, old->name, sizeof old->name);
+    pairs_save();
+    return;
+  }
   memcpy(&pairs, (const void *)PAIR_PAGE, sizeof pairs);
   if (pairs.magic != PAIR_MAGIC) { memset(&pairs, 0, sizeof pairs); pairs.magic = PAIR_MAGIC; }
   if (pairs.names_magic != NAME_MAGIC) { memset(pairs.name, 0, sizeof pairs.name); pairs.names_magic = NAME_MAGIC; }
@@ -67,8 +81,13 @@ typedef struct {
      never reaches the host */
   dmp_state_t lh2p;
   dmb_r_t br;
-  uint8_t in_batch, bn, bql[DMB_MAX];
-  uint8_t bq[DMB_MAX][DMB_MAXF];
+  uint8_t in_batch, bn, bql[DMB_MAX_W];
+  /* Selective ack: an answer that came while the one before it was lost, kept until that one arrives (both then go
+     on in order) and announced in the POLL (DML_F_SACK), so the radio resends only the lost one. Go-back alone cost
+     two cycles and a wasted answer per loss. */
+  uint8_t held, held_seq, held_n, held_buf[DML_MAXLEN];
+  uint32_t held_used, held_set;
+  uint8_t bq[DMB_MAX_W][DMB_MAXF];          /* a batch's frames, held until its CRC-8 passes */
   uint32_t resyncs;                     /* codec out of step: made to rejoin */
   uint32_t skip_until;                  /* ms_ticks until which this slot is not polled */
   dmc_state_t codec; uint32_t air_bytes, bad_frames;
@@ -115,6 +134,7 @@ static uint32_t last_join_ms, joins_heard;
 
 static uint8_t pkt_tx[2 + DML_MAXLEN], pkt_rx[2 + DML_MAXLEN];
 static uint32_t period_us = 2000, slot_us = 1450;
+#define PERIOD_MAX_US (255u * 50u)              /* what POLL p[6] / JOIN p[18] can say */
 static sizing_t sizing;                    /* answer size by saturation (sizing.h) */
 static int plan_n;                         /* devices in this cycle's plan */
 static uint32_t sizing_ms;
@@ -214,8 +234,9 @@ static int decode_step(slot_t *s)
      skip it past its 1 s timeout and it rejoins, negotiating again. Without this it ran without batches,
      at 3x the airtime, until it happened to rejoin. */
   const int reply = f[0] == 'P' || f[0] == 'H' || f[0] == 'D' || f[0] == DML_TAGGED_REPLY;
-  if (!reply && (f[0] == DMC_BATCH) != (s->batch != 0)) { s->batch_mismatch++; codec_lost(s); return 0; }
-  if (f[0] == DMC_BATCH && s->batch) {                     /* its frames come out a step at a time */
+  const int is_batch = f[0] == DMC_BATCH || f[0] == DMC_BATCH_W;
+  if (!reply && is_batch != (s->batch != 0)) { s->batch_mismatch++; codec_lost(s); return 0; }
+  if (is_batch && s->batch) {                     /* its frames come out a step at a time */
     if (!dmb_open(&s->br, f, fl)) { codec_lost(s); return 0; }
     s->in_batch = 1; s->bn = 0;
     return 1;
@@ -337,9 +358,9 @@ static int poll_slot(uint8_t i, uint8_t ch, uint32_t t_tx)   /* 1: it answered; 
   uint8_t *p = pkt_tx + 1;
   int len = DML_POLL_HDR;
   p[0] = DML_POLL; p[1] = i;
-  p[2] = (uint8_t)((s->last_seq & DML_F_SEQ_MASK) | (s->dseq ? DML_F_DSEQ : 0));
+  p[2] = (uint8_t)((s->last_seq & DML_F_SEQ_MASK) | (s->dseq ? DML_F_DSEQ : 0) | (s->held ? DML_F_SACK : 0));
   p[3] = cycle; p[4] = (uint8_t)next_mask; p[5] = (uint8_t)(next_mask >> 8);
-  p[6] = (uint8_t)(period_us / 50); p[7] = max_resp;
+  p[6] = (uint8_t)(period_us >= PERIOD_MAX_US ? 255 : period_us / 50); p[7] = max_resp;
   if (s->down_len) { p[2] |= DML_F_DOWN; memcpy(p + len, s->down_buf, s->down_len); len += s->down_len; }
   pkt_tx[0] = (uint8_t)len;
   s->polls++;
@@ -377,6 +398,12 @@ static int poll_slot(uint8_t i, uint8_t ch, uint32_t t_tx)   /* 1: it answered; 
   if (s->down_len) { if (dack == s->dseq) { s->down_len = 0; s->dseq ^= 1; } else s->down_resends++; }
   uint8_t seq = r[2] & DML_F_SEQ_MASK;
   if (seq != ((s->last_seq + 1) & DML_F_SEQ_MASK)) {                          /* duplicate / out of order */
+    if (!s->held && seq == ((s->last_seq + 2) & DML_F_SEQ_MASK) && n - DML_RESP_HDR <= DML_MAXLEN) {   /* the one after a lost one */
+      s->held = 1; s->held_seq = seq; s->held_n = (uint8_t)(n - DML_RESP_HDR); s->held_set++;
+      memcpy(s->held_buf, r + DML_RESP_HDR, s->held_n);
+      s->dup_run = 0;
+      return 1;
+    }
     s->dup++;
     /* Go-back gives one or two of these in a row. A long run means the radio is repeating a seq we
        already accepted and cannot hear which one we want - a POLL whose ack bits were corrupted but
@@ -395,6 +422,15 @@ static int poll_slot(uint8_t i, uint8_t ch, uint32_t t_tx)   /* 1: it answered; 
      ~320 us of each ~870 us exchange (up to 720) with the radio idle, every slot waiting on it. */
   memcpy(s->pend, r + DML_RESP_HDR, (size_t)(n - DML_RESP_HDR));
   s->pend_n = (uint8_t)(n - DML_RESP_HDR); s->pend_k = 0;
+  if (s->held) {
+    if (s->held_seq == ((seq + 1) & DML_F_SEQ_MASK)) {      /* the lost one came: it, then the kept one, in order */
+      while (decode_step(s)) {}
+      s->last_seq = s->held_seq; s->air_bytes += s->held_n; s->held_used++;
+      memcpy(s->pend, s->held_buf, s->held_n);
+      s->pend_n = s->held_n; s->pend_k = 0;
+    }
+    s->held = 0;                                           /* (otherwise stale: the radio went back further) */
+  }
   if (!defer_decode) while (decode_step(s)) {}
   return 1;
 }
@@ -436,6 +472,7 @@ static void slot_reset(uint8_t i)
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0; s->pk_rest = 0;
   s->pend_n = s->pend_k = 0;                               /* the old device's answer isn't for the new codec */
+  s->held = 0;
   s->g_have = 0; s->g_miss = 0; s->g_per[1] = 0;           /* joined afresh from a beacon: no old hop state */
   s->active = 1; s->last_resp_ms = ms_ticks;               /* poll it right away */
 }
@@ -453,9 +490,10 @@ static void join_beacon(void)
     memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--;
     if (sl[assign_slot].check) p[5] |= DML_JF_CHECK;        /* only for a radio that asked: an old one reads p[5] as "pairing open" */
     if (sl[assign_slot].batch) p[5] |= DML_JF_BATCH;
+    if (sl[assign_slot].batch == 2) p[5] |= DML_JF_BATCH32;
   }
   else { memset(p + 6, 0, 8); p[14] = 0xFF; }
-  p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us / 50);
+  p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us >= PERIOD_MAX_US ? 255 : period_us / 50);
   uint32_t since = 0;
   if (p[14] < DML_SLOTS) {                                  /* the assigned slot's place in this cycle */
     int k = 0;
@@ -502,7 +540,7 @@ static void join_beacon(void)
   if (slot < 0) return;
   memcpy(assign_id, id, 8); assign_slot = (uint8_t)slot; assign_left = 5;
   sl[slot].check = (r[9] & DML_JF_CHECK) ? 1 : 0;
-  sl[slot].batch = (r[9] & DML_JF_BATCH) ? 1 : 0;
+  sl[slot].batch = (r[9] & DML_JF_BATCH) ? ((r[9] & DML_JF_BATCH32) ? 2 : 1) : 0;   /* 2: wide batches */
   slot_reset((uint8_t)slot);
 }
 
@@ -607,6 +645,13 @@ void link_poll(void)
   plan_n = n;
   if (ms_ticks - sizing_ms >= 2000) { sizing_ms = ms_ticks; sizing_eval(&sizing); }
   max_resp = (uint8_t)sizing_resp(&sizing, n);   /* sizing.h: the size for this many devices, or large answers while saturated */
+  /* The cycle goes out as one byte of 50 us (POLL p[6], JOIN p[18]): 12.75 ms at most. Nine or ten devices with
+     large answers made it longer, the byte wrapped, and every device hopped on a wrong clock and missed polls.
+     So with many devices the answers stay short enough for it: 10 -> 188 B, 9 -> 222 B, 8 or fewer unchanged. */
+  if (n) {
+    const int cap = (int)(((PERIOD_MAX_US - 700u) / (uint32_t)n - 450u) / 4u);
+    if (max_resp > cap) max_resp = (uint8_t)cap;
+  }
   /* Each slot's share of the cycle: what the slowest exchange of the last 32 cycles took plus a guard,
      not the worst case (450 us + 4 us per byte of a full answer, kept as the bound). Answers are
      rarely full, so the cycle is shorter and every device is polled more often. Off: cmd 0x2D 0. */
@@ -805,6 +850,7 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32.
     d[20] = (uint8_t)s->upq_hw; d[21] = (uint8_t)(s->upq_hw >> 8); s->upq_hw = 0;   /* USB queue high-water, reset on read */
     put32(d + 22, s->load_bytes);                                                    /* test load queued (0x2B) */
     put32(d + 26, s->resyncs); d[30] = s->check; d[31] = s->batch;                   /* codec resyncs, CRC-8 on, batches */
+    put32(d + 32, s->held_set); put32(d + 36, s->held_used);                         /* selective ack: answers kept, delivered */
     return 1;
   case 0x24:                                                /* pair SECS [SLOT+1] [ANY] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;

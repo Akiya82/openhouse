@@ -22,7 +22,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
-constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35, kCmdPacked = 0x37;
+constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35, kCmdPacked = 0x37, kCmdInfo = 0x01;
 constexpr size_t kNameMax = 59;   // what the dongle keeps (link.c DML_NAME_MAX)
 constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
@@ -129,6 +129,8 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
   for (int i = 0; i < kSlots; ++i) { frag_[i].clear(); packSeq_[i] = -1; }
   const uint8_t on = 1;
   Send(kCmdPacked, &on, 1);   // full stream reports; a dongle without it ignores the command and sends whole frames
+  slotCount_ = 8;
+  Send(kCmdInfo, nullptr, 0);   // how many slots it has
   nextLive_ = 0;
   log_(LogLevel::Info, "Doorman Dongle " + serial_ + " opened");
   return true;
@@ -509,6 +511,8 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
       if (s.haveName) s.name.assign(reinterpret_cast<const char*>(d + 1), std::min<size_t>(d[0], kNameMax));
       break;
     }
+  } else if (r[0] == kCmdInfo && n >= 64 && std::memcmp(r + 3, "OHDG", 4) == 0) {
+    slotCount_ = r[63] >= 1 && r[63] <= kSlots ? r[63] : 8;   // 0 from firmware before 0x002A: 8 slots
   } else if (r[0] == kCmdIdent && n >= 19) {
     for (int i = 0; i < kSlots; ++i) {
       Slot& s = slots_[i];
@@ -936,7 +940,7 @@ bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64
 }
 
 bool DoormanDongle::SetName(int slot, const std::string& nameIn) {
-  if (slot < 0 || slot >= kSlots) return false;
+  if (slot < 0 || slot >= slotCount_) return false;
   std::string name = nameIn;
   if (name.size() > kNameMax) {   // cut on a character boundary (UTF-8)
     size_t n = kNameMax;
@@ -952,9 +956,9 @@ bool DoormanDongle::SetName(int slot, const std::string& nameIn) {
 
 bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
-  if (!opened_) return false;
+  if (!opened_ || slot >= slotCount_) return false;   // a slot this dongle doesn't have (an 8-slot one: 8, 9)
   pairMs_ = milliseconds;
-  pairSlot_ = slot >= 0 && slot < kSlots ? slot : -1;
+  pairSlot_ = slot >= 0 ? slot : -1;
   return true;
 }
 
@@ -967,7 +971,7 @@ void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its ow
   std::vector<SlotStat> out;
   int joined = 0;
   for (const auto& s : slots_) joined += s.active;
-  for (int i = 0; i < kSlots; ++i) {
+  for (int i = 0; i < slotCount_; ++i) {
     const Slot& s = slots_[i];
     SlotStat st;
     st.slot = i; st.used = s.used; st.active = s.active; st.serial = s.attached ? s.serial : DeviceId();

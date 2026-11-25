@@ -28,7 +28,7 @@ typedef struct {
 
 static inline int sizing_base(int n)      /* the normal limit for n devices (link_poll's table) */
 {
-  return n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : n <= 6 ? 120 : 176;
+  return n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : n <= 6 ? 120 : 176;   /* 7-10: 176 */
 }
 static inline int sizing_resp(const sizing_t *z, int n) { return z->big ? DML_MAXLEN : sizing_base(n); }
 

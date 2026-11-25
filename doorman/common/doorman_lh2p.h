@@ -302,23 +302,29 @@ static inline int dmp_decode(dmp_state_t *p, const uint8_t *i, int n, uint8_t *f
  * more delay than before, and each frame's own overhead (~3 of an IMU sample's ~9 bytes) is gone. A raw
  * frame is observed by both coders on both ends, so their state follows every frame either way. */
 enum { DMC_BATCH = 0xC7, DMB_MAX = 8, DMB_MAXF = 80 };   /* frames up to 80 B (Index sends 65-byte 'V') */
+/* Wide batches (JOIN DML_JF_BATCH32): the count in 5 bits, up to 32 frames. Eight capped a batch at a cycle's frames
+   once cycles got long (ten devices: ~13 ms, a Tundra's ~10 frames), and an answer carries one batch, so a busy
+   device fell behind with room left in its answers. */
+enum { DMC_BATCH_W = 0xC8, DMB_MAX_W = 32 };
 
 typedef struct {
   dmc_w_t w;
   uint8_t *o;
-  int count;
-  uint8_t crc;
+  int count, max;
+  uint8_t crc, bits;
 } dmb_t;
 
-static inline void dmb_begin(dmb_t *b, uint8_t *o, int cap)   /* o: room for cap bytes */
+static inline void dmb_begin_w(dmb_t *b, uint8_t *o, int cap, int wide)   /* o: room for cap bytes */
 {
-  b->o = o; o[0] = DMC_BATCH;
+  b->o = o; o[0] = wide ? DMC_BATCH_W : DMC_BATCH;
+  b->bits = wide ? 5 : 3; b->max = wide ? DMB_MAX_W : DMB_MAX;
   b->w.b = o + 1; b->w.cap = cap - 2; b->w.pos = 0; b->w.over = 0;   /* the last byte kept for the CRC */
-  dmc_put(&b->w, 0, 3);                    /* the count, filled in at the end */
+  dmc_put(&b->w, 0, b->bits);              /* the count, filled in at the end */
   b->count = 0; b->crc = 0;
 }
+static inline void dmb_begin(dmb_t *b, uint8_t *o, int cap) { dmb_begin_w(b, o, cap, 0); }
 /* Whether another frame may go in (count, and a little room). */
-static inline int dmb_room(const dmb_t *b) { return b->count < DMB_MAX && b->w.cap * 8 - b->w.pos >= 24; }
+static inline int dmb_room(const dmb_t *b) { return b->count < b->max && b->w.cap * 8 - b->w.pos >= 24; }
 /* Adds a frame; 0 = it didn't fit: the batch is as it was, but both coders' state has taken the frame (it
    moves the same coded or observed). Close the batch, begin the next and add it with dmb_add_raw. */
 static inline int dmb_add(dmb_t *b, dmc_state_t *s, dmp_state_t *p, const uint8_t *f, int n)
@@ -358,7 +364,7 @@ static inline void dmb_add_raw(dmb_t *b, const uint8_t *f, int n)
 static inline int dmb_end(dmb_t *b, int check)
 {
   if (!b->count) return 0;
-  b->o[1] = (uint8_t)(b->o[1] | (uint8_t)((b->count - 1) << 5));
+  b->o[1] = (uint8_t)(b->o[1] | (uint8_t)((b->count - 1) << (8 - b->bits)));
   b->w.cap++;
   if (check) dmc_put(&b->w, b->crc, 8);
   return b->w.over ? -1 : 1 + (b->w.pos + 7) / 8;
@@ -372,9 +378,9 @@ typedef struct {
 
 static inline int dmb_open(dmb_r_t *d, const uint8_t *i, int n)   /* 0: not a batch */
 {
-  if (n < 2 || i[0] != DMC_BATCH) return 0;
+  if (n < 2 || (i[0] != DMC_BATCH && i[0] != DMC_BATCH_W)) return 0;
   d->r.b = i + 1; d->r.len = n - 1; d->r.pos = 0; d->r.bad = 0;
-  d->left = (int)dmc_get(&d->r, 3) + 1;
+  d->left = (int)dmc_get(&d->r, i[0] == DMC_BATCH_W ? 5 : 3) + 1;
   d->crc = 0;
   return 1;
 }

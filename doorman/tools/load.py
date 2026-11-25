@@ -32,7 +32,7 @@ def cmd(d, c, a=b''):
 
 def snap(d):
     out = {}
-    for k in range(8):
+    for k in range(d.slot_count()):
         s = struct.unpack_from('<15I', cmd(d, 0x23, bytes([k]))[1])
         c = cmd(d, 0x28, bytes([k]))[1]
         out[k] = (s, struct.unpack_from('<H', c, 20)[0], struct.unpack_from('<I', c, 22)[0])
@@ -42,7 +42,7 @@ def stats(d, secs):
     used = cmd(d, 0x25, b'\x00')[1], cmd(d, 0x25, b'\x06')[1]
     a = snap(d); time.sleep(secs); b = snap(d)
     print(f'{"slot":>4} {"polls/s":>7} {"loss%":>6} {"data kB/s":>9} {"drops/s":>8} {"load kB/s":>9} {"USB queue peak":>14}')
-    for k in range(8):
+    for k in range(d.slot_count()):
         sa, sb = a[k][0], b[k][0]
         polls, ok = sb[0] - sa[0], sb[1] - sa[1]
         data = (sb[6] - sa[6]) / secs / 1000
@@ -57,7 +57,7 @@ def timing(d):
     t = cmd(d, 0x2D, b'\xff')[1]
     period, slot = struct.unpack_from('<II', t, 0)
     return {'cycle_ms': period / 1000, 'answer': t[21], 'sat': t[30], 'large': t[31], 'normal': t[32], 'devices': t[33],
-            'slot_sat': list(t[34:42])}
+            'slot_sat': list(t[34:34 + d.slot_count()])}
 
 def counters(d, k):
     s = struct.unpack_from('<15I', cmd(d, 0x23, bytes([k]))[1])

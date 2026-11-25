@@ -88,7 +88,7 @@ class DoormanCarriers {
 
 class DoormanDongle {
  public:
-  static constexpr int kSlots = 8;   // slots per dongle (DML_SLOTS)
+  static constexpr int kSlots = 10;   // the most a dongle has (DML_SLOTS); older ones have 8 and never report the rest
   using LogFn = std::function<void(LogLevel, const std::string&)>;
   // serial: "OHDG-..." (DoormanDongleFound::serial). carriers: shared by every dongle of one
   // transport (nullptr: no check).
@@ -218,7 +218,8 @@ class DoormanDongle {
   uint8_t seq_ = 0;
   Slot slots_[kSlots];
   std::vector<uint8_t> frag_[kSlots];   // a frame split over several stream reports, per slot
-  int packSeq_[kSlots]{};                 // packed reports (0x82): the next seq expected, -1 = not in step
+  int packSeq_[kSlots]{};
+  int slotCount_ = 8;                   // the slots this dongle has (info byte 60, firmware 0x002A+); 8 until it says                 // packed reports (0x82): the next seq expected, -1 = not in step
 
   mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, opened_, slot serials
   bool opened_ = false;

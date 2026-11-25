@@ -2196,7 +2196,7 @@ void Ui::DongleUpdatePage() {
       ImGui::PopTextWrapPos();
     };
     const ImVec4 grey = kMuted;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < updateDongle_.slots; ++i) {
       const DongleSlot* s = i < int(slots.size()) ? &slots[size_t(i)] : nullptr;
       const std::string label = "Slot " + std::to_string(i + 1);
       if (!have || !s) { row(label, grey, "", grey, "..."); continue; }

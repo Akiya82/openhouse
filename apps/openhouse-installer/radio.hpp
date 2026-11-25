@@ -92,6 +92,7 @@ struct DoormanDongleInfo {
   bool softDeviceBuild = false;  // running the "_sd" build
   int board = 0;                 // 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU)
   int bank = 0;                  // the bank it runs from (1 A, 2 B); 0: older firmware without banks
+  int slots = 8;                 // the slots it has (it says so from firmware 0x002A; older ones have 8)
   bool NordicDfu() const { return board >= 1 && board <= 3; }
   bool Banked() const { return bank != 0; }   // updates itself over USB, no bootloader
 };
@@ -104,7 +105,7 @@ struct DongleSlot {
   bool paired = false, on = false, answered = false;
   WirelessDevice device;
 };
-std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle);   // all 8 slots
+std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle);   // every slot it has
 // Turns a device on a Doorman Dongle off (its main MCU's power-off command, as the driver sends it).
 void PowerOffDevice(const WirelessDevice& device);
 

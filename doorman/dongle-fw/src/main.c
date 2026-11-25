@@ -159,6 +159,7 @@ static void handle(const uint8_t *in, uint16_t len) {
         d[57] = BOARD_ID;    /* 0 UF2 (Pro Micro style), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU) */
         d[58] = safe_mode;
         d[59] = running_bank() == BANK_A ? 1 : 2;   /* which bank runs (banks.h) */
+        d[60] = DML_SLOTS;   /* slots it has (0 from firmware before 0x002A: 8) */
         break;
     case CMD_STATS: put32(d, usb_rx); put32(d + 4, usb_tx); put32(d + 8, ms_ticks); break;
     case CMD_BANK_BEGIN: {
@@ -278,6 +279,7 @@ static void usb_service(void)              /* also called while the link waits i
 
 int main(void) {
     SCB->VTOR = (uint32_t)__isr_vector;     /* our own table, whatever the bootloader/MBR set */
+    NRF_NVMC->ICACHECNF = NVMC_ICACHECNF_CACHEEN_Msk;   /* off after reset: every fetch waited on flash (decoding ~3x slower) */
     __DSB(); __ISB();
 #if BOARD_PCA10059
     /* The PCA10059 runs straight off USB (VDDH), and a blank chip sets its GPIO supply (REGOUT0) to

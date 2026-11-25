@@ -18,7 +18,7 @@ typedef struct {
   dmp_state_t penc, pdec;
   dmb_t b;
   uint8_t buf[256], orig[2048];
-  int on, oi[DMB_MAX], olen[DMB_MAX], open, init;
+  int on, oi[DMB_MAX_W], olen[DMB_MAX_W], open, init;
   uint32_t t0;
   long bytes_today, bytes_imu, bytes_light, bytes_batched, batches, frames, spills;
 } dev_state;
@@ -48,7 +48,8 @@ static void close_batch(dev_state *d)
   d->on = 0;
 }
 
-static void begin(dev_state *d, int cap, uint32_t t) { dmb_begin(&d->b, d->buf, cap); d->open = 1; d->t0 = t; d->on = 0; }
+static int wide;   /* "wide" as the 4th argument: 32-frame batches (DMC_BATCH_W) */
+static void begin(dev_state *d, int cap, uint32_t t) { dmb_begin_w(&d->b, d->buf, cap, wide); d->open = 1; d->t0 = t; d->on = 0; }
 
 static void keep(dev_state *d, const uint8_t *f, int n)
 {
@@ -67,10 +68,11 @@ static uint8_t crc_bitwise(const uint8_t *p, int n)
 
 int main(int argc, char **argv)
 {
-  if (argc < 2) { fprintf(stderr, "usage: codec_roundtrip FRAMES [POLL_MS [ANSWER_BYTES]]\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: codec_roundtrip FRAMES [POLL_MS [ANSWER_BYTES [wide]]]\n"); return 2; }
   FILE *f = fopen(argv[1], "rb");
   if (!f) { perror(argv[1]); return 2; }
   const double poll = argc > 2 ? atof(argv[2]) : 10.0;
+  wide = argc > 4 && argv[4][0] == 'w';
   const int cap = (argc > 3 ? atoi(argv[3]) : 176) - DML_RESP_HDR - 1;
 
   /* the table CRC-8 the frame check uses gives the bitwise one's result */

@@ -61,6 +61,7 @@ double Now() { return std::chrono::duration<double>(std::chrono::steady_clock::n
 Dongle::Dongle(std::string path, std::string serial) : path_(std::move(path)), serial_(std::move(serial)) {
   state_.serial = serial_;
   state_.path = path_;
+  packSeq_.fill(-1);
   thread_ = std::thread([this] { Run(); });
 }
 
@@ -141,7 +142,7 @@ bool Dongle::Command(uint8_t cmd, const uint8_t* args, size_t n, Reply* reply, i
   if (hid_write(H(dev0_), out, sizeof out) < 0) { alive_ = false; return false; }
   const double until = Now() + timeoutMs / 1000.0;
   uint8_t r[64];
-  while (Now() < until) {
+  while (Now() < until && !stop_) {
     const int got = hid_read_timeout(H(dev0_), r, sizeof r, 5);
     if (got < 0) { alive_ = false; return false; }
     for (int i = 1; i < kInterfaces; ++i)
@@ -176,6 +177,28 @@ void Dongle::ReadPending(int timeoutMs) {
 }
 
 void Dongle::OnReport(const uint8_t* r, int n) {
+  if (n >= 5 && r[0] == 0x82 && r[1] < kSlots) {
+    // Packed (cmd 0x37, which the driver and tools turn on for the whole dongle): [len][frame] items back to
+    // back across reports. A seq gap loses what was being put together; reading starts again at an item.
+    const int slot = r[1], len = std::min<int>(r[2], n - 5), seq = r[3], first = r[4];
+    auto& buf = frag_[slot];
+    int from = 0;
+    if (packSeq_[slot] != seq) {
+      buf.clear();
+      if (first == 0xFF || first > len) { packSeq_[slot] = -1; return; }
+      from = first;
+    }
+    packSeq_[slot] = (seq + 1) & 0xFF;
+    buf.insert(buf.end(), r + 5 + from, r + 5 + len);
+    size_t i = 0;
+    while (i < buf.size() && i + 1 + buf[i] <= buf.size()) {
+      if (!buf[i]) { buf.clear(); packSeq_[slot] = -1; return; }
+      OnFrame(slot, buf.data() + i + 1, buf[i]);
+      i += 1 + buf[i];
+    }
+    buf.erase(buf.begin(), buf.begin() + long(i));
+    return;
+  }
   if (n < 3 || (r[0] != 0x80 && r[0] != 0x81) || r[1] >= kSlots) return;
   const int slot = r[1], len = std::min<int>(r[2], n - 3);
   const uint8_t* body = r + 3;
@@ -213,7 +236,7 @@ bool Dongle::FeatureRead(int slot, uint8_t* data, size_t size) {
   waitDone_ = false;
   if (!Command(kDown, args, sizeof args, nullptr)) { waitSlot_ = -1; return false; }
   const double until = Now() + 0.5;
-  while (!waitDone_ && Now() < until && alive_) ReadPending(5);
+  while (!waitDone_ && Now() < until && alive_ && !stop_) ReadPending(5);
   waitSlot_ = -1;
   if (!waitDone_) return false;
   const size_t n = std::min(size - 1, waitReply_.size());
@@ -297,6 +320,7 @@ void Dongle::Poll(double now) {
       state_.softdeviceVariant = d[6];
       state_.board = d[57] <= 3 ? d[57] : 0;
       state_.bank = d[59];
+      state_.slotCount = d[60] >= 1 && d[60] <= kSlots ? d[60] : 8;
       state_.watchdog = d[7];
       state_.resetReason = Rd32(d + 12);
       state_.uptimeMs = Rd32(d + 16);

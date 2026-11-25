@@ -20,7 +20,7 @@
 
 namespace openhouse::dongle {
 
-constexpr int kSlots = 8;
+constexpr int kSlots = 10;   // the most a dongle has; DongleState::slotCount is what this one has
 constexpr int kHops = 16;
 constexpr int kHistory = 120;  // samples kept for the graphs (one a second: two minutes)
 
@@ -60,6 +60,7 @@ struct DongleState {
   bool softdeviceVariant = false, watchdog = false;
   int board = 0;  // 0 UF2 (Pro Micro), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU)
   int bank = 0;   // 1 A, 2 B: the bank running (0: older firmware, updates through its bootloader)
+  int slotCount = 8;  // slots it has (it says so from firmware 0x002A; older ones have 8)
   bool NordicDfu() const { return board == 1 || board == 2; }
   bool Banked() const { return bank != 0; }   // runs the two-bank layout: updates itself
   uint32_t uptimeMs = 0, resetReason = 0;
@@ -164,6 +165,7 @@ class Dongle {
   std::array<Counters, kSlots> counters_{};
   std::array<double, kSlots> rssiAvgD_{}, rssiAvgT_{};   // -dBm averages over channels (0: none yet)
   std::array<std::vector<uint8_t>, kSlots> frag_;
+  std::array<int, kSlots> packSeq_{};   // packed reports: the next seq expected (-1: wait for an item start)
   std::array<int, kSlots> identTried_{};  // ident attempts made
   std::atomic<bool> autoIdentify_{false};
   std::array<int, kSlots> configTried_{};  // config reads made for a name

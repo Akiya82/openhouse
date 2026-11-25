@@ -138,11 +138,19 @@ class Dongle:
                     if f: got = True; yield r[1], (f if raw else parse(f))
             if not got: return
 
+    def slot_count(self):
+        """Slots this dongle has: it says so from firmware 0x002A (info byte 60); older ones have 8."""
+        if not hasattr(self, '_nslots'):
+            _, d = self.cmd(0x01)
+            self._nslots = d[60] if d[:4] == b'OHDG' and 1 <= d[60] <= 16 else 8
+        return self._nslots
+
     def slots(self):
         out = {}
-        for first in (0, 6):                               # 6 slots per reply
+        n = self.slot_count()
+        for first in range(0, n, 6):                       # 6 slots per reply
             _, d = self.cmd(0x25, bytes([first]))
-            for k in range(first, min(first + 6, 8)):
+            for k in range(first, min(first + 6, n)):
                 e = d[(k - first) * 10:(k - first) * 10 + 10]
                 if e[0]: out[k] = dict(id=e[2:10][::-1].hex(), active=bool(e[1]))
         return out

@@ -35,9 +35,9 @@
 #include <stdint.h>
 
 #ifdef DML_IDX                                /* Valve nRF52 radios: SteamVR reads this as a unix time; */
-#define DML_VERSION        0x6A000025u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
+#define DML_VERSION        0x6A000026u        /* keep it newer than Valve's (0x5D27B2A9) so nothing "updates" it back */
 #else
-#define DML_VERSION        0x0A000016u
+#define DML_VERSION        0x0A000017u
 #endif        /* radio fw version reported for 'X' (HTC: 0x576B0104) */
 #define DML_AIR_UPD        0xF0u              /* downlink/uplink frame op: radio's own updater */
 #define DML_JOIN_CHANNEL   80                 /* 2480 MHz */
@@ -45,7 +45,7 @@
 #define DML_JOIN_PREFIX    0x5Au
 #define DML_SLOT_PREFIX    0xA0u
 #define DML_MAXLEN         250
-#define DML_SLOTS          8
+#define DML_SLOTS          10                 /* radios before 0x6A000026 / 0x0A000017 take slots 0-7 only */
 #define DML_NHOP           16
 static const uint8_t dml_hop_ch[DML_NHOP] = { 4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 54, 59, 64, 69, 74, 79 };
 
@@ -62,10 +62,13 @@ enum { DML_POLL = 0x01, DML_RESP = 0x02, DML_JOIN = 0x03, DML_JREQ = 0x04 };
 #define DML_F_SEQ_MASK     0x07
 #define DML_F_DSEQ         0x08
 #define DML_F_DOWN         0x10
+#define DML_F_SACK         0x20               /* POLL: the dongle already holds the answer after the one it acks (seq ack+2);
+                                                 resend only the missing one */
 #define DML_F_MORE         0x10               /* RESP: more queued than this answer held */
 #define DML_JF_PAIR        0x01               /* JOIN: pairing open; JREQ: pairing mode */
 #define DML_JF_CHECK       0x02               /* JREQ: can add the codec CRC-8; JOIN: do (for the assigned id) */
 #define DML_JF_BATCH       0x04               /* JREQ: can send batches (doorman_lh2p.h); JOIN: do (for the assigned id) */
+#define DML_JF_BATCH32      0x08               /* with BATCH: wide batches, up to 32 frames (doorman_lh2p.h DMC_BATCH_W) */
 
 /* channel for a cycle: the (cycle % n)-th allowed hop channel */
 static inline uint8_t dml_channel(uint8_t cycle, uint16_t mask)

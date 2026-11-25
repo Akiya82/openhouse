@@ -105,6 +105,25 @@ frames = repeated [len][frame]
   (older radios: answers within 70 B of the normal size); a device with it on half its answers
   over 2 s turns on large answers (250 B) until none is over a fifth for 10 s (`sizing.h`).
 
+### Ten slots, wide batches, selective ack (dongle 0x002A, radios 0x6A000026 / 0x0A000017)
+* `DML_SLOTS` is 10. Slot addresses are `DML_SLOT_PREFIX` + slot as before; radios before 0x6A000026 /
+  0x0A000017 reject slots 8-9 in a JOIN, and the dongle fills the lowest free slot. The info reply (cmd 0x01)
+  byte 60 is the slot count (0 from older dongles: 8); the driver, dongle manager, installer and tools use it.
+  The pairing page moved to a 10-slot layout (magic "OHP1"); an 8-slot page ("OHPR") is converted at boot.
+* The cycle goes out in one byte of 50 us (POLL p[6], JOIN p[18]), so at most 12.75 ms: answers are capped
+  to keep it there (10 devices 188 B, 9 222 B, 8 or fewer unchanged). Longer cycles wrapped the byte and every
+  device hopped on a wrong clock.
+* Wide batches: JREQ/JOIN flag `DML_JF_BATCH32` (0x08, with `DML_JF_BATCH`) makes the radio send type 0xC8,
+  the frame count in 5 bits (up to 32) instead of 0xC7's 3 bits. Eight frames capped a batch below a Tundra's
+  frames per cycle once cycles were ~12 ms. The dongle decodes both.
+* POLL flag `DML_F_SACK` (0x20): the dongle holds the answer that came after a lost one (seq ack+2) and
+  delivers both in order when the lost one arrives; a radio that knows the flag resends only the lost one.
+  Older radios resend both (the dongle drops the repeat).
+* Radio queue: batches queue up to 4 answers' worth; over that, light is dropped and IMU may still use the
+  whole 1 KB. An answer closes the open batch only when nothing closed is waiting.
+* Light is also dropped once the oldest queued batch is older than 3 cycles (25 ms at least), so a lossy
+  link can't build a backlog that delays everything behind it; IMU always goes.
+
 ### Feature reads and drop counts
 * The host reads a feature with `[0xC5][tag][id]`; the radio asks the main MCU (`P id`) and
   answers `[0xC4][tag][answer]`. A late answer can't be taken for the next request. Untagged

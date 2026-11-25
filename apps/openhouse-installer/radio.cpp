@@ -613,12 +613,13 @@ std::vector<WirelessDevice> FindWirelessDevices() {
 }
 
 std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle) {
-  std::vector<DongleSlot> out(8);
-  for (int i = 0; i < 8; ++i) out[size_t(i)].slot = i;
+  const int n = dongle.slots;
+  std::vector<DongleSlot> out(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) out[size_t(i)].slot = i;
   DoormanDongle d(dongle.path);
   if (!d.Ok()) return out;
   uint8_t r[62];
-  for (int slot = 0; slot < 8; ++slot) {
+  for (int slot = 0; slot < n; ++slot) {
     const uint8_t first = uint8_t(slot / 6 * 6);   // 6 slots per reply
     if (slot == first && !d.Command(0x25, &first, 1, r)) { slot = first + 5; continue; }
     const uint8_t* e = r + 1 + (slot - first) * 10;  // [used][active][8-byte id]
@@ -683,6 +684,7 @@ std::vector<DoormanDongleInfo> FindDoormanDongles() {
       o.softDeviceBuild = r[7] != 0;
       o.board = r[58] <= 3 ? r[58] : 0;
       o.bank = r[60] <= 2 ? r[60] : 0;
+      o.slots = r[61] >= 1 && r[61] <= 16 ? r[61] : 8;
     }
     out.push_back(o);
   }

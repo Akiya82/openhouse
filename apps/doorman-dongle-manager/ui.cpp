@@ -297,7 +297,7 @@ void Ui::Poll(double now) {
     d->SetAutoIdentify(!driver_.Connected());
     const DongleState st = d->Snapshot();
     Remember(st);
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < st.slotCount; ++i) {
       const auto& s = st.slots[i];
       if (s.pairId.empty()) continue;
       Identity id;
@@ -467,7 +467,7 @@ void Ui::PairBar(const DongleState& d) {
     return;
   }
   int firstFree = -1;
-  for (int i = 0; i < kSlots && firstFree < 0; ++i)
+  for (int i = 0; i < d.slotCount && firstFree < 0; ++i)
     if (!d.slots[i].used) firstFree = i;
   if (firstFree >= 0) {
     if (TintButton("Pair a device", kInfo, ImGui::GetFontSize() * 12)) dongle->Pair(60, -1, Report("Pairing"));
@@ -497,7 +497,7 @@ void Ui::Overview(const DongleState& d) {
       corrupted += s.crcPerSec; unanswered += s.timeoutsPerSec;
     }
   char v[32];
-  std::snprintf(v, sizeof v, "%d / %d", d.joined, kSlots);
+  std::snprintf(v, sizeof v, "%d / %d", d.joined, d.slotCount);
   Tile("t1", v, "devices connected", d.joined ? kGood : kOff, tw);
   ImGui::SameLine();
   std::snprintf(v, sizeof v, "%d", d.paired);
@@ -538,7 +538,7 @@ void Ui::Overview(const DongleState& d) {
     ImGui::TableSetupColumn("Loss", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5);
     ImGui::TableSetupColumn("Data", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 6);
     ImGui::TableHeadersRow();
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < d.slotCount; ++i) {
       const auto& s = d.slots[i];
       ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetFrameHeight());
       ImGui::TableNextColumn();
@@ -680,7 +680,7 @@ void Ui::Slots(const DongleState& d) {
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const int columns = ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 60 ? 3 : 2;
   const float w = (ImGui::GetContentRegionAvail().x - gap * (columns - 1)) / columns;
-  for (int i = 0; i < kSlots; ++i) {
+  for (int i = 0; i < d.slotCount; ++i) {
     if (i % columns) ImGui::SameLine();
     SlotCard(d, i, w);
   }
@@ -695,7 +695,7 @@ void Ui::Radio(const DongleState& d) {
     for (const char* c : {"Polls/s", "Loss", "Resent/s", "Frames/s", "Data", "On air", "Signal d / t"})
       ImGui::TableSetupColumn(c, ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * (c[0] == 'S' ? 7.5f : 5.2f));
     ImGui::TableHeadersRow();
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < d.slotCount; ++i) {
       const auto& s = d.slots[i];
       ImGui::TableNextRow();
       ImGui::TableNextColumn();

@@ -122,7 +122,13 @@ void HID_API_CALL hid_close(hid_device* d) {
   reinterpret_cast<fake::Handle*>(d)->closed = true;
 }
 int HID_API_CALL hid_set_nonblocking(hid_device*, int) { return 0; }
-int HID_API_CALL hid_send_feature_report(hid_device*, const unsigned char*, size_t) { return -1; }
+int HID_API_CALL hid_send_feature_report(hid_device* d, const unsigned char* data, size_t n) {
+  std::lock_guard lock(fake::m);
+  auto* h = reinterpret_cast<fake::Handle*>(d);
+  if (h->gone) return -1;
+  h->written.emplace_back(data, data + n);
+  return int(n);
+}
 int HID_API_CALL hid_get_feature_report(hid_device*, unsigned char*, size_t) { return -1; }
 int HID_API_CALL hid_read(hid_device* d, unsigned char* data, size_t n) {
   std::lock_guard lock(fake::m);
@@ -155,6 +161,28 @@ namespace lh::usb {
 struct UsbTransportTestAccess {
   static void Scan(UsbTransport& t) { t.ScanDoorman(); }
   static void Pump(UsbTransport& t, double now) { t.PumpDoorman(now); }
+  static void AddEndpoint(UsbTransport& t, const std::string& path, const DeviceId& serial,
+                          EndpointKind kind = EndpointKind::Wireless) {
+    UsbTransport::Open endpoint;
+    endpoint.dev = hid_open_path(path.c_str());
+    endpoint.path = path;
+    if (kind == EndpointKind::Wireless) endpoint.receiver = path;
+    endpoint.info.ep = t.nextEp_++;
+    endpoint.info.kind = kind;
+    endpoint.info.serial = serial;
+    t.decoder_.AddEndpoint(endpoint.info);
+    t.open_.push_back(std::move(endpoint));
+  }
+  static void SetDeviceCheckResult(UsbTransport& t, const std::string& path, int result) {
+    t.runningChecks_.at(path)->result = result;
+  }
+  static void AgeReceiver(UsbTransport& t) {
+    auto& receiver = t.open_.front();
+    if (receiver.lastData > 0) receiver.lastData -= 5;
+    receiver.checkUntil -= 5;
+  }
+  static bool CheckingReceiver(const UsbTransport& t) { return t.open_.front().checkDevice; }
+  static void AllowReceiverRetry(UsbTransport& t) { t.open_.front().nextCheck = 0; }
   // One reader pass (commands, then the dongles); ends at the first empty read.
   static void Pass(UsbTransport& t) {
     fake::endPass = [&t] { t.stop_ = true; };
@@ -603,6 +631,121 @@ TEST_F(Doorman, EveryPerDeviceCallReachesTheDongleCarryingTheDevice) {
   const auto slots = Slots();
   EXPECT_EQ(slots.at("OHDG-TESTB/3"), "");
   EXPECT_EQ(slots.at("OHDG-TESTA/0"), Serial(kA1));
+}
+
+class WiredWatchmanRouting : public Doorman, public testing::WithParamInterface<int> {};
+
+TEST_P(WiredWatchmanRouting, OpticalModeUsesTheCable) {
+  const auto serial = Serial(kA1);
+  for (int i = 0; i < 3; ++i) {
+    const bool wired = i == GetParam();
+    const auto path = wired ? "cable" : "watchman-" + std::to_string(i);
+    fake::plugged.push_back({path, L"", 0});
+    Access::AddEndpoint(*transport, path, serial,
+                        wired ? lh::usb::EndpointKind::Imu : lh::usb::EndpointKind::Wireless);
+  }
+
+  transport->SetOpticalSubProtocol(serial, 1);
+  Access::Pass(*transport);
+  std::lock_guard lock(fake::m);
+  for (const auto& handle : fake::handles) {
+    if (handle->path != "cable") EXPECT_TRUE(handle->written.empty()) << handle->path;
+  }
+  const auto& reports = fake::Open("cable")->written;
+  ASSERT_EQ(reports.size(), 2u);
+  std::vector<uint8_t> mode(64), verbosity(64);
+  mode[0] = 0x04; mode[1] = 1;
+  verbosity[0] = 0x07; verbosity[1] = 3;
+  EXPECT_EQ(reports[0], mode);
+  EXPECT_EQ(reports[1], verbosity);
+}
+
+INSTANTIATE_TEST_SUITE_P(CableAtEachScanPosition, WiredWatchmanRouting, testing::Values(0, 1, 2));
+
+TEST_F(Doorman, WatchmanCommandsFollowTheReceiverReportingData) {
+  fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
+  fake::plugged.push_back({"watchman-b", L"WATCHMAN-B", 0});
+  const auto serial = Serial(kA1);
+  Access::AddEndpoint(*transport, "watchman-a", serial);
+  std::vector<uint8_t> report(30);
+  report[0] = 0x23;
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  Queue("watchman-a", {0x26});
+  Access::Pass(*transport);
+
+  Access::AddEndpoint(*transport, "watchman-b", serial);
+  Queue("watchman-b", report);
+  Access::Pass(*transport);
+  transport->SetOpticalSubProtocol(serial, 1);
+  Access::Pass(*transport);
+  EXPECT_TRUE(fake::Open("watchman-a")->written.empty());
+  EXPECT_EQ(fake::Open("watchman-b")->written.size(), 1u);
+
+  Queue("watchman-b", {0x26});
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  Access::SetDeviceCheckResult(*transport, "watchman-a", 0);
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  transport->PowerOff(serial);
+  Access::Pass(*transport);
+  EXPECT_EQ(fake::Open("watchman-a")->written.size(), 1u);
+  EXPECT_EQ(fake::Open("watchman-b")->written.size(), 1u);
+}
+
+TEST_F(Doorman, WatchmanCommandsPreferConfirmedReceiverDuringIdentityCheck) {
+  fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
+  fake::plugged.push_back({"watchman-b", L"WATCHMAN-B", 0});
+  const auto serial = Serial(kA1);
+  Access::AddEndpoint(*transport, "watchman-a", serial);
+  Access::AddEndpoint(*transport, "watchman-b", serial);
+  std::vector<uint8_t> report(30);
+  report[0] = 0x23;
+  Queue("watchman-b", {0x26});
+  Access::Pass(*transport);
+  Queue("watchman-a", report);
+  Queue("watchman-b", report);
+  Access::Pass(*transport);
+
+  transport->PowerOff(serial);
+  Access::Pass(*transport);
+  EXPECT_EQ(fake::Open("watchman-a")->written.size(), 1u);
+  EXPECT_TRUE(fake::Open("watchman-b")->written.empty());
+
+  Queue("watchman-a", {0x26});
+  Access::Pass(*transport);
+  transport->PowerOff(serial);
+  Access::Pass(*transport);
+  EXPECT_EQ(fake::Open("watchman-a")->written.size(), 1u);
+  EXPECT_TRUE(fake::Open("watchman-b")->written.empty());
+}
+
+TEST_F(Doorman, WatchmanIdentityCheckCanRetryAfterALongDisconnect) {
+  fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
+  Access::AddEndpoint(*transport, "watchman-a", Serial(kA1));
+  std::vector<uint8_t> report(30);
+  report[0] = 0x23;
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  Queue("watchman-a", {0x26});
+  Access::Pass(*transport);
+  Access::AgeReceiver(*transport);
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+
+  Access::SetDeviceCheckResult(*transport, "watchman-a", -1);
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  ASSERT_TRUE(Access::CheckingReceiver(*transport));
+
+  Access::AllowReceiverRetry(*transport);
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  Access::SetDeviceCheckResult(*transport, "watchman-a", 0);
+  Queue("watchman-a", report);
+  Access::Pass(*transport);
+  EXPECT_FALSE(Access::CheckingReceiver(*transport));
 }
 
 TEST_F(Doorman, PairingNamesTheWholeDongleSerial) {

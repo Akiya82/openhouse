@@ -479,11 +479,7 @@ void LighthouseDirect::FollowRotorWobble(uint32_t serial, double time, const std
   for (const int i : rows) (*z)[size_t(i)] -= wobble.value;
 }
 
-bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig& base, int slot) {
-  return ApplyOpticalResiduals(frame, base, slot);
-}
-
-bool LighthouseDirect::ApplyOpticalResiduals(const OpticalFrame& frame, const BaseConfig& base, int slot) {
+bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig& base, int slot, int* rejectedRows) {
   double time = std::numeric_limits<double>::infinity();
   for (const auto& s : frame.samples) time = std::min(time, s.time + 0.5 * s.width);
   auto samples = Gather(frame.samples);
@@ -555,9 +551,13 @@ bool LighthouseDirect::ApplyOpticalResiduals(const OpticalFrame& frame, const Ba
   // 229 -> 258; Beat Saber-like fastmotionindex unchanged). The base it reacquired on
   // stays gated: lifting that too let bad light through (spin-01: 229 -> 344).
   filter_.frameGateOff = slot != 0 && filter_.updateCount < altGateUntil_;
+  const uint64_t gatedBefore = filter_.gatedRows;
   const bool ok = filter_.Update(residuals, R, Eigen::Map<Vec>(z.data(), m), true);
   filter_.frameGateOff = false;
-  if (!ok) return false;
+  if (!ok) {
+    if (rejectedRows) *rejectedRows = hits - int(filter_.gatedRows - gatedBefore);
+    return false;
+  }
   if (hits >= 3) slotUsed_[slot] = time;
   time_ = time;
   const uint64_t before = filter_.updateCount;
@@ -583,11 +583,16 @@ bool LighthouseDirect::ApplyOpticalResiduals(const OpticalFrame& frame, const Ba
 }
 
 bool LighthouseDirect::OnFrame(const OpticalFrame& frame) {
+  return OnFrame(frame, nullptr);
+}
+
+bool LighthouseDirect::OnFrame(const OpticalFrame& frame, int* rejectedRows) {
+  if (rejectedRows) *rejectedRows = 0;
   filter_.flags |= 8;
   const auto base = bases_.find(frame.baseSerial);
   if (base == bases_.end() || !frame.leftSyncIsReal || !frame.rightSyncIsReal) return false;
   const int slot = Slot(frame.baseSerial);
-  if (slot >= 0) return OpticalUpdate(frame, base->second.config, slot);
+  if (slot >= 0) return OpticalUpdate(frame, base->second.config, slot, rejectedRows);
   if (frame.highFrameJitter) return false;
   return Bootstrap(frame, base->second.config);
 }

@@ -111,6 +111,30 @@ TEST(TrackerCore, AddsASecondaryBaseWithoutChangingPrimaryFrame) {
   EXPECT_TRUE(tracker.Filter().P.allFinite());
 }
 
+TEST(TrackerCore, RejectedOpticalRowsExcludeGatedOutliers) {
+  const auto model = Object();
+  lh::LighthouseDirect tracker(model);
+  lh::BaseConfig base;
+  base.valid = true; base.serial = 123; base.cal.resize(14);
+  tracker.OnBaseConfig(base, {});
+  tracker.SetImprovements(true, 4.0, true);
+  lh::LighthouseDirect::Seed seed;
+  seed.base = 123; seed.time = 1.0; seed.calibrated = true;
+  seed.baseFromImu.translation() = Eigen::Vector3d(0, 0, -2);
+  ASSERT_TRUE(tracker.SeedPose(seed));
+  auto& filter = tracker.FilterForTest();
+  filter.P *= 1e-6;
+  filter.omegaCorrectionLimit2 = 0.0;  // Force rejection after the per-row gate.
+  auto frame = Frame(model, 0);
+  frame.samples.resize(4);
+  frame.samples.back().angle += 0.025;
+
+  int rejectedRows = 0;
+  EXPECT_FALSE(tracker.OnFrame(frame, &rejectedRows));
+  ASSERT_EQ(filter.gatedRows, 1u);
+  EXPECT_EQ(rejectedRows, 3);
+}
+
 TEST(TrackerCore, RecordedTiltSeedsStateAndUncertainty) {
   const auto model = Object();
   lh::LighthouseDirect tracker(model);

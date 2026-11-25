@@ -34,7 +34,8 @@ double SampleHistory::ReferenceTime() const {
 }
 
 bool SampleHistory::Select(std::vector<OpticalSample>* older, std::vector<OpticalSample>* newer,
-                           double reference) const {
+                           double reference, std::bitset<32>* currentSensors) const {
+  if (currentSensors) currentSensors->reset();
   if (frames_.size() < 4) return false;
   if (reference < 0) reference = ReferenceTime();
   struct Bracket { const OpticalSample *before = nullptr, *after = nullptr; bool collision = false; };
@@ -59,6 +60,14 @@ bool SampleHistory::Select(std::vector<OpticalSample>* older, std::vector<Optica
   const auto eligible = [&](int sensor) {
     return !requireBothAxes_ || (valid(brackets[0][sensor]) && valid(brackets[1][sensor]));
   };
+  if (currentSensors) {
+    const auto& frame = frames_.back();
+    for (const auto& s : frame.samples) {
+      if (s.axis != frame.axis || s.axis < 0 || s.axis > 1 || s.sensor < 0 || s.sensor >= 32) continue;
+      const auto& b = brackets[s.axis][s.sensor];
+      if (eligible(s.sensor) && valid(b) && (b.before == &s || b.after == &s)) currentSensors->set(s.sensor);
+    }
+  }
   bool first = true;
   double lo = 0, hi = 0;
   for (int sensor = 0; sensor < 32; ++sensor) {

@@ -176,6 +176,8 @@ class DeviceTracker {
   // the base turned about one rotor's axis spoils only the other axis's angles
   std::map<std::pair<uint32_t, int>, int> rejectStreak_;
   int refusedLit_ = 0;  // well-lit frames refused since light was last taken
+  int alternatePoses_ = 0;  // successive fresh alternate solves while the current track receives no fix
+  double lastAlternatePose_ = -1e300;
   static constexpr double kRefusedLightReset = 0.5;  // s of refused light before reacquiring
   std::map<uint32_t, int> disagreeing_;   // rejection streaks of an alt base the room and filter agree on
   std::map<uint32_t, std::pair<uint32_t, uint32_t>> altEpochs_;

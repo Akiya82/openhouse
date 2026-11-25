@@ -850,16 +850,20 @@ TEST(DeviceRecovery, OcclusionCoastsForTheStockTimeoutAndKeepsCalibration) {
   EXPECT_TRUE(epoch);
 }
 
-// A sweep can arrive too late or provide no usable measurements after sensor filtering.
-// Only a well-lit update that the pose filter actually rejects should trigger early recovery.
-TEST(DeviceRecovery, SkippedLightIsNotRefusedLight) {
+TrackedObjectModel RecoveryModel() {
   TrackedObjectModel model;
   model.points = {{{-0.08, -0.07, -0.02}}, {{0.08, -0.07, 0.02}}, {{-0.08, 0.07, 0.03}},
                   {{0.08, 0.07, -0.03}}, {{0, 0, 0.08}}, {{0.04, 0.01, -0.06}}};
   model.normals.assign(6, {0, 0, 1});
   for (int i = 0; i < 6; ++i) model.channelToIndex[i] = i;
+  return model;
+}
+
+// A sweep can arrive too late or provide no usable measurements after sensor filtering.
+// On the active base only a well-lit update that the filter rejects should trigger early recovery.
+TEST(DeviceRecovery, SkippedLightIsNotRefusedLight) {
   RoomMap room;
-  DeviceTracker tracker("LHR-SWITCHING", model, &room);
+  DeviceTracker tracker("LHR-SWITCHING", RecoveryModel(), &room);
   BaseConfig base;
   base.valid = true; base.serial = 1; base.cal.assign(14, 0.0);
   tracker.OnBaseConfig(base, {});
@@ -875,7 +879,7 @@ TEST(DeviceRecovery, SkippedLightIsNotRefusedLight) {
   };
   auto restarted = [&] {
     bool r = false;
-    for (const auto& line : tracker.TakeLogs()) r |= line.find("none fits the pose") != std::string::npos;
+    for (const auto& line : tracker.TakeLogs()) r |= line.find("without an optical fix: reacquiring") != std::string::npos;
     return r;
   };
   for (int i = 0; i < 12; ++i) DeviceTrackerTestAccess::Frame(tracker, frame(9.7 + 0.008 * i, i & 1));  // late
@@ -895,6 +899,42 @@ TEST(DeviceRecovery, SkippedLightIsNotRefusedLight) {
   DeviceTrackerTestAccess::Check(tracker, 11.0);
   EXPECT_FALSE(DeviceTrackerTestAccess::Core(tracker).Bootstrapped());
   EXPECT_TRUE(restarted());
+}
+
+TEST(DeviceRecovery, AlternateBaseMustStillBeVisibleToReacquire) {
+  const auto object = RecoveryModel();
+  RoomMap room;
+  DeviceTracker tracker("LHR-HANDOVER", object, &room);
+  tracker.OnBaseConfig(Config(1), {});
+  const auto alt = Config(2);
+  tracker.OnBaseConfig(alt, {});
+  LighthouseDirect::Seed seed;
+  seed.base = 1; seed.time = 1.0;
+  seed.baseFromImu.translation() = Eigen::Vector3d(0, 0, -2);
+  ASSERT_TRUE(DeviceTrackerTestAccess::Core(tracker).SeedPose(seed));
+  auto sweep = [&](int step) {
+    OpticalFrame frame;
+    frame.baseSerial = 2; frame.axis = step % 2;
+    frame.idealPeriod = frame.averagePeriod = 1.0 / 60;
+    frame.syncTime = 1 + step / 120.0;
+    frame.nextSyncTime = frame.syncTime + 1.0 / 120;
+    frame.leftSyncIsReal = frame.rightSyncIsReal = true;
+    for (int i = 0; i < 6; ++i) {
+      const auto& p = object.points[i];
+      const double angle = model::Lh1Angle(frame.axis, p[0], p[1], p[2] - 2, alt.cal.data());
+      frame.samples.push_back({i, frame.axis, frame.syncTime + 0.004, angle, 5e-6});
+    }
+    DeviceTrackerTestAccess::Frame(tracker, frame);
+  };
+  for (int i = 0; i < 22; ++i) sweep(i);
+  DeviceTrackerTestAccess::Check(tracker, 1.51);  // both bases have since gone dark
+  ASSERT_TRUE(DeviceTrackerTestAccess::Core(tracker).Bootstrapped());
+  for (int i = 62; i < 67; ++i) sweep(i);
+  DeviceTrackerTestAccess::Check(tracker, 1.56);  // a brief glimpse after the gap
+  ASSERT_TRUE(DeviceTrackerTestAccess::Core(tracker).Bootstrapped());
+  for (int i = 67; i < 92; ++i) sweep(i);
+  DeviceTrackerTestAccess::Check(tracker, 1.77);
+  EXPECT_FALSE(DeviceTrackerTestAccess::Core(tracker).Bootstrapped());
 }
 
 TEST(DeviceRecovery, InvalidImuCalibrationIsNeverCarriedOver) {

@@ -72,8 +72,11 @@ class LighthouseDirect {
   void SetRecordedTilt(uint32_t serial, std::array<double, 2> tilt, double variance);
   void OnImu(const ImuSample&);
   bool OnFrame(const OpticalFrame&);
-  // rejectedRows receives the number of sensor rows in a rejected optical update.
-  bool OnFrame(const OpticalFrame&, int* rejectedRows);
+  struct RecoveryEvidence {
+    int rejectedRows = 0;  // sensor rows remaining in a rejected update
+    std::optional<double> alternatePoseTime;  // device time of a viable pose on another base
+  };
+  bool OnFrame(const OpticalFrame&, RecoveryEvidence* recovery);
   // Consume inertial data while optical data is unavailable. This is an explicit
   // fallback policy, not the original CImuOnlyTracker implementation.
   bool AdvanceInertial(double time);
@@ -156,7 +159,7 @@ class LighthouseDirect {
   std::optional<double> ObservedTime() const { return observedTime_; }
 
  private:
-  bool Bootstrap(const OpticalFrame&, const BaseConfig&);
+  bool Bootstrap(const OpticalFrame&, const BaseConfig&, RecoveryEvidence* recovery);
   bool CanSwitchPrimary(uint32_t serial) const;
   bool OpticalUpdate(const OpticalFrame&, const BaseConfig&, int slot, int* rejectedRows);
   bool ImuUpdate(const ImuSample&);

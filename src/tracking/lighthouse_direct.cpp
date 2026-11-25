@@ -14,6 +14,12 @@ namespace lh {
 namespace {
 using namespace direct;
 
+double EarliestHit(const OpticalFrame& frame) {
+  double time = std::numeric_limits<double>::infinity();
+  for (const auto& s : frame.samples) time = std::min(time, s.time + 0.5 * s.width);
+  return time;
+}
+
 Residual Normalizer() {
   return {1, [](const double* x, double* out) { out[0] = QuaternionNormalizer(x); },
           [](const Jet* x, Jet* out) { out[0] = QuaternionNormalizer(x); }};
@@ -271,13 +277,14 @@ solver::Result SolveBootstrap(const TrackedObjectModel& model, const BaseConfig&
 }
 }  // namespace
 
-bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& base) {
+bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& base, RecoveryEvidence* recovery) {
   OpticalFrame f = frame;
   f.samples = Gather(frame.samples);
   auto& history = history_[frame.baseSerial];
   history.Append(std::move(f));
   std::vector<OpticalSample> older, newer;
-  if (!history.Select(&older, &newer)) return false;
+  std::bitset<32> currentSensors;
+  if (!history.Select(&older, &newer, -1, recovery && slots_[0] ? &currentSensors : nullptr)) return false;
   ++bootstrapAttempts_;
   const double time = newer.front().time + newer.front().width * 0.5;
   if (slots_[0] && CanSwitchPrimary(base.serial)) {
@@ -338,7 +345,17 @@ bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& ba
     // The original only adds an alternate base via 0x35c330, which requires
     // updateCount > 0x104 (260) and a LighthouseDB sanction. Without the gate the
     // alt slice is seeded far too early and the whole filter diverges.
-    if (filter_.updateCount <= 0x104) return false;
+    if (filter_.updateCount <= 0x104) {
+      // The current filter cannot add this base yet, but the solved pose could
+      // bootstrap a new track if the primary stays dark. History can outlive a sweep.
+      // SolveBootstrap can drop an outlier from newer after interpolation.
+      if (recovery && time >= time_ && EarliestHit(frame) >= time_ && BootstrapPoseInRange(solved.pose) &&
+          std::count_if(newer.begin(), newer.end(), [&](const auto& s) {
+            return s.axis == frame.axis && currentSensors.test(s.sensor);
+          }) >= 4)
+        recovery->alternatePoseTime = time;
+      return false;
+    }
     int slot = 1;
     while (slot < 4 && slots_[slot]) ++slot;
     if (slot == 4 || !PredictTo(time)) return false;
@@ -480,8 +497,7 @@ void LighthouseDirect::FollowRotorWobble(uint32_t serial, double time, const std
 }
 
 bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig& base, int slot, int* rejectedRows) {
-  double time = std::numeric_limits<double>::infinity();
-  for (const auto& s : frame.samples) time = std::min(time, s.time + 0.5 * s.width);
+  const double time = EarliestHit(frame);
   auto samples = Gather(frame.samples);
   FilterOutliers(&samples, BaseDistance(filter_.x, slot));
   if (samples.empty() || !PredictTo(time)) return false;
@@ -586,15 +602,15 @@ bool LighthouseDirect::OnFrame(const OpticalFrame& frame) {
   return OnFrame(frame, nullptr);
 }
 
-bool LighthouseDirect::OnFrame(const OpticalFrame& frame, int* rejectedRows) {
-  if (rejectedRows) *rejectedRows = 0;
+bool LighthouseDirect::OnFrame(const OpticalFrame& frame, RecoveryEvidence* recovery) {
+  if (recovery) *recovery = {};
   filter_.flags |= 8;
   const auto base = bases_.find(frame.baseSerial);
   if (base == bases_.end() || !frame.leftSyncIsReal || !frame.rightSyncIsReal) return false;
   const int slot = Slot(frame.baseSerial);
-  if (slot >= 0) return OpticalUpdate(frame, base->second.config, slot, rejectedRows);
+  if (slot >= 0) return OpticalUpdate(frame, base->second.config, slot, recovery ? &recovery->rejectedRows : nullptr);
   if (frame.highFrameJitter) return false;
-  return Bootstrap(frame, base->second.config);
+  return Bootstrap(frame, base->second.config, recovery);
 }
 
 bool LighthouseDirect::AdvanceInertial(double time) {

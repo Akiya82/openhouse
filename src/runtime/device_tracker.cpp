@@ -38,6 +38,7 @@ double AltRotFloor(const RoomBase* a, const RoomBase* b) {
   return sure(a) && sure(b) ? kAltRotFloorLocked : kAltPriorVariance;
 }
 constexpr int kRejectStreak = 20;  // ~0.3 s of a base's well-lit frames all rejected
+constexpr double kBaseVisibleFor = 0.1;  // seconds since a base last supplied usable light
 // Reacquire throttling (not stock). A reacquire is a hard reset, so repeating it every
 // few hundred ms turns one bad stretch into a permanent ping-pong, and the reset cannot
 // fix what it rejected. Exponential from the base, capped, so a device still recovers -
@@ -74,7 +75,8 @@ DeviceTracker::DeviceTracker(std::string id, TrackedObjectModel model, RoomMap* 
 
 void DeviceTracker::ResetFilter() {
   filter_ = std::make_unique<LighthouseDirect>(model_);
-  refusedLit_ = 0;
+  refusedLit_ = alternatePoses_ = 0;
+  lastAlternatePose_ = -1e300;
   // LH_STOCK_FILTER: the verified stock behaviour, for A/B comparisons.
   static const bool stock = std::getenv("LH_STOCK_FILTER") != nullptr;
   predictOutput_ = smoothOutput_ = holdStill_ = !stock;
@@ -273,13 +275,21 @@ void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
   }
   const int rejectsBefore = filter_->Filter().rejectCount;
   const double lastOpticalBefore = filter_->LastOpticalTime();
-  int rejectedRows = 0;
-  filter_->OnFrame(frame, &rejectedRows);
+  LighthouseDirect::RecoveryEvidence recovery;
+  filter_->OnFrame(frame, &recovery);
   const bool usedLight = filter_->LastOpticalTime() != lastOpticalBefore;
   // PredictTo skips sweeps whose earliest hit is behind the filter before any rows
   // can be rejected. This lets tracking coast through delayed light on an LH1/LH2 switch.
-  if (usedLight) refusedLit_ = 0;
-  else if (rejectedRows >= 4) ++refusedLit_;
+  if (usedLight) {
+    refusedLit_ = alternatePoses_ = 0;
+  } else if (recovery.rejectedRows >= 4) {
+    ++refusedLit_;
+  } else if (recovery.alternatePoseTime && *recovery.alternatePoseTime > lastAlternatePose_) {
+    const double time = *recovery.alternatePoseTime;
+    if (time - lastAlternatePose_ >= kBaseVisibleFor) alternatePoses_ = 0;
+    ++alternatePoses_;
+    lastAlternatePose_ = time;
+  }
   if (frame.baseSerial && wasTracking) {
     std::set<int> lit;
     for (const auto& s : frame.samples) if (s.sensor >= 0) lit.insert(s.sensor);
@@ -677,7 +687,7 @@ void DeviceTracker::CheckHealth() {
       double last = 0;
       // Half its sweeps in the last 0.5 s (a weakly lit base fails to reacquire on).
       const double sweeps = 0.5 / std::max(sweepInterval_ * 0.5, 1.0 / 120);
-      if (b && lit(b, &last) >= 0.4 * sweeps && Now() - last < 0.1) visible = b;
+      if (b && lit(b, &last) >= 0.4 * sweeps && Now() - last < kBaseVisibleFor) visible = b;
     }
     if (primary && visible && Now() - acquiredAt_ > 1.0 && Now() - primaryLast > 0.5 && room_->Base(visible)) {
       char text[128];
@@ -724,14 +734,15 @@ void DeviceTracker::CheckHealth() {
       return;
     }
   }
-  // Not stock: light keeps arriving, well lit, and none of it fits the pose for 0.5 s:
-  // the filter is wrong, not the light. Reacquiring then (with the calm calibration)
+  // Not stock: well-lit updates keep failing or another base can supply a pose while
+  // the current filter gets no optical fix for 0.5 s. Reacquiring then (with the calm calibration)
   // takes 0.1-0.4 s; waiting for the 2 s no-light timeout, the device coasted that long
   // or ran out of bounds first (fastmotion3 + fastmotion5: fly-aways 2 -> 0, coasting
   // about 5 -> 0.5 %; testswing drops out more, 37 -> 29 % valid, but with fewer jumps
   // and rotation spikes: what it lost was tracking on a wrong pose).
-  if (refusedLit_ >= 8 && Now() - filter_->LastOpticalTime() > kRefusedLightReset) {
-    Log("light keeps arriving but none fits the pose: reacquiring");
+  const bool alternateVisible = alternatePoses_ >= 8 && Now() - lastAlternatePose_ < kBaseVisibleFor;
+  if ((refusedLit_ >= 8 || alternateVisible) && Now() - filter_->LastOpticalTime() > kRefusedLightReset) {
+    Log("light keeps arriving without an optical fix: reacquiring");
     if (calm_) carry_ = calm_;
     ResetFilter();
     return;

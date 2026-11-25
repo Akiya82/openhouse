@@ -166,7 +166,9 @@ class UsbTransport {
     // The check runs on the probe thread (DeviceCheck), so it never holds up this one.
     bool checkDevice = false;
     bool checkPending = false;  // a DeviceCheck is queued or running
-    bool radioIdentityConfirmed = true;  // QueryDeviceInfo matched this serial at setup or on recheck
+    // A disconnect or stream gap clears this until the serial is confirmed again.
+    // Commands require confirmation only when multiple Watchman receivers match.
+    bool radioIdentityConfirmed = true;
     double lastData = 0;
     uint64_t rxBytes = 0, rxReports = 0;      // link stats for Receivers(), rated each second
     double rateT = 0; uint64_t rateBytes = 0, rateReports = 0;

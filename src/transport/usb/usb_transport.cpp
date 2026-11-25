@@ -896,18 +896,18 @@ void UsbTransport::Run() {
       if (passStart > command.deadline) result.status = "expired";
       else for (auto& o : open_) {
         if (o.disconnected || o.info.serial != command.serial) continue;
-        if (o.info.kind == EndpointKind::Wireless) {
-          // A previous receiver can still be open after the device pairs to another.
-          ++wirelessMatches;
-          if (!target) target = &o;
-          if (o.radioIdentityConfirmed && (!confirmedReceiver || o.lastData > confirmedReceiver->lastData))
-            confirmedReceiver = &o;
-        } else if (!target && command.opticalMode >= 0 && o.info.kind == EndpointKind::Imu) {
+        // A cable carries mode and verbosity directly even if the device is still paired.
+        if (command.opticalMode >= 0 && o.info.kind == EndpointKind::Imu) {
           target = &o;
           break;
         }
+        if (o.info.kind != EndpointKind::Wireless) continue;
+        // A previous receiver can still be open after the device pairs to another.
+        ++wirelessMatches;
+        if (o.radioIdentityConfirmed && (!confirmedReceiver || o.lastData > confirmedReceiver->lastData))
+          confirmedReceiver = &o;
+        target = wirelessMatches == 1 ? &o : confirmedReceiver;
       }
-      if (wirelessMatches > 1) target = confirmedReceiver;
       if (target) {
         if (target->info.kind == EndpointKind::Imu) {
           const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();

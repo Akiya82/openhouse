@@ -161,13 +161,14 @@ namespace lh::usb {
 struct UsbTransportTestAccess {
   static void Scan(UsbTransport& t) { t.ScanDoorman(); }
   static void Pump(UsbTransport& t, double now) { t.PumpDoorman(now); }
-  static void AddWatchmanReceiver(UsbTransport& t, const std::string& path, const DeviceId& serial) {
+  static void AddEndpoint(UsbTransport& t, const std::string& path, const DeviceId& serial,
+                          EndpointKind kind = EndpointKind::Wireless) {
     UsbTransport::Open endpoint;
     endpoint.dev = hid_open_path(path.c_str());
     endpoint.path = path;
-    endpoint.receiver = path;
+    if (kind == EndpointKind::Wireless) endpoint.receiver = path;
     endpoint.info.ep = t.nextEp_++;
-    endpoint.info.kind = EndpointKind::Wireless;
+    endpoint.info.kind = kind;
     endpoint.info.serial = serial;
     t.decoder_.AddEndpoint(endpoint.info);
     t.open_.push_back(std::move(endpoint));
@@ -632,11 +633,40 @@ TEST_F(Doorman, EveryPerDeviceCallReachesTheDongleCarryingTheDevice) {
   EXPECT_EQ(slots.at("OHDG-TESTA/0"), Serial(kA1));
 }
 
+class WiredWatchmanRouting : public Doorman, public testing::WithParamInterface<int> {};
+
+TEST_P(WiredWatchmanRouting, OpticalModeUsesTheCable) {
+  const auto serial = Serial(kA1);
+  for (int i = 0; i < 3; ++i) {
+    const bool wired = i == GetParam();
+    const auto path = wired ? "cable" : "watchman-" + std::to_string(i);
+    fake::plugged.push_back({path, L"", 0});
+    Access::AddEndpoint(*transport, path, serial,
+                        wired ? lh::usb::EndpointKind::Imu : lh::usb::EndpointKind::Wireless);
+  }
+
+  transport->SetOpticalSubProtocol(serial, 1);
+  Access::Pass(*transport);
+  std::lock_guard lock(fake::m);
+  for (const auto& handle : fake::handles) {
+    if (handle->path != "cable") EXPECT_TRUE(handle->written.empty()) << handle->path;
+  }
+  const auto& reports = fake::Open("cable")->written;
+  ASSERT_EQ(reports.size(), 2u);
+  std::vector<uint8_t> mode(64), verbosity(64);
+  mode[0] = 0x04; mode[1] = 1;
+  verbosity[0] = 0x07; verbosity[1] = 3;
+  EXPECT_EQ(reports[0], mode);
+  EXPECT_EQ(reports[1], verbosity);
+}
+
+INSTANTIATE_TEST_SUITE_P(CableAtEachScanPosition, WiredWatchmanRouting, testing::Values(0, 1, 2));
+
 TEST_F(Doorman, WatchmanCommandsFollowTheReceiverReportingData) {
   fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
   fake::plugged.push_back({"watchman-b", L"WATCHMAN-B", 0});
   const auto serial = Serial(kA1);
-  Access::AddWatchmanReceiver(*transport, "watchman-a", serial);
+  Access::AddEndpoint(*transport, "watchman-a", serial);
   std::vector<uint8_t> report(30);
   report[0] = 0x23;
   Queue("watchman-a", report);
@@ -644,7 +674,7 @@ TEST_F(Doorman, WatchmanCommandsFollowTheReceiverReportingData) {
   Queue("watchman-a", {0x26});
   Access::Pass(*transport);
 
-  Access::AddWatchmanReceiver(*transport, "watchman-b", serial);
+  Access::AddEndpoint(*transport, "watchman-b", serial);
   Queue("watchman-b", report);
   Access::Pass(*transport);
   transport->SetOpticalSubProtocol(serial, 1);
@@ -668,8 +698,8 @@ TEST_F(Doorman, WatchmanCommandsPreferConfirmedReceiverDuringIdentityCheck) {
   fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
   fake::plugged.push_back({"watchman-b", L"WATCHMAN-B", 0});
   const auto serial = Serial(kA1);
-  Access::AddWatchmanReceiver(*transport, "watchman-a", serial);
-  Access::AddWatchmanReceiver(*transport, "watchman-b", serial);
+  Access::AddEndpoint(*transport, "watchman-a", serial);
+  Access::AddEndpoint(*transport, "watchman-b", serial);
   std::vector<uint8_t> report(30);
   report[0] = 0x23;
   Queue("watchman-b", {0x26});
@@ -693,7 +723,7 @@ TEST_F(Doorman, WatchmanCommandsPreferConfirmedReceiverDuringIdentityCheck) {
 
 TEST_F(Doorman, WatchmanIdentityCheckCanRetryAfterALongDisconnect) {
   fake::plugged.push_back({"watchman-a", L"WATCHMAN-A", 0});
-  Access::AddWatchmanReceiver(*transport, "watchman-a", Serial(kA1));
+  Access::AddEndpoint(*transport, "watchman-a", Serial(kA1));
   std::vector<uint8_t> report(30);
   report[0] = 0x23;
   Queue("watchman-a", report);

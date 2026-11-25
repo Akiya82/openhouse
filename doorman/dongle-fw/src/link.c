@@ -62,6 +62,7 @@ typedef struct {
   uint8_t dup_run;                      /* consecutive out-of-order answers (a stalled uplink) */
   uint8_t check;                        /* its radio adds the codec CRC-8 (JREQ DML_JF_CHECK) */
   uint8_t batch;                        /* its radio sends batches (JREQ DML_JF_BATCH) */
+  uint16_t batch_mismatch;              /* answers that didn't match the agreed batches: made to rejoin */
   /* a batch being decoded, a frame a step; its frames held until its CRC-8 passes, so a corrupted one
      never reaches the host */
   dmp_state_t lh2p;
@@ -208,6 +209,12 @@ static int decode_step(slot_t *s)
   if (fl == 0 || k + 1 + fl > n) { s->bad_frames++; s->pend_k = s->pend_n; return 0; }
   const uint8_t *f = r + k + 1;
   s->pend_k = (uint8_t)(k + 1 + fl);
+  /* Batches are agreed at join and both ends keep to it: with them on, only replies come outside a batch.
+     Anything else means the radio and we disagree (it kept what it agreed with a dongle before ours): we
+     skip it past its 1 s timeout and it rejoins, negotiating again. Without this it ran without batches,
+     at 3x the airtime, until it happened to rejoin. */
+  const int reply = f[0] == 'P' || f[0] == 'H' || f[0] == 'D' || f[0] == DML_TAGGED_REPLY;
+  if (!reply && (f[0] == DMC_BATCH) != (s->batch != 0)) { s->batch_mismatch++; codec_lost(s); return 0; }
   if (f[0] == DMC_BATCH && s->batch) {                     /* its frames come out a step at a time */
     if (!dmb_open(&s->br, f, fl)) { codec_lost(s); return 0; }
     s->in_batch = 1; s->bn = 0;

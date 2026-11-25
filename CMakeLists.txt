@@ -490,6 +490,19 @@ if(LH_BUILD_TESTS)
   endif()
   target_link_libraries(lh_runtime_tests PRIVATE lh lh_tracking Eigen3::Eigen nlohmann_json::nlohmann_json GTest::gtest_main)
   add_test(NAME runtime COMMAND lh_runtime_tests)
+  # Doorman air codec: every frame of the bundled LH2 capture, batched as the radio does at 8 devices,
+  # must come back exactly (doorman/test, ai/doorman/testing.md). Built as C++: the codec headers are
+  # plain C that compiles either way.
+  if(TARGET lhtool AND NOT MSVC)   # the codec uses GCC/Clang builtins, as the firmware's compiler does
+    add_executable(doorman_codec_roundtrip doorman/test/codec_roundtrip.c)
+    set_source_files_properties(doorman/test/codec_roundtrip.c PROPERTIES LANGUAGE CXX)
+    target_include_directories(doorman_codec_roundtrip PRIVATE doorman/common)
+    add_test(NAME doorman_codec COMMAND ${CMAKE_COMMAND}
+      -DLHTOOL=$<TARGET_FILE:lhtool> -DROUNDTRIP=$<TARGET_FILE:doorman_codec_roundtrip>
+      -DCAPTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/captures/lh2-five-devices/input.lhraw
+      -DFRAMES=${CMAKE_CURRENT_BINARY_DIR}/doorman_codec_frames.bin
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/doorman/test/codec_test.cmake)
+  endif()
   if(TARGET lhcapture)
     add_test(NAME capture_help COMMAND lhcapture --help)
     add_test(NAME capture_bad_duration COMMAND lhcapture --seconds not-a-number)

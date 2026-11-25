@@ -19,7 +19,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 // Commands (doorman/dongle-fw/src/dongle.h, link.c)
 constexpr uint8_t kInfo = 0x01, kBootloader = 0x10, kReset = 0x12, kClearCrash = 0x14, kLink = 0x20, kDown = 0x21,
                   kScan = 0x22, kStats = 0x23, kPair = 0x24, kSlotsCmd = 0x25, kForget = 0x26, kChannels = 0x27,
-                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A, kSetName = 0x34, kGetName = 0x35;
+                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A, kTiming = 0x2D, kSetName = 0x34, kGetName = 0x35;
 constexpr size_t kNameMax = 59;  // what the dongle keeps (link.c DML_NAME_MAX)
 
 hid_device* H(void* p) { return static_cast<hid_device*>(p); }
@@ -274,6 +274,22 @@ void Dongle::Poll(double now) {
   }
   if (now >= nextSlow_) {
     nextSlow_ = now + 1.0;
+    {
+      const uint8_t keep = 0xFF;   // read only: leaves the adaptive timing as it is
+      if (Command(kTiming, &keep, 1, &r) && r.data.size() >= 42) {
+        const uint8_t* d = r.data.data();
+        std::lock_guard lock(mutex_);
+        state_.haveTiming = true;
+        state_.cycleUs = Rd32(d);
+        state_.slotUs = Rd32(d + 4);
+        state_.answerBytes = d[21];
+        const bool sizing = state_.firmware >= 0x0028;
+        state_.normalAnswerBytes = sizing ? d[32] : 0;
+        state_.saturationPercent = sizing ? d[30] : -1;
+        state_.largeAnswers = sizing && d[31];
+        for (int i = 0; i < kSlots; ++i) state_.slots[i].saturationPercent = sizing ? d[34 + i] : -1;
+      }
+    }
     if (Command(kInfo, nullptr, 0, &r) && std::memcmp(r.data.data(), "OHDG", 4) == 0) {
       const uint8_t* d = r.data.data();
       std::lock_guard lock(mutex_);

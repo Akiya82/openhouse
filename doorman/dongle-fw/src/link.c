@@ -4,6 +4,8 @@
 #include "nrf.h"
 #include "doorman_link.h"
 #include "doorman_codec.h"
+#include "doorman_lh2p.h"
+#include "sizing.h"
 #include "link.h"
 #include "dongle.h"
 
@@ -59,6 +61,13 @@ typedef struct {
   uint8_t last_missed, last_crc, have_tel;
   uint8_t dup_run;                      /* consecutive out-of-order answers (a stalled uplink) */
   uint8_t check;                        /* its radio adds the codec CRC-8 (JREQ DML_JF_CHECK) */
+  uint8_t batch;                        /* its radio sends batches (JREQ DML_JF_BATCH) */
+  /* a batch being decoded, a frame a step; its frames held until its CRC-8 passes, so a corrupted one
+     never reaches the host */
+  dmp_state_t lh2p;
+  dmb_r_t br;
+  uint8_t in_batch, bn, bql[DMB_MAX];
+  uint8_t bq[DMB_MAX][64];
   uint32_t resyncs;                     /* codec out of step: made to rejoin */
   uint32_t skip_until;                  /* ms_ticks until which this slot is not polled */
   dmc_state_t codec; uint32_t air_bytes, bad_frames;
@@ -103,6 +112,9 @@ static uint32_t last_join_ms, joins_heard;
 
 static uint8_t pkt_tx[2 + DML_MAXLEN], pkt_rx[2 + DML_MAXLEN];
 static uint32_t period_us = 2000, slot_us = 1450;
+static sizing_t sizing;                    /* answer size by saturation (sizing.h) */
+static int plan_n;                         /* devices in this cycle's plan */
+static uint32_t sizing_ms;
 static uint8_t max_resp = DML_MAXLEN;
 static void (*idle_hook)(void);
 /* Where USB is serviced inside a radio exchange (cmd 0x2C, for A/B tests): bit 0 while the POLL goes
@@ -158,8 +170,35 @@ static int upq_push(slot_t *s, const uint8_t *f, int gl)
 /* Decodes one frame of a slot's kept answer (in order: the air codec's state follows every frame);
    0 when there's nothing left. */
 static uint32_t dec_sum, dec_n, dec_max;
+/* A decoded frame on its way to the host. */
+static void deliver(slot_t *s, const uint8_t *f, int gl)
+{
+  if (f[0] == 'H' && gl <= 16) { memset(s->ident, 0, 16); memcpy(s->ident, f, gl); }
+  if (f[0] == 'D' && gl >= 5) { s->dev_drops = (uint16_t)(f[1] | f[2] << 8); s->dev_reply_drops = (uint16_t)(f[3] | f[4] << 8); }
+  else { s->frames_up++; s->bytes_up += (uint32_t)gl; upq_push(s, f, gl); }
+}
+/* Not what the radio coded: the coders are out of step for good (every frame after it decodes as
+   garbage). Left alone past the radio's 1 s "dongle gone", it rejoins and both ends reset. */
+static void codec_lost(slot_t *s)
+{
+  s->bad_frames++; s->resyncs++; s->pend_k = s->pend_n; s->in_batch = 0;
+  s->skip_until = ms_ticks + 1200;
+}
 static int decode_step(slot_t *s)
 {
+  if (s->in_batch) {
+    const uint32_t td = us_now();
+    const int g = dmb_next(&s->br, &s->codec, &s->lh2p, s->bq[s->bn], s->check);
+    if (g <= 0) { codec_lost(s); return 0; }
+    s->bql[s->bn++] = (uint8_t)g;
+    if (s->br.left == 0) {                                  /* whole, CRC passed: hand it on */
+      for (int i = 0; i < s->bn; i++) deliver(s, s->bq[i], s->bql[i]);
+      s->in_batch = 0;
+    }
+    const uint32_t dd = us_now() - td;
+    dec_sum += dd; dec_n++; if (dd > dec_max) dec_max = dd;
+    return 1;
+  }
   if (s->pend_k >= s->pend_n) return 0;
   const uint32_t td = us_now();
   const uint8_t *r = s->pend; const int n = s->pend_n, k = s->pend_k;
@@ -167,17 +206,18 @@ static int decode_step(slot_t *s)
   if (fl == 0 || k + 1 + fl > n) { s->bad_frames++; s->pend_k = s->pend_n; return 0; }
   const uint8_t *f = r + k + 1;
   s->pend_k = (uint8_t)(k + 1 + fl);
+  if (f[0] == DMC_BATCH && s->batch) {                     /* its frames come out a step at a time */
+    if (!dmb_open(&s->br, f, fl)) { codec_lost(s); return 0; }
+    s->in_batch = 1; s->bn = 0;
+    return 1;
+  }
   uint8_t g[64]; int gl = fl;
   if (f[0] >= DMC_IMU && f[0] <= DMC_LH2) {
     gl = dmc_decode(&s->codec, f, fl, g); f = g;
-    /* Not the frame the radio coded: the codec is out of step for good (every frame after it decodes
-       as garbage). Left alone past the radio's 1 s "dongle gone", it rejoins and both ends reset. */
-    if (!gl) { s->bad_frames++; s->resyncs++; s->pend_k = s->pend_n; s->skip_until = ms_ticks + 1200; return 0; }
+    if (!gl) { codec_lost(s); return 0; }
   }
-  else dmc_observe(&s->codec, f, fl);
-  if (f[0] == 'H' && gl <= 16) { memset(s->ident, 0, 16); memcpy(s->ident, f, gl); }
-  if (f[0] == 'D' && gl >= 5) { s->dev_drops = (uint16_t)(f[1] | f[2] << 8); s->dev_reply_drops = (uint16_t)(f[3] | f[4] << 8); }
-  else { s->frames_up++; s->bytes_up += (uint32_t)gl; upq_push(s, f, gl); }
+  else { dmc_observe(&s->codec, f, fl); if (s->batch) dmp_observe(&s->lh2p, f, fl); }
+  deliver(s, f, gl);
   const uint32_t dd = us_now() - td;
   dec_sum += dd; dec_n++; if (dd > dec_max) dec_max = dd;
   return 1;
@@ -341,6 +381,7 @@ static int poll_slot(uint8_t i, uint8_t ch, uint32_t t_tx)   /* 1: it answered; 
   s->dup_run = 0;
   s->last_seq = seq;
   s->air_bytes += (uint32_t)(n - DML_RESP_HDR);
+  sizing_answer(&sizing, i, n, r[2], s->check, plan_n);   /* radios with the CRC-8 set the "more" flag too */
   /* Kept and decoded while the radio is busy with the next exchange (decode_some): decoding here took
      ~320 us of each ~870 us exchange (up to 720) with the radio idle, every slot waiting on it. */
   memcpy(s->pend, r + DML_RESP_HDR, (size_t)(n - DML_RESP_HDR));
@@ -381,6 +422,8 @@ static void slot_reset(uint8_t i)
   s->dup_run = 0; s->skip_until = 0;
   dmc_reset(&s->codec);
   s->codec.check = s->check;
+  dmp_reset(&s->lh2p);
+  s->in_batch = 0;
   memset(s->ident, 0, sizeof s->ident);
   s->up_head = s->up_tail; s->frag_left = 0;
   s->pend_n = s->pend_k = 0;                               /* the old device's answer isn't for the new codec */
@@ -400,6 +443,7 @@ static void join_beacon(void)
   if (assign_left) {
     memcpy(p + 6, assign_id, 8); p[14] = assign_slot; assign_left--;
     if (sl[assign_slot].check) p[5] |= DML_JF_CHECK;        /* only for a radio that asked: an old one reads p[5] as "pairing open" */
+    if (sl[assign_slot].batch) p[5] |= DML_JF_BATCH;
   }
   else { memset(p + 6, 0, 8); p[14] = 0xFF; }
   p[15] = (uint8_t)next_mask; p[16] = (uint8_t)(next_mask >> 8); p[17] = cycle; p[18] = (uint8_t)(period_us / 50);
@@ -449,6 +493,7 @@ static void join_beacon(void)
   if (slot < 0) return;
   memcpy(assign_id, id, 8); assign_slot = (uint8_t)slot; assign_left = 5;
   sl[slot].check = (r[9] & DML_JF_CHECK) ? 1 : 0;
+  sl[slot].batch = (r[9] & DML_JF_BATCH) ? 1 : 0;
   slot_reset((uint8_t)slot);
 }
 
@@ -459,6 +504,7 @@ static void join_beacon(void)
  * is busy (Wi-Fi): dropping in frequency order kept the worst ones once the minimum was reached. */
 #define CH_MIN_ON   8
 #define CH_BAD_PCT  8
+#define CH_EVERYWHERE_PCT 20
 /* A channel is bad when it loses clearly more than the channels around it. Loss a device has on
    every channel (weak signal, body in the way) is not the channel's fault: judged on absolute loss,
    one weak device struck clean channels until only a few were left to hop on. */
@@ -487,13 +533,16 @@ static void channels_eval(void)
         chs[k].strikes--;                                    /* clean for 2 min since it came back */
     }
   }
-  const unsigned bad = CH_BAD_PCT + channels_typical_loss(m);
+  const unsigned typical = channels_typical_loss(m), bad = CH_BAD_PCT + typical;
+  /* Loss this high on the typical channel is the link being full (or every channel bad alike), not some
+     channels: striking them only narrowed the hopping down to the floor (8 of 16 with 8 busy devices). */
+  const int everywhere = typical >= CH_EVERYWHERE_PCT;
   for (;;) {                                                 /* drop the worst bad channel, again and again */
     int worst = -1;
     for (int k = 0; k < DML_NHOP; k++)
       if ((m >> k) & 1 && chs[k].polls >= 20 && chs[k].loss_pct > bad &&
           (worst < 0 || chs[k].loss_pct > chs[worst].loss_pct)) worst = k;
-    if (worst < 0 || on <= CH_MIN_ON) break;
+    if (worst < 0 || everywhere || on <= CH_MIN_ON) break;
     m &= (uint16_t)~(1u << worst); on--;
     uint32_t off = 30000u << (chs[worst].strikes < 4 ? chs[worst].strikes : 4);
     if (off > 300000u) off = 300000u;
@@ -546,7 +595,9 @@ void link_poll(void)
   /* bigger responses amortise the ~450 us per-slot overhead: 6 x 120 B = 6.3 ms cycle, ~18 kB/s per device
      (72 B gave 12.9 kB/s, too little headroom for resends; queues overflowed). 7-8 devices: 176 B, 9.9 ms
      and ~17.7 kB/s each at 8, over the ~13 kB/s a device sends at its worst (LH1, two bases) */
-  max_resp = n <= 1 ? DML_MAXLEN : n <= 2 ? 160 : n <= 4 ? 96 : n <= 6 ? 120 : 176;
+  plan_n = n;
+  if (ms_ticks - sizing_ms >= 2000) { sizing_ms = ms_ticks; sizing_eval(&sizing); }
+  max_resp = (uint8_t)sizing_resp(&sizing, n);   /* sizing.h: the size for this many devices, or large answers while saturated */
   /* Each slot's share of the cycle: what the slowest exchange of the last 32 cycles took plus a guard,
      not the worst case (450 us + 4 us per byte of a full answer, kept as the bound). Answers are
      rarely full, so the cycle is shorter and every device is polled more often. Off: cmd 0x2D 0. */
@@ -701,6 +752,8 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32.
     put32(d, period_us); put32(d + 4, slot_us); put32(d + 8, ex_budget);
     put32(d + 12, ex_n ? ex_sum / ex_n : 0); put32(d + 16, ex_max); d[20] = adaptive; d[21] = max_resp;
     put32(d + 22, dec_n ? dec_sum / dec_n : 0); put32(d + 26, dec_max);
+    d[30] = sizing.worst; d[31] = sizing.big; d[32] = (uint8_t)sizing_base(plan_n); d[33] = (uint8_t)plan_n;
+    for (int k = 0; k < DML_SLOTS; k++) d[34 + k] = sizing.pct[k];   /* saturation: worst, large answers, normal size, devices, per slot */
     ex_sum = ex_n = ex_max = dec_sum = dec_n = dec_max = 0;
     return 1;
   case 0x2B: load_mask = in[2]; load_kbps = in[3]; d[0] = load_mask; d[1] = load_kbps; return 1;   /* test load */            /* identity ('H' frame) of a slot */
@@ -709,7 +762,7 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32.
     put32(d + 12, s->dev_drops); put32(d + 16, s->dev_reply_drops);
     d[20] = (uint8_t)s->upq_hw; d[21] = (uint8_t)(s->upq_hw >> 8); s->upq_hw = 0;   /* USB queue high-water, reset on read */
     put32(d + 22, s->load_bytes);                                                    /* test load queued (0x2B) */
-    put32(d + 26, s->resyncs); d[30] = s->check;                                     /* codec resyncs, CRC-8 on */
+    put32(d + 26, s->resyncs); d[30] = s->check; d[31] = s->batch;                   /* codec resyncs, CRC-8 on, batches */
     return 1;
   case 0x24:                                                /* pair SECS [SLOT+1] [ANY] (0/absent: first free slot) */
     pairing_until_ms = in[2] ? ms_ticks + 1000u * in[2] : 0;

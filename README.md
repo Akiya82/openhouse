@@ -174,7 +174,7 @@ Under Monado/WiVRn you only get the desktop warning, and only with the installer
 ### 1.0 base stations (lhbs)
 
 > [!CAUTION]
-> **Only for Lighthouse 1.0 base stations** (the ones that came with the original HTC Vive). It will brick 2.0 base stations. You only need it if you want to use more than two 1.0 base stations at the same time.
+> **Only for Lighthouse 1.0 base stations** (the ones that came with the original HTC Vive). It will brick 2.0 base stations. **You only need it if you want to use more than two 1.0 base stations at the same time. Don't flash it if you don't own or plan to own more than 2 1.0 lighthouses!**
 
 lhbs is a custom open source firmware for HTC 1.0 basestations. It implements the base functionality such as using A/b/c channels and **using more than 2 basestations together with the multi-station mode**
 

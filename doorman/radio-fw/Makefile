@@ -26,7 +26,7 @@ FIX =
 OUT = $(B)/radio.bin
 endif
 all: $(OUT)
-$(B)/radio.elf: $(SRCS) $(LD) ../common/doorman_link.h ../common/doorman_codec.h
+$(B)/radio.elf: $(SRCS) $(LD) ../common/doorman_link.h ../common/doorman_codec.h ../common/doorman_lh2p.h
 	@mkdir -p $(B)
 	arm-none-eabi-gcc $(CFLAGS) $(SRCS) -nostartfiles -nostdlib -lgcc -Wl,--gc-sections -T$(LD) -Wl,-Map=$(B)/radio.map -o $@ -lc -lgcc
 	arm-none-eabi-size $@

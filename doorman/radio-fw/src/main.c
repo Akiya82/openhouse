@@ -18,6 +18,12 @@
 static void addr_check(void);
 #define DMC_YIELD() addr_check()                           /* the codec checks for POLLs between fields */
 #include "doorman_codec.h"
+#ifdef DML_IDX
+#include "doorman_lh2p.h"                                  /* batches: the nRF52 radios have the RAM for it */
+#define DML_JF_MINE (DML_JF_CHECK | DML_JF_BATCH)
+#else
+#define DML_JF_MINE DML_JF_CHECK
+#endif
 
 #define STAGE_BASE   0x10000u
 #define STAGE_MAX    0xF800u           /* 0x10000-0x1F7FF (Index family: 0x1F800 = Valve's record page) */
@@ -619,6 +625,14 @@ static uint8_t uq[UQ_BYTES];
 static uint16_t uq_head, uq_tail;
 static uint32_t uq_drops;
 static dmc_state_t codec;              /* air codec state, reset on every join */
+#ifdef DML_IDX
+/* Batches (JOIN DML_JF_BATCH): the frames queued for one answer, coded together into the open batch as
+   they come; the answer being built closes it. Sized to the answer the dongle last announced. */
+static dmp_state_t lh2p;
+static uint8_t batching, bat_open;
+static uint8_t bat[DML_MAXLEN];
+static dmb_t bt;
+#endif
 static uint16_t uq_used(void) { return (uint16_t)((uq_tail - uq_head) & (UQ_BYTES - 1)); }
 /* Replies to the host ('P' feature replies, 'H' identity) queue apart and go out first. In the shared
    queue they waited behind ~1 KB of IMU/light when the link was busy (six devices on one dongle), or
@@ -692,9 +706,9 @@ static void pair_start(void)
   pair_mode = 1; pair_since = now_us();
   if (link_enabled && (joined || link_up)) go_unjoined();  /* reports 0x53: the LED shows pairing */
   else if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
-  jreq[10] = DML_JF_PAIR | DML_JF_CHECK;
+  jreq[10] = DML_JF_PAIR | DML_JF_MINE;
 }
-static void pair_end(void) { pair_mode = 0; jreq[10] = DML_JF_CHECK; }
+static void pair_end(void) { pair_mode = 0; jreq[10] = DML_JF_MINE; }
 #ifdef DML_IDX
 /* Holding the system button turns the device off. Valve's main firmware leaves that to the
    radio side: it only reports the button (bit 0x2000 of the 0x6e input frame's first word), and
@@ -746,6 +760,41 @@ static void link_from_lpc(const uint8_t *f, uint8_t n)
   if (!link_up) return;                                    /* like HTC: data only while connected */
   uplink_push(f, n);
 }
+#ifdef DML_IDX
+static void batch_close(void)
+{
+  if (!bat_open) return;
+  bat_open = 0;
+  const int m = dmb_end(&bt, codec.check);
+  if (m <= 0) return;                                      /* (the CRC's byte is kept: can't happen) */
+  uq[uq_tail] = (uint8_t)m; uq_tail = (uq_tail + 1) & (UQ_BYTES - 1);
+  for (int i = 0; i < m; i++) { uq[uq_tail] = bat[i]; uq_tail = (uq_tail + 1) & (UQ_BYTES - 1); }
+}
+static void batch_open(void)
+{
+  int cap = max_resp - DML_RESP_HDR - 1;                   /* one answer: its header and this one's length byte */
+  if (cap < 72) cap = 72;                                  /* a raw 64-byte frame always fits */
+  dmb_begin(&bt, bat, cap);
+  bat_open = 1;
+}
+static void batch_push(const uint8_t *f, uint8_t n)
+{
+  /* dropped before the coders see it, as without batches; the open batch counts as queued */
+  const int open = bat_open ? 2 + (bt.w.pos + 7) / 8 + 1 : 0;
+  if (uq_used() + open + n + 4 >= UQ_CAP) { uq_drops++; return; }
+  addr_check();
+  uint32_t te = now_us();
+  /* closed early when this frame probably won't fit: coded frames rarely take more than 3/4 of raw */
+  if (bat_open && (!dmb_room(&bt) || bt.w.cap * 8 - bt.w.pos < (n * 3 / 4 + 4) * 8)) batch_close();
+  if (!bat_open) batch_open();
+  if (!dmb_add(&bt, &codec, &lh2p, f, n)) {                /* didn't fit after all: the next batch, raw */
+    batch_close(); batch_open();
+    dmb_add_raw(&bt, f, n);
+  }
+  te = now_us() - te; lt.enc_n++; lt.enc_us += te; if (te > lt.enc_max) lt.enc_max = (uint16_t)(te > 0xFFFF ? 0xFFFF : te);
+  addr_check();
+}
+#endif
 static void uplink_push(const uint8_t *f, uint8_t n)
 {
   static uint8_t tagged[80];                               /* answers are up to 64 B, 65 tagged */
@@ -767,6 +816,9 @@ static void uplink_push(const uint8_t *f, uint8_t n)
   /* Held to UQ_CAP, not the whole queue: a full 1 KB took ~66 ms to drain at the ~15 kB/s one slot
      carries, so while the link was behind every IMU sample reached the PC that late. Dropped here, before
      the codec sees it, so both codec ends stay in step. */
+#ifdef DML_IDX
+  if (batching) { batch_push(f, n); return; }
+#endif
   if (uq_used() + n + 1 >= UQ_CAP) { uq_drops++; return; }
   static uint8_t enc[80];
   addr_check();
@@ -855,18 +907,27 @@ static void go_unjoined(void)
 {
   if (link_up) { uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
   link_up = 0; joined = 0; on = 0; send_i = 0; uq_head = uq_tail; pq_head = pq_tail;
+#ifdef DML_IDX
+  bat_open = 0;                                            /* the queue is gone, and the open batch with it */
+#endif
   radio_stop();
   set_addr(DML_JOIN_BASE, DML_JOIN_PREFIX);
   cur_ch = DML_JOIN_CHANNEL;
-  jreq[0] = DML_JREQ_LEN; jreq[1] = DML_JREQ; jreq[10] = (uint8_t)((pair_mode ? DML_JF_PAIR : 0) | DML_JF_CHECK);
+  jreq[0] = DML_JREQ_LEN; jreq[1] = DML_JREQ; jreq[10] = (uint8_t)((pair_mode ? DML_JF_PAIR : 0) | DML_JF_MINE);
   answer_join = 0;
   arm_rx(0);
 }
-static void go_joined(uint32_t base, uint8_t slot, uint8_t check)
+static void go_joined(uint32_t base, uint8_t slot, uint8_t check, uint8_t batch)
 {
   radio_stop();
   joined = 1; my_slot = slot; net_base = base;
-  dmc_reset(&codec); codec.check = check; uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
+  dmc_reset(&codec); codec.check = check;
+#ifdef DML_IDX
+  dmp_reset(&lh2p); batching = batch; bat_open = 0;
+#else
+  (void)batch;
+#endif
+  uq_head = uq_tail; pq_head = pq_tail; tq_n = 0;
   on = 0; send_i = 0; next_seq = 0; last_dseq = 1; have_cycle = 0;
   sent_max = 7;                    /* nothing sent yet: the dongle acks 7 until it has our seq 0 */
   mask = 0xFFFF; cur_ch = dml_hop_ch[0]; period_us = 2000; max_resp = DML_MAXLEN;
@@ -881,6 +942,9 @@ static void go_joined(uint32_t base, uint8_t slot, uint8_t check)
 
 static uint8_t build_new(void)                             /* fill a free buffer from the uplink queue */
 {
+#ifdef DML_IDX
+  if (batching) batch_close();                             /* what came since the last answer goes in this one */
+#endif
   uint8_t b = 0;
   while ((on > 0 && ob[0] == b) || (on > 1 && ob[1] == b)) b++;
   uint8_t *p = pb[b] + 1;
@@ -894,13 +958,17 @@ static uint8_t build_new(void)                             /* fill a free buffer
   }
   while (uq_used()) {
     uint8_t n = uq[uq_head];
-    if (len + 1 + n > max_resp) break;
+    /* A batch closed for a bigger answer than the dongle now asks for (another device joined): sent alone,
+       over the limit. The radio takes up to DML_MAXLEN; the limit only times the slots, so this delays the
+       rest of one cycle a little. A rejoin instead dropped the device for a second. */
+    const int fits = len + 1 + n <= max_resp || (len == DML_RESP_HDR && len + 1 + n <= DML_MAXLEN);
+    if (!fits) break;
     p[len++] = n;
     for (int i = 0; i < n; i++) p[len++] = uq[(uq_head + 1 + i) & (UQ_BYTES - 1)];
     uq_head = (uq_head + 1 + n) & (UQ_BYTES - 1);
   }
   pb[b][0] = (uint8_t)len;
-  p[0] = DML_RESP; p[1] = my_slot; p[2] = next_seq & DML_F_SEQ_MASK;
+  p[0] = DML_RESP; p[1] = my_slot; p[2] = (uint8_t)((next_seq & DML_F_SEQ_MASK) | (uq_used() ? DML_F_MORE : 0));
   next_seq = (next_seq + 1) & DML_F_SEQ_MASK;
   ob[on++] = b;
   return b;
@@ -912,7 +980,7 @@ static void arm_next(void)                                 /* pick what the next
   else if (on < 2) { b = build_new(); send_i = (uint8_t)(on - 1); }
   else { send_i = 0; b = ob[0]; }
   uint8_t *p = pb[b] + 1;
-  p[2] = (uint8_t)((p[2] & DML_F_SEQ_MASK) | (last_dseq ? DML_F_DSEQ : 0));
+  p[2] = (uint8_t)((p[2] & (DML_F_SEQ_MASK | DML_F_MORE)) | (last_dseq ? DML_F_DSEQ : 0));
   p[3] = poll_rssi; p[4] = poll_missed; p[5] = poll_crc_err;
   armed = b;
   arm_rx(1);
@@ -1080,7 +1148,7 @@ static void radio_poll(void)
       if (memcmp(p + 6, jreq + 2, 8) == 0 && p[14] < DML_SLOTS && (!pair_mode || (p[5] & DML_JF_PAIR))) {
         pair_end();                                         /* paired (or back on its dongle) */
         if (rstate == R_TX) { while (!NRF_RADIO->EVENTS_DISABLED) {} NRF_RADIO->EVENTS_DISABLED = 0; }
-        go_joined(base, p[14], (p[5] & DML_JF_CHECK) ? 1 : 0);   /* an old dongle never sets it */
+        go_joined(base, p[14], (p[5] & DML_JF_CHECK) ? 1 : 0, (p[5] & DML_JF_BATCH) ? 1 : 0);   /* an old dongle sets neither */
         mask = (uint16_t)(p[15] | p[16] << 8);                 /* follow the hops from the start */
         if (p[18]) period_us = p[18] * 50u;
         last_cycle = p[17]; have_cycle = 1;

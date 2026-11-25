@@ -488,12 +488,13 @@ void Ui::Overview(const DongleState& d) {
   ImGui::Spacing();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const float tw = (ImGui::GetContentRegionAvail().x - gap * 3) / 4;
-  double loss = 0;
+  double loss = 0, corrupted = 0, unanswered = 0;
   int n = 0, worstRssi = 0;
   for (const auto& s : d.slots)
     if (s.active) {
       if (s.lossPercent >= 0) { loss += s.lossPercent; n++; }
       if (s.rssiDongle && (!worstRssi || s.rssiDongle < worstRssi)) worstRssi = s.rssiDongle;
+      corrupted += s.crcPerSec; unanswered += s.timeoutsPerSec;
     }
   char v[32];
   std::snprintf(v, sizeof v, "%d / %d", d.joined, kSlots);
@@ -507,6 +508,25 @@ void Ui::Overview(const DongleState& d) {
   ImGui::SameLine();
   if (n) std::snprintf(v, sizeof v, "%.1f %%", loss / n); else std::snprintf(v, sizeof v, "-");
   Tile("t4", v, "radio loss (resent)", n ? LossColor(loss / n) : kOff, tw);
+  // The link full rather than the radio bad: a lot of data, loss everywhere, and answers missing rather
+  // than corrupted. The channels can't fix that; fewer devices on this dongle can.
+  if (d.haveTiming) {
+    ImGui::Spacing();
+    char line[160];
+    int at = std::snprintf(line, sizeof line, "Answers %d B", d.answerBytes);
+    if (d.largeAnswers && d.normalAnswerBytes) at += std::snprintf(line + at, sizeof line - at, " (large, normally %d)", d.normalAnswerBytes);
+    at += std::snprintf(line + at, sizeof line - at, "  |  cycle %.1f ms", d.cycleUs / 1000.0);
+    if (d.saturationPercent >= 0) std::snprintf(line + at, sizeof line - at, "  |  saturation %d %%", d.saturationPercent);
+    ImGui::TextDisabled("%s", line);
+  }
+  // Saturated even with large answers (or a dongle that can't tell), loss everywhere, answers missing rather
+  // than corrupted: the link is full. The channels can't fix that; fewer devices on this dongle can.
+  const bool full = d.saturationPercent >= 0 ? d.largeAnswers && d.saturationPercent >= 50
+                                             : d.kBytesPerSec >= 110;
+  if (n && full && loss / n >= 20 && corrupted < 0.1 * unanswered) {
+    ImGui::Spacing();
+    ImGui::TextColored(kWarn, "Link full: move some devices to a second dongle");
+  }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Slots");
@@ -740,6 +760,10 @@ void Ui::Radio(const DongleState& d) {
     std::snprintf(a, sizeof a, "%.0f / s", s.dropsPerSec);
     std::snprintf(b, sizeof b, "%d .. %d dBm", s.rssiMin, s.rssiMax);
     row("Dropped on the dongle", a, "Signal range", b);
+    if (s.saturationPercent >= 0) {
+      std::snprintf(a, sizeof a, "%d %%", s.saturationPercent);
+      row("Saturation", a, "", "");
+    }
     std::snprintf(a, sizeof a, "%.0f / s", s.deviceDropsPerSec); std::snprintf(b, sizeof b, "%.1f / s", s.deviceReplyDropsPerSec);
     row("Dropped on the device", a, "Replies dropped", b);
     if (s.airKBytesPerSec > 0 && s.kBytesPerSec > 0) {

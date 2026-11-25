@@ -45,6 +45,7 @@ struct SlotState {
   double framesPerSec = 0, kBytesPerSec = 0, airKBytesPerSec = 0, dropsPerSec = 0, resendsPerSec = 0;
   double imuHz = 0, lightPerSec = 0, inputPerSec = 0;  // stream contents
   int deviceMissed = 0, deviceCrc = 0;                 // the device's own counters, last poll
+  int saturationPercent = -1;                          // answers that left data queued, last 2 s (firmware 0x0028+)
   double deviceDropsPerSec = 0, deviceReplyDropsPerSec = 0;  // dropped in the device's radio (radio fw that reports it)
   uint64_t frames = 0, drops = 0;                      // totals since the dongle started
   std::deque<float> lossHistory, rssiHistory, kbpsHistory;
@@ -74,6 +75,13 @@ struct DongleState {
   std::array<uint8_t, kHops> hopChannel{}, hopLoss{};
   uint8_t currentChannel = 0;
   uint32_t joinsHeard = 0;
+  // link timing (cmd 0x2D)
+  bool haveTiming = false;
+  uint32_t cycleUs = 0, slotUs = 0;
+  int answerBytes = 0;         // the answer limit now
+  int normalAnswerBytes = 0;   // the limit for this many devices (0x0028+; 0 unknown)
+  int saturationPercent = -1;  // worst device (0x0028+)
+  bool largeAnswers = false;   // saturated: large answers on (0x0028+)
   // derived
   int joined = 0, paired = 0;
   double kBytesPerSec = 0;

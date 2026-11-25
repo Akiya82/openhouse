@@ -25,6 +25,7 @@
 #include "device_tracker.hpp"
 #include "index_input.hpp"
 #include "lh/input_sink.hpp"
+#include "runtime/air_experiment.hpp"
 #include "mixed_light.hpp"
 #include "model_scale.hpp"
 #include "room_map.hpp"
@@ -186,7 +187,12 @@ class SessionImpl final : public Session, public InputSinkBase {
     std::lock_guard lock(mutex_);
     Emit(SessionEventType::Log, "", text, level);
   }
-  explicit SessionImpl(SessionOptions options) : options_(std::move(options)) {}
+  explicit SessionImpl(SessionOptions options) : options_(std::move(options)) {
+    air_ = AirExperiment::FromEnv({
+        [this](const DeviceId& id, const ImuSample& s) { airForward_ = true; OnImu(id, s); airForward_ = false; },
+        [this](const DeviceId& id, const Lh2BeamWord& w) { airForward_ = true; OnLh2BeamWord(id, w); airForward_ = false; },
+        [this](const DeviceId& id, const Lh2SensorWord& w) { airForward_ = true; OnLh2SensorWord(id, w); airForward_ = false; }});
+  }
   ~SessionImpl() override { Stop(); }
 
   bool Start(std::string* error) override;
@@ -408,6 +414,8 @@ class SessionImpl final : public Session, public InputSinkBase {
   std::thread solver_;
 #ifdef LH_RUNTIME_USB
   std::unique_ptr<usb::UsbTransport> usb_;
+  std::unique_ptr<AirExperiment> air_;   // LH_AIR experiments only
+  bool airForward_ = false;
 #endif
 };
 
@@ -840,6 +848,7 @@ void SessionImpl::Touch(Device& d, double deviceTime) {
 }
 
 void SessionImpl::OnImu(const DeviceId& id, const ImuSample& sample) {
+  if (air_ && !airForward_) { air_->OnImu(id, sample); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();
@@ -1092,6 +1101,7 @@ void SessionImpl::OnLightPulse(const DeviceId& id, const LightPulse& pulse) {
 }
 
 void SessionImpl::OnLh2BeamWord(const DeviceId& id, const Lh2BeamWord& word) {
+  if (air_ && !airForward_) { air_->OnBeam(id, word); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();
@@ -1122,6 +1132,7 @@ void SessionImpl::OnLh2BeamWord(const DeviceId& id, const Lh2BeamWord& word) {
 }
 
 void SessionImpl::OnLh2SensorWord(const DeviceId& id, const Lh2SensorWord& word) {
+  if (air_ && !airForward_) { air_->OnSensor(id, word); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();

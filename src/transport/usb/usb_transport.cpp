@@ -890,20 +890,34 @@ void UsbTransport::Run() {
     { std::lock_guard lock(hapticMutex_); commands.swap(haptics_); }
     for (const auto& command : commands) {
       DeviceCommandResult result{command.serial, command.powerOff, "not-connected", 0, command.report, command.opticalMode};
+      Open* target = nullptr;
+      Open* confirmedReceiver = nullptr;
+      int wirelessMatches = 0;
       if (passStart > command.deadline) result.status = "expired";
       else for (auto& o : open_) {
         if (o.disconnected || o.info.serial != command.serial) continue;
-        if (o.info.kind != EndpointKind::Wireless) {
-          if (command.opticalMode < 0 || o.info.kind != EndpointKind::Imu) continue;
-          const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();
-          result.bytes = hid_send_feature_report(o.dev, mode.data(), mode.size());
-          if (result.bytes == int(mode.size())) hid_send_feature_report(o.dev, verbosity.data(), verbosity.size());
-          result.status = result.bytes == int(mode.size()) ? "written" : "write-failed";
+        // A cable carries mode and verbosity directly even if the device is still paired.
+        if (command.opticalMode >= 0 && o.info.kind == EndpointKind::Imu) {
+          target = &o;
           break;
         }
-        result.bytes = hid_send_feature_report(o.dev, command.report.data(), command.report.size());
-        result.status = result.bytes == int(command.report.size()) ? "written" : "write-failed";
-        break;
+        if (o.info.kind != EndpointKind::Wireless) continue;
+        // A previous receiver can still be open after the device pairs to another.
+        ++wirelessMatches;
+        if (o.radioIdentityConfirmed && (!confirmedReceiver || o.lastData > confirmedReceiver->lastData))
+          confirmedReceiver = &o;
+        target = wirelessMatches == 1 ? &o : confirmedReceiver;
+      }
+      if (target) {
+        if (target->info.kind == EndpointKind::Imu) {
+          const auto mode = WiredModeReport(command.opticalMode), verbosity = WiredVerbosityReport();
+          result.bytes = hid_send_feature_report(target->dev, mode.data(), mode.size());
+          if (result.bytes == int(mode.size())) hid_send_feature_report(target->dev, verbosity.data(), verbosity.size());
+          result.status = result.bytes == int(mode.size()) ? "written" : "write-failed";
+        } else {
+          result.bytes = hid_send_feature_report(target->dev, command.report.data(), command.report.size());
+          result.status = result.bytes == int(command.report.size()) ? "written" : "write-failed";
+        }
       }
       // The Doorman Dongle carrying the device, if any (a device is set up on one dongle only).
       if (std::string(result.status) == "not-connected" && passStart <= command.deadline) {
@@ -983,6 +997,7 @@ void UsbTransport::Run() {
           // check without that missed a switch live. The probe thread asks (RunDeviceChecks); this
           // thread only queues the check and reads its answer, so it never waits on the receiver.
           if (id == 0x26 || (data && o.lastData > 0 && reps[i].t - o.lastData > kRadioGap)) {
+            o.radioIdentityConfirmed = false;
             o.checkDevice = true;
             o.checkUntil = reps[i].t + kDeviceCheck;
             o.nextCheck = 0;
@@ -1007,6 +1022,7 @@ void UsbTransport::Run() {
                 o.disconnected = true;
                 break;
               }
+              if (*other == 0) o.radioIdentityConfirmed = true;
               // The check's device-info request leaves the device sending no light until its
               // protocol version is requested again, as it is after the same request when a
               // device is first set up. Without this an Index controller switched off and on

@@ -276,8 +276,8 @@ void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
   int rejectedRows = 0;
   filter_->OnFrame(frame, &rejectedRows);
   const bool usedLight = filter_->LastOpticalTime() != lastOpticalBefore;
-  // Skipped sweeps and accepted updates with too few rows to refresh tracking
-  // cannot establish that well-lit measurements disagree with the pose.
+  // PredictTo skips sweeps whose earliest hit is behind the filter before any rows
+  // can be rejected. This lets tracking coast through delayed light on an LH1/LH2 switch.
   if (usedLight) refusedLit_ = 0;
   else if (rejectedRows >= 4) ++refusedLit_;
   if (frame.baseSerial && wasTracking) {

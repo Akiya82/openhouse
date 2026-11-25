@@ -111,6 +111,30 @@ TEST(TrackerCore, AddsASecondaryBaseWithoutChangingPrimaryFrame) {
   EXPECT_TRUE(tracker.Filter().P.allFinite());
 }
 
+TEST(TrackerCore, LateLightFromAnEarlierPoseHasNoRejectedRows) {
+  const auto model = Object();
+  lh::LighthouseDirect tracker(model);
+  lh::BaseConfig base;
+  base.valid = true; base.serial = 123; base.cal.resize(14);
+  tracker.OnBaseConfig(base, {});
+  tracker.SetImprovements(true, 4.0, true);
+  lh::LighthouseDirect::Seed seed;
+  seed.base = 123; seed.time = 1.25; seed.calibrated = true;
+  seed.baseFromImu.translation() = Eigen::Vector3d(1.0, 0, -2);
+  ASSERT_TRUE(tracker.SeedPose(seed));
+
+  // Both sweeps see the device at (0, 0, -2), a metre from the current estimate.
+  int rejectedRows = -1;
+  EXPECT_FALSE(tracker.OnFrame(Frame(model, 0), &rejectedRows));
+  EXPECT_EQ(rejectedRows, 0);
+  EXPECT_EQ(tracker.Filter().rejectedFrames, 0u);
+  EXPECT_DOUBLE_EQ(tracker.LastOpticalTime(), seed.time);
+
+  EXPECT_FALSE(tracker.OnFrame(Frame(model, 30), &rejectedRows));
+  EXPECT_GE(rejectedRows, 4);
+  EXPECT_EQ(tracker.Filter().rejectedFrames, 1u);
+}
+
 TEST(TrackerCore, RejectedOpticalRowsExcludeGatedOutliers) {
   const auto model = Object();
   lh::LighthouseDirect tracker(model);

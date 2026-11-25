@@ -301,7 +301,7 @@ static inline int dmp_decode(dmp_state_t *p, const uint8_t *i, int n, uint8_t *f
  * original frames, in order. One tag, length and CRC for the lot: frames queued between two polls cost no
  * more delay than before, and each frame's own overhead (~3 of an IMU sample's ~9 bytes) is gone. A raw
  * frame is observed by both coders on both ends, so their state follows every frame either way. */
-enum { DMC_BATCH = 0xC7, DMB_MAX = 8 };
+enum { DMC_BATCH = 0xC7, DMB_MAX = 8, DMB_MAXF = 80 };   /* frames up to 80 B (Index sends 65-byte 'V') */
 
 typedef struct {
   dmc_w_t w;
@@ -332,7 +332,7 @@ static inline int dmb_add(dmb_t *b, dmc_state_t *s, dmp_state_t *p, const uint8_
   } else if (dmc_is_lh2(f, n)) {
     dmc_put(&b->w, 2, 2); dmp_walk(p, g, n, &b->w, 0);
   } else {
-    dmc_put(&b->w, 3, 2); dmc_put(&b->w, (uint32_t)(n - 1), 6);
+    dmc_put(&b->w, 3, 2); dmc_put(&b->w, (uint32_t)(n - 1), 7);
     for (int i = 0; i < n; i++) dmc_put(&b->w, f[i], 8);
     dmc_observe(s, f, n);
     dmp_observe(p, f, n);
@@ -349,7 +349,7 @@ static inline int dmb_add(dmb_t *b, dmc_state_t *s, dmp_state_t *p, const uint8_
 /* A frame whose state change both coders have already taken, raw (the dongle observes it: the same change). */
 static inline void dmb_add_raw(dmb_t *b, const uint8_t *f, int n)
 {
-  dmc_put(&b->w, 3, 2); dmc_put(&b->w, (uint32_t)(n - 1), 6);
+  dmc_put(&b->w, 3, 2); dmc_put(&b->w, (uint32_t)(n - 1), 7);
   for (int i = 0; i < n; i++) dmc_put(&b->w, f[i], 8);
   b->crc = dmc_crc8_add(b->crc, f, n);
   b->count++;
@@ -378,7 +378,7 @@ static inline int dmb_open(dmb_r_t *d, const uint8_t *i, int n)   /* 0: not a ba
   d->crc = 0;
   return 1;
 }
-/* The next frame into f (room for 64 bytes): its length; 0 = none left; -1 = malformed, or (with check,
+/* The next frame into f (room for DMB_MAXF bytes): its length; 0 = none left; -1 = malformed, or (with check,
    after the last) not what was coded. Either way the two ends are out of step: rejoin. */
 static inline int dmb_next(dmb_r_t *d, dmc_state_t *s, dmp_state_t *p, uint8_t *f, int check)
 {
@@ -393,7 +393,8 @@ static inline int dmb_next(dmb_r_t *d, dmc_state_t *s, dmp_state_t *p, uint8_t *
   } else if (type == 1) m = dmc_lh1_walk(s, f, 0, 0, &d->r);
   else if (type == 2) m = dmp_walk(p, f, 0, 0, &d->r);
   else {
-    m = (int)dmc_get(&d->r, 6) + 1;
+    m = (int)dmc_get(&d->r, 7) + 1;
+    if (m > DMB_MAXF) return -1;
     for (int k = 0; k < m; k++) f[k] = (uint8_t)dmc_get(&d->r, 8);
     if (!d->r.bad) { dmc_observe(s, f, m); dmp_observe(p, f, m); }
   }

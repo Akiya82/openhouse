@@ -218,6 +218,7 @@ class DoormanDongle {
   uint8_t seq_ = 0;
   Slot slots_[kSlots];
   std::vector<uint8_t> frag_[kSlots];   // a frame split over several stream reports, per slot
+  int packSeq_[kSlots]{};                 // packed reports (0x82): the next seq expected, -1 = not in step
 
   mutable std::mutex mutex_;          // featureWaits_, downlinks_, pairMs_, opened_, slot serials
   bool opened_ = false;

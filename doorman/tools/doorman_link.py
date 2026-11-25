@@ -71,6 +71,8 @@ class Dongle:
         self._pending = []
         self._seq = 0
         self._frag = {}
+        self._pseq = {}
+        self._packed = False
     def __enter__(self): return self
     def __exit__(self, *a):
         self.h.close()
@@ -84,7 +86,7 @@ class Dongle:
         while time.time() - t0 < timeout / 1000:
             r = self.h.read(64, 100)
             if r and r[0] == c and r[1] == seq: return r[2], bytes(r[3:])
-            if r and r[0] in (0x80, 0x81): self._pending.append(bytes(r))   # keep stream data
+            if r and r[0] in (0x80, 0x81, 0x82): self._pending.append(bytes(r))   # keep stream data
         raise TimeoutError(f"dongle cmd {c:#x}")
 
     def reports(self, timeout_ms=100):
@@ -99,9 +101,28 @@ class Dongle:
 
     def frames(self, raw=False, timeout_ms=100):
         """Yield (slot, frame) forever (None-free; returns nothing when idle, so loop over it)."""
+        if not self._packed:   # full reports (0x82), as the driver asks for; older dongles answer "bad command"
+            self._packed = True
+            try: self.cmd(0x37, b'\x01', 300)
+            except TimeoutError: pass
         while True:
             got = False
             for r in self.reports(timeout_ms):
+                if r[0] == 0x82 and len(r) >= 5:
+                    s, n, seq, first = r[1], r[2], r[3], r[4]
+                    b = self._frag.setdefault(s, bytearray()); body = r[5:5 + n]
+                    if self._pseq.get(s) != seq:
+                        b.clear()
+                        if first == 0xFF or first > n: self._pseq.pop(s, None); continue
+                        body = body[first:]
+                    self._pseq[s] = (seq + 1) & 0xFF
+                    b += body; i = 0
+                    while i < len(b) and i + 1 + b[i] <= len(b):
+                        if not b[i]: b.clear(); self._pseq.pop(s, None); break
+                        f = bytes(b[i + 1:i + 1 + b[i]]); i += 1 + b[i]
+                        got = True; yield s, (f if raw else parse(f))
+                    del b[:i]
+                    continue
                 if r[0] == 0x81:
                     b = self._frag.setdefault(r[1], bytearray())
                     b += r[3:3 + r[2]]

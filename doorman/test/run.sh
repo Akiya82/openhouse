@@ -23,8 +23,14 @@ if command -v arm-none-eabi-gcc > /dev/null && "$python" -c 'import unicorn' 2> 
   make -s -C "$here" emu
   "$out/batch_ref" "$out/frames.bin" "$out/batch_ref.bin" 0 3000 176 10
   "$python" "$here/emu/run_emu.py" "$out" "$out/frames.bin" 0 3000 176 10
+  echo "== the synthetic LH2 generator on the emulated Cortex-M4 (4 bases, density 2 and 8)"
+  "$python" "$here/emu/gen_emu.py" "$out" 4 2 3000
+  "$python" "$here/emu/gen_emu.py" "$out" 4 8 3000
 else
   echo "== chip timing skipped (needs arm-none-eabi-gcc and Python's unicorn)"
 fi
+echo "== the synthetic LH2 stream through the codec (5 devices, 4 bases, density 2)"
+"$out/lh2gen_check" "$out/gen.bin" 5 30 4 2 8
+"$out/codec_roundtrip" "$out/gen.bin" 10 176
 echo "== cycle simulation"
 "$out/cycle_sim"

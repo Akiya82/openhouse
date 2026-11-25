@@ -67,7 +67,7 @@ typedef struct {
   dmp_state_t lh2p;
   dmb_r_t br;
   uint8_t in_batch, bn, bql[DMB_MAX];
-  uint8_t bq[DMB_MAX][64];
+  uint8_t bq[DMB_MAX][DMB_MAXF];
   uint32_t resyncs;                     /* codec out of step: made to rejoin */
   uint32_t skip_until;                  /* ms_ticks until which this slot is not polled */
   dmc_state_t codec; uint32_t air_bytes, bad_frames;
@@ -75,6 +75,8 @@ typedef struct {
   uint8_t rssi_last_d, rssi_last_t, rssi_min_d, rssi_max_d;
   uint8_t ident[16];                    /* last 'H' frame, ident[0] = 0: none yet */
   uint16_t frag_left;                   /* bytes of a big frame still to send as 0x81 fragments */
+  uint16_t pk_rest;                     /* packed reports: bytes of an item that started in an earlier report */
+  uint8_t pk_seq;
   uint16_t upq_hw;                      /* most bytes waiting for USB since the last 0x28 read */
   uint8_t pend[DML_MAXLEN], pend_n, pend_k;   /* the last answer's frames, decoded from pend_k on */
   /* Ghost-follow: the hop state the device took from its last two answered POLLs (when the POLL went out, cycle,
@@ -211,7 +213,7 @@ static int decode_step(slot_t *s)
     s->in_batch = 1; s->bn = 0;
     return 1;
   }
-  uint8_t g[64]; int gl = fl;
+  uint8_t g[DMB_MAXF]; int gl = fl;
   if (f[0] >= DMC_IMU && f[0] <= DMC_LH2) {
     gl = dmc_decode(&s->codec, f, fl, g); f = g;
     if (!gl) { codec_lost(s); return 0; }
@@ -425,7 +427,7 @@ static void slot_reset(uint8_t i)
   dmp_reset(&s->lh2p);
   s->in_batch = 0;
   memset(s->ident, 0, sizeof s->ident);
-  s->up_head = s->up_tail; s->frag_left = 0;
+  s->up_head = s->up_tail; s->frag_left = 0; s->pk_rest = 0;
   s->pend_n = s->pend_k = 0;                               /* the old device's answer isn't for the new codec */
   s->g_have = 0; s->g_miss = 0; s->g_per[1] = 0;           /* joined afresh from a beacon: no old hop state */
   s->active = 1; s->last_resp_ms = ms_ticks;               /* poll it right away */
@@ -661,6 +663,28 @@ void link_poll(void)
 
 /* 0x80 [slot][n][whole [len][frame] items]; a frame too big for one report goes as consecutive
    0x81 [slot][n][raw bytes of [len][frame]] fragments */
+/* Packed stream (cmd 0x37, the host asks for it): [0x82][slot][n][seq][first][n bytes], the slot's
+   [len][frame] items back to back across reports, so every report goes out full: whole frames left LH2's
+   ~35-byte frames one to a report, and two busy devices filled an interface's 1000 reports a second. seq
+   counts the slot's reports (a gap: the host starts again), first is where the first item starting in this
+   report begins (0xFF: none). */
+static uint8_t usb_packed;
+static int stream_pop_packed(uint8_t *rep, slot_t *s, uint8_t si)
+{
+  const int used = upq_used(s);
+  if (!used) return 0;
+  const int n = used < 59 ? used : 59;
+  int first = s->pk_rest < n ? s->pk_rest : 0xFF;
+  if (first != 0xFF) {                                     /* where the next report's first item begins */
+    int pos = first;
+    while (pos < n) pos += 1 + s->upq[(s->up_head + pos) & (UPQ - 1)];
+    s->pk_rest = (uint16_t)(pos - n);
+  } else s->pk_rest = (uint16_t)(s->pk_rest - n);
+  for (int i = 0; i < n; i++) rep[5 + i] = s->upq[(s->up_head + i) & (UPQ - 1)];
+  s->up_head = (s->up_head + n) & (UPQ - 1);
+  rep[0] = 0x82; rep[1] = si; rep[2] = (uint8_t)n; rep[3] = s->pk_seq++; rep[4] = (uint8_t)first;
+  return 1;
+}
 int link_stream_pop(uint8_t *rep, int itf)
 {
   static uint8_t rrs[DONGLE_NIF];                /* round-robin position per interface */
@@ -669,6 +693,11 @@ int link_stream_pop(uint8_t *rep, int itf)
     uint8_t si = (uint8_t)((rr + k) % DML_SLOTS);
     if (si % DONGLE_NIF != itf) continue;         /* each slot stays on one interface: fragments in order */
     slot_t *s = &sl[si];
+    if (usb_packed) {
+      if (!stream_pop_packed(rep, s, si)) continue;
+      rrs[itf] = (uint8_t)(si + 1);
+      return 1;
+    }
     int n = 0;
     if (!s->frag_left) {
       while (upq_used(s)) {
@@ -756,6 +785,12 @@ int link_cmd(const uint8_t *in, uint8_t *d, uint8_t *st)    /* 0x20..0x2F, 0x32.
     for (int k = 0; k < DML_SLOTS; k++) d[34 + k] = sizing.pct[k];   /* saturation: worst, large answers, normal size, devices, per slot */
     ex_sum = ex_n = ex_max = dec_sum = dec_n = dec_max = 0;
     return 1;
+  case 0x37:                                                /* packed stream reports on/off (0x82) */
+    if (usb_packed != (in[2] ? 1 : 0)) {                    /* both kinds of report start clean */
+      usb_packed = in[2] ? 1 : 0;
+      for (int k = 0; k < DML_SLOTS; k++) { sl[k].up_head = sl[k].up_tail; sl[k].frag_left = 0; sl[k].pk_rest = 0; }
+    }
+    d[0] = usb_packed; return 1;
   case 0x2B: load_mask = in[2]; load_kbps = in[3]; d[0] = load_mask; d[1] = load_kbps; return 1;   /* test load */            /* identity ('H' frame) of a slot */
   case 0x28:                                                /* codec, and the radio's own drops */
     put32(d, s->air_bytes); put32(d + 4, s->bytes_up); put32(d + 8, s->bad_frames);

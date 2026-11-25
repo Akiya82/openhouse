@@ -27,6 +27,22 @@ absolute byte counts are a model; comparisons between formats use the same frame
 * `cycle_sim`: a model of the polling cycle under load, fixed answer sizes against `sizing.h`.
 * `run.sh CAPTURE [LHTOOL] [PYTHON]` does all of it on one capture.
 
+## Synthetic LH2 load on real devices (no LH2 hardware)
+`doorman_lh2gen.h` makes the frames an LH2 tracker's main MCU would send with up to 4 Base Station 2.0s,
+on the radio itself. Density 2 matches the two captures (hits, beam words, frame sizes, and the codec's
+-31..-33 %); higher densities load the link past them (8 is ~3x). `lh2gen_check` dumps it for
+`codec_roundtrip`; `emu/gen_emu.py` checks the radio build against the host one and its timing (at most
+125 us between yields at density 8, CPU <= 2.5 %).
+* Index-family radios (0x6A000025+): air op `'G' [bases][density]` adds it to the device's own stream
+  (`load.py gen SLOT BASES DENSITY`; 0 bases stops it).
+* Pro Micro (nRF52840) test devices: `make TARGET=fake` in `radio-fw` -> `radio_fake_sd.uf2` /
+  `radio_fake_nosd.uf2` (by the board's UF2 bootloader). Pairing mode for 35 s after power-up (LED on),
+  blinking while connected, generating 4 bases at density 2 from the start.
+* Radios without the LH2 coder (Tracker 1.0) stand in with filler at the same on-air rate (`L`).
+* `load.py sweep GEN FILLER [DENSITIES] [SECS]` steps the density and reports per step: decoded and on-air
+  kB/s per device, total on air, loss, drops (dongle, device), saturation, answer size (L = large), cycle;
+  it stops once data is dropped. Without the driver: it would take the made-up IMU for the devices' own.
+
 ## What it showed (two LH2 captures, 4 bases)
 * Batches with LH2 prediction: all traffic -31 to -35 % at 8 devices (176 B answers, ~10 ms cycle),
   every frame rebuilt exactly. A tracker ~8.3 -> ~5.5 kB/s.

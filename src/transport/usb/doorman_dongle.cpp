@@ -22,7 +22,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
-constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35;
+constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35, kCmdPacked = 0x37;
 constexpr size_t kNameMax = 59;   // what the dongle keeps (link.c DML_NAME_MAX)
 constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
@@ -126,6 +126,9 @@ bool DoormanDongle::Open(const DoormanDongleFound& found, double now) {
     opened_ = true;
   }
   for (auto& s : slots_) { s.used = s.active = s.noIdent = false; s.identSeq = -1; s.identTries = 0; }
+  for (int i = 0; i < kSlots; ++i) { frag_[i].clear(); packSeq_[i] = -1; }
+  const uint8_t on = 1;
+  Send(kCmdPacked, &on, 1);   // full stream reports; a dongle without it ignores the command and sends whole frames
   nextLive_ = 0;
   log_(LogLevel::Info, "Doorman Dongle " + serial_ + " opened");
   return true;
@@ -186,6 +189,7 @@ void DoormanDongle::Drop() {
     s.waiting = false;   // its wait for another dongle ends with this one
     s.waitConfig.clear();
     frag_[i].clear();
+    packSeq_[i] = -1;
   }
   for (auto& d : devs_) if (d) { hid_close(d); d = nullptr; }
   dev_ = nullptr;
@@ -402,6 +406,30 @@ void DoormanDongle::Pump(double now) {
 
 void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   if (n < 3) return;
+  if (r[0] == 0x82 && n >= 5) {
+    // Packed (cmd 0x37): the slot's [len][frame] items back to back across reports. A missing report
+    // (seq gap) loses what was being put together; reading starts again where an item begins.
+    const int slot = r[1], len = std::min<int>(r[2], n - 5), seq = r[3], first = r[4];
+    if (slot >= kSlots) return;
+    auto& buf = frag_[slot];
+    int from = 0;
+    if (packSeq_[slot] != seq) {
+      buf.clear();
+      if (first == 0xFF || first > len) { packSeq_[slot] = -1; return; }
+      from = first;
+    }
+    packSeq_[slot] = (seq + 1) & 0xFF;
+    buf.insert(buf.end(), r + 5 + from, r + 5 + len);
+    size_t i = 0;
+    while (i < buf.size() && i + 1 + buf[i] <= buf.size()) {
+      const int fl = buf[i];
+      if (!fl) { buf.clear(); packSeq_[slot] = -1; return; }   // never sent: out of step
+      OnFrame(slot, t, buf.data() + i + 1, fl, last && i + 1 + fl >= buf.size());
+      i += 1 + fl;
+    }
+    buf.erase(buf.begin(), buf.begin() + long(i));
+    return;
+  }
   if (r[0] == 0x80 || r[0] == 0x81) {
     const int slot = r[1], len = std::min<int>(r[2], n - 3);
     if (slot >= kSlots) return;

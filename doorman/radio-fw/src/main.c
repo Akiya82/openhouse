@@ -16,10 +16,15 @@
 #include "nrf.h"
 #include "doorman_link.h"
 static void addr_check(void);
+#ifdef DML_FAKE
+#pragma GCC diagnostic ignored "-Wunused-function"         /* the test device has no main MCU: its SPI side goes unused */
+#endif
 #define DMC_YIELD() addr_check()                           /* the codec checks for POLLs between fields */
 #include "doorman_codec.h"
 #ifdef DML_IDX
 #include "doorman_lh2p.h"                                  /* batches: the nRF52 radios have the RAM for it */
+#define DLG_YIELD() addr_check()
+#include "doorman_lh2gen.h"                                /* test load: a synthetic LH2 device (air op 'G') */
 #define DML_JF_MINE (DML_JF_CHECK | DML_JF_BATCH)
 #else
 #define DML_JF_MINE DML_JF_CHECK
@@ -674,7 +679,7 @@ static uint32_t ans_ptr, isr_t;
 static uint8_t isr_heard;
 /* Link timing (air 'T'): how late ADDRESS was seen (the hardware captures its time through PPI
    channel 26 into TIMER0 CC[1]), answers lost to that, and the codec's cost. Running totals. */
-static struct { uint32_t addr_n, late100, late200, no_answer, enc_n, enc_us; uint16_t lat_max, enc_max; } lt;
+static struct { uint32_t addr_n, late100, late200, no_answer, enc_n, enc_us; uint16_t lat_max, enc_max; } lt;   /* drops: batch / plain path, last one's queue, open batch, frame */
 static void addr_check(void)
 {
   if (!NRF_RADIO->EVENTS_ADDRESS) return;
@@ -773,7 +778,7 @@ static void batch_close(void)
 static void batch_open(void)
 {
   int cap = max_resp - DML_RESP_HDR - 1;                   /* one answer: its header and this one's length byte */
-  if (cap < 72) cap = 72;                                  /* a raw 64-byte frame always fits */
+  if (cap < DMB_MAXF + 8) cap = DMB_MAXF + 8;              /* the longest raw frame always fits */
   dmb_begin(&bt, bat, cap);
   bat_open = 1;
 }
@@ -781,7 +786,10 @@ static void batch_push(const uint8_t *f, uint8_t n)
 {
   /* dropped before the coders see it, as without batches; the open batch counts as queued */
   const int open = bat_open ? 2 + (bt.w.pos + 7) / 8 + 1 : 0;
-  if (uq_used() + open + n + 4 >= UQ_CAP) { uq_drops++; return; }
+  /* room for a closed batch waiting for its answer plus the open one: large answers make batches bigger than
+     UQ_CAP allows for, and still drain in two answers */
+  const int lim = 2 * max_resp + 8 > UQ_CAP ? 2 * max_resp + 8 : UQ_CAP;
+  if (n > DMB_MAXF || uq_used() + open + n + 4 >= lim) { uq_drops++; return; }
   addr_check();
   uint32_t te = now_us();
   /* closed early when this frame probably won't fit: coded frames rarely take more than 3/4 of raw */
@@ -849,6 +857,31 @@ static void drops_report(void)
    is kept in thousandths of a byte, so a loop pass shorter than 1000/kB/s us still counts. */
 static uint8_t load_kbps;
 static uint32_t load_at, load_budget;
+#ifdef DML_IDX
+/* Test load (air op 'G' [bases 0-4][density]): the frames an LH2 tracker's main MCU would send in a room with
+   that many Base Station 2.0s (doorman_lh2gen.h; density 2 ~ the captures, higher loads the link past them),
+   light only: the device's own IMU stays (a test device makes IMU too). For link tests without LH2 hardware:
+   run them without the driver. 0 bases = off; not kept across a reboot. */
+static dlg_t gen;
+static uint8_t gen_bases, gen_density;
+static uint32_t gen_t0;
+static void gen_emit(const uint8_t *f, int n, void *ctx) { (void)ctx; uplink_push(f, (uint8_t)n); }
+static void gen_start(uint8_t bases, uint8_t density)
+{
+  gen_bases = bases > DLG_MAXB ? DLG_MAXB : bases; gen_density = density;
+  if (gen_bases) {
+    dlg_init(&gen, NRF_FICR->DEVICEID[0], gen_bases, gen_density, 8); gen_t0 = now_us();
+#ifndef DML_FAKE
+    gen.imu = 0;                                           /* the device's own IMU: a second one would be no tracker's */
+#endif
+  }
+}
+static void gen_tick(void)
+{
+  if (!link_up || !gen_bases) return;
+  dlg_run(&gen, (now_us() - gen_t0) * 48u, gen_emit, 0);   /* the device's 48 MHz clock */
+}
+#endif
 static void load_tick(void)
 {
   const uint32_t now = now_us(), dt = now - load_at;
@@ -1034,6 +1067,13 @@ static void air_update(const uint8_t *f, uint8_t n)
     uint8_t x[3] = { DML_AIR_UPD, 'L', load_kbps };
     air_reply(x, 3); return;
   }
+#ifdef DML_IDX
+  case 'G': {                                              /* synthetic LH2 load: [bases 0-4][density] */
+    gen_start(n > 2 ? f[2] : 0, n > 3 ? f[3] : 2);
+    uint8_t x[4] = { DML_AIR_UPD, 'G', gen_bases, gen_density };
+    air_reply(x, 4); return;
+  }
+#endif
   case 'T': {                                              /* link timing (lt) */
     uint8_t x[40] = { DML_AIR_UPD, 'T' };
     memcpy(x + 2, &lt, sizeof lt);
@@ -1047,7 +1087,11 @@ static void air_update(const uint8_t *f, uint8_t n)
     air_reply(x, 54); return;
   }
 #endif
+#ifdef DML_FAKE
+  case 'Y': r[2] = 1; air_reply(r, 3); return;             /* a test device: its flash holds its own image there */
+#else
   case 'Y': stg_open = 1; stg_air = 1; stg_off = 0; r[2] = 0; air_reply(r, 3); return;
+#endif
   case 'Z': {
     uint32_t off; if (n < 6) return;
     memcpy(&off, f + 2, 4);
@@ -1169,19 +1213,49 @@ static void radio_poll(void)
   else arm_rx(answer_join);
 }
 
+#ifdef DML_FAKE
+/* A Pro Micro (nRF52840) as a test device for link load tests: this radio firmware with no main MCU behind
+   it. It pairs like a device (pairing mode for 35 s after power-up: open pairing in the dongle manager then),
+   sends the synthetic LH2 load from the start (4 bases, density 2; air op 'G' changes it), and shows on its
+   LED: blinking while connected, on while pairing. */
+#define FAKE_LED 15                                        /* P0.15, active high */
+static void fake_init(void)
+{
+  NRF_P0->PIN_CNF[FAKE_LED] = 1;
+  pair_start();
+  gen_start(4, 2);
+}
+static void fake_poll(void)
+{
+  const int on = pair_mode ? 1 : link_up ? (int)((now_us() >> 18) & 1) : 0;
+  if (on) NRF_P0->OUTSET = 1u << FAKE_LED; else NRF_P0->OUTCLR = 1u << FAKE_LED;
+}
+#endif
+
 /* ---------------- main ---------------- */
 int main(void)
 {
+#ifdef DML_IDX
+  NRF_NVMC->ICACHECNF = NVMC_ICACHECNF_CACHEEN_Msk;        /* off after reset: every fetch waited on flash (~3x slower codec) */
+#endif
   DG(dg_boot());
   boot_count();
   wdt_start();
   timer_init();
+#ifdef DML_FAKE
+  fake_init();
+#else
   spis_init();
+#endif
   uint32_t t0 = now_us();
   for (;;) {
     wdt_feed();
+#ifdef DML_FAKE
+    fake_poll();
+#else
     spis_poll();                                           /* updater lives here: always first */
     spis_kick();                                           /* a reply queued on an idle bus: raise ATTN now */
+#endif
     if (!link_enabled && !safe_mode && !link_safe_request && !link_sleep && !(stg_open && !stg_air) && now_us() - t0 > 1000000) {
       radio_setup(); link_enabled = 1; go_unjoined();
     }
@@ -1190,7 +1264,7 @@ int main(void)
       if (link_up) { link_up = 0; uint8_t ev[1] = { 0x53 }; reply_push(ev, 1); }
     }
     radio_poll();
-#ifdef DML_IDX
+#if defined(DML_IDX) && !defined(DML_FAKE)
     sys_button_poll();
     gpio_watch_poll();
     adc_poll();
@@ -1198,9 +1272,12 @@ int main(void)
     if (pair_mode && now_us() - pair_since > 35000000u) pair_end();   /* the main MCU gives up at 30 s */
     drops_report();
     load_tick();
+#ifdef DML_IDX
+    gen_tick();
+#endif
     if (air_reset_at && (int32_t)(now_us() - air_reset_at) > 0) reset_now();
     if (boot_rec.quick_boots && now_us() - t0 > 5000000) boot_stable();
-#ifdef DML_IDX
+#if defined(DML_IDX) && !defined(DML_FAKE)
     if (now_us() - t0 > 10000000) staging_scrub();
 #endif
   }

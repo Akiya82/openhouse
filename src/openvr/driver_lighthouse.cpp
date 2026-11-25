@@ -839,8 +839,13 @@ class Device : public ITrackedDeviceServerDriver {
       CreateSkeleton();
       return;
     }
-    if (info_.controllerType == lh::ControllerType::Mapped) CreateMappedInputs();
-    else CreateIndexInputs(b, s1, s2);
+    // A mapped controller (FlipVR) gets no skeleton, as with the stock driver: it has no finger
+    // sensors, and apps that see one take it over their own hand poses (VRChat's gestures).
+    if (info_.controllerType == lh::ControllerType::Mapped) {
+      CreateMappedInputs();
+      return;
+    }
+    CreateIndexInputs(b, s1, s2);
     CreateSkeleton();
   }
 

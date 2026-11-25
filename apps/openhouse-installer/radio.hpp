@@ -19,6 +19,12 @@
 
 namespace openhouse::installer {
 
+// Closing: a background scan (ScanThread set on its thread) gives up its slow device requests at
+// once, so the window doesn't wait for it. Jobs (flashing) aren't scans and always finish.
+inline std::atomic<bool> g_closing{false};
+inline thread_local bool t_scan = false;
+inline bool ScanStopping() { return t_scan && g_closing; }
+
 // Newer: nRF52 radios (doorman-radio-wm3.fw). Tracker10: HTC's nRF51 "vrc module" radios, in the
 // VIVE Tracker 1.0 and the VIVE wand (doorman-radio-neo.bin).
 enum class RadioFamily { Newer, Tracker10, Unsupported };

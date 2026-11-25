@@ -95,6 +95,7 @@ int Run(const std::string& mode) {
     }
   }
   // Scans finish on their own threads: let the last one end before the process does (bounded).
+  openhouse::installer::g_closing = true;
   std::unique_lock devices(openhouse::installer::g_deviceMutex, std::defer_lock);
   for (int i = 0; i < 100 && !devices.try_lock(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
   ImGui_ImplOpenGL2_Shutdown();

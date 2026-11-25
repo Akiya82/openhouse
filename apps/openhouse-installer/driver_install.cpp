@@ -1,4 +1,5 @@
 #include "driver_install.hpp"
+#include "shortcuts.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -468,6 +469,34 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
     SetRegistration(p, manifest, kOverlayKey, true, log);
     log("Added openhouse to SteamVR's dashboard");
   }
+  // The apps people start themselves, from the menu.
+  std::vector<Shortcut> shortcuts;
+  // The package's PNG logos (Linux; Windows takes each program's own icon).
+  auto icon = [&](const char* name) {
+    const fs::path from = tools / name, to = p.data / "icons" / name;
+    if (!fs::exists(from, ec)) return fs::path();
+    fs::create_directories(to.parent_path(), ec);
+    try { CopyOver(from, to); } catch (const std::exception&) { return fs::path(); }
+    return to;
+  };
+  if (fs::exists(p.data / overlay.filename(), ec)) {
+    Shortcut s{"openhouse", "openhouse", "Devices, base stations, room and settings", p.data / overlay.filename(), icon("openhouse.png"), {}};
+#ifndef _WIN32
+    // Envision runs it as a plugin; the systemd check does the same job when it's on.
+    if (!options.monadoCheck) s.xrPluginArgs = {"--check", Utf8(p.directory)};
+#endif
+    shortcuts.push_back(s);
+  }
+  if (const fs::path m = tools / (std::string("doorman-dongle-manager") + kExe); fs::exists(m, ec)) {
+    try {
+      CopyOver(m, p.data / m.filename());
+    } catch (const std::exception& e) {
+      log(std::string("Dongle manager not updated (is it open?): ") + e.what());
+    }
+    if (fs::exists(p.data / m.filename(), ec)) shortcuts.push_back({"doorman-dongle-manager", "Doorman Dongle Manager", "Doorman Dongle pairing, channels and firmware", p.data / m.filename(), icon("dongle-manager.png"), {}});
+  }
+  if (const std::string failed = InstallShortcuts(shortcuts); !failed.empty()) log("Menu entries not added: " + failed);
+  else if (!shortcuts.empty()) log("Added the apps to the menu");
 #ifndef _WIN32
   if (options.monadoCheck) {
     InstallMonadoCheck(p);
@@ -513,10 +542,13 @@ void UninstallDriver(const fs::path& steamvr, const std::function<void(const std
 #ifndef _WIN32
   RemoveMonadoCheck();
 #endif
+  Try(log, "Menu entries not removed", [&] { RemoveShortcuts(); });
   // Only the files the installer put there: the folder also holds the user's recordings.
   for (const char* name : {"update-checker", "update-checker.exe", "update-checker.vrmanifest", "openhouse-installer", "openhouse-installer.exe", "openhouse-overlay",
-                           "openhouse-overlay.exe", "openhouse-overlay.vrmanifest", "openhouse-monado-watch", kBleLibrary})
+                           "openhouse-overlay.exe", "openhouse-overlay.vrmanifest", "openhouse-monado-watch", "doorman-dongle-manager",
+                           "doorman-dongle-manager.exe", kBleLibrary})
     RemoveFile(p.data / name);
+  fs::remove_all(p.data / "icons", ec);
   fs::remove_all(p.data / "package", ec);
   fs::remove_all(p.data / "update", ec);
   fs::remove(p.data, ec);  // only goes when nothing else is in it

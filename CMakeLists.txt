@@ -367,11 +367,12 @@ if(LH_BUILD_VIEWER)
     add_executable(openhouse-installer WIN32 apps/openhouse-installer/main.cpp apps/openhouse-installer/ui.cpp
                    apps/openhouse-installer/system.cpp apps/openhouse-installer/driver_install.cpp
                    apps/openhouse-installer/drives.cpp apps/openhouse-installer/radio.cpp
-                   apps/openhouse-installer/device_type.cpp apps/openhouse-installer/self_update.cpp src/common/nordic_dfu.cpp)
+                   apps/openhouse-installer/device_type.cpp apps/openhouse-installer/self_update.cpp apps/openhouse-installer/shortcuts.cpp
+                   src/common/nordic_dfu.cpp)
     target_include_directories(openhouse-installer PRIVATE include src apps/openhouse-overlay)
     target_link_libraries(openhouse-installer PRIVATE lh_imgui ${LH_HIDAPI_TARGET} nlohmann_json::nlohmann_json)
     if(WIN32)
-      target_link_libraries(openhouse-installer PRIVATE shell32 ole32 setupapi winhttp)
+      target_link_libraries(openhouse-installer PRIVATE shell32 ole32 uuid setupapi winhttp)
     else()
       target_link_options(openhouse-installer PRIVATE -static-libstdc++ -static-libgcc)
     endif()

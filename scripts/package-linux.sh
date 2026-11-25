@@ -35,9 +35,12 @@ for app in lhtool lhcapture lhviz openhouse-viewer openhouse-overlay doorman-don
   strip "$out/apps/$app"
   patchelf --remove-rpath "$out/apps/$app"
 done
+# The apps' menu logos (the installer's menu entries).
+cp "$repo/cmake/linux/openhouse.png" "$repo/cmake/linux/dongle-manager.png" "$out/apps/"
 # ShayBox's Lighthouse library: the overlay's channel changes over Bluetooth (installed next to it).
 python3 "$repo/scripts/fetch-lighthouse-ble.py" linux "$out/apps" > /dev/null
 # Runnable straight out of the archive.
 chmod 755 "$out/openhouse-installer" "$out"/apps/*
+chmod 644 "$out"/apps/*.png
 tar czf "$repo/dist/openhouse-linux-x64.tar.gz" -C "$repo/dist" openhouse-linux-x64
 echo "Packaged $repo/dist/openhouse-linux-x64.tar.gz"

@@ -667,12 +667,13 @@ fs::path DongleImage(bool softDevice) {
 
 }  // namespace
 
-void Job::Start(std::function<bool(Job&)> work) {
+void Job::Start(std::function<bool(Job&)> work, bool devices) {
   Reset();
   running_ = true;
-  thread_ = std::thread([this, work] {
+  thread_ = std::thread([this, work, devices] {
     bool ok = false;
-    std::lock_guard devices(g_deviceMutex);  // a stopped scan may still be finishing
+    std::unique_lock lock(g_deviceMutex, std::defer_lock);
+    if (devices) lock.lock();  // a stopped scan may still be finishing
     try {
       ok = work(*this);
     } catch (const std::exception& e) {
@@ -991,7 +992,7 @@ bool Ui::DeviceAccess() {
       std::string error;
       if (!InstallDeviceAccess(&error)) { j.Fail(error); return false; }
       return true;
-    });
+    }, false);
     accessChecked_ = -1;
   }
   ImGui::EndDisabled();
@@ -1014,7 +1015,7 @@ bool Ui::RuntimesClosed() {
     closeJob_.Start([](Job& j) {
       if (!CloseRuntimes()) { j.Fail("Couldn't close them, close them manually"); return false; }
       return true;
-    });
+    }, false);
   }
   std::string list;
   for (const auto& n : running_) list += (list.empty() ? "" : ", ") + n;
@@ -1024,7 +1025,7 @@ bool Ui::RuntimesClosed() {
     closeJob_.Start([](Job& j) {
       if (!CloseRuntimes()) { j.Fail("Couldn't close them, close them manually"); return false; }
       return true;
-    });
+    }, false);
   }
   ImGui::EndDisabled();
   if (closeJob_.Finished() && !closeJob_.Ok()) ImGui::TextColored(kBad, "%s", closeJob_.Error().c_str());
@@ -1226,7 +1227,7 @@ void Ui::InstallPage(bool install) {
       if (install) InstallDriver(root, options, log);
       else UninstallDriver(root, log);
       return true;
-    });
+    }, false);
   }
   Back(Page::Home);
 }

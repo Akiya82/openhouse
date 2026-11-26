@@ -380,6 +380,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   bool explicitControllers_ = false;
   std::string leftController_, rightController_;
   std::set<std::string> disabled_;
+  std::set<std::string> disableImuDevices_;
   double smoothPosition_ = DeviceTracker::kDefaultSmoothing, smoothRotation_ = DeviceTracker::kDefaultSmoothing;
   bool reportAcceleration_ = true;
   std::map<std::string, std::string> roles_;  // settings.json "roles": serial -> tracked_controller_role
@@ -432,6 +433,7 @@ bool SessionImpl::Start(std::string* error) {
   LoadSettings();  // settings.json "mixedLight" into mixed_
   if (options_.mixedLight != MixedLightOptions{}) mixed_ = options_.mixedLight;  // lhtool --mixed-light
   for (const auto& serial : options_.disabledDevices) disabled_.insert(serial);
+  for (const auto& serial : options_.disableImuDevices) disableImuDevices_.insert(serial);
   preinitDir_ = options_.preinitDirectory == "-" ? "" : options_.preinitDirectory.empty() && !replay ? DefaultPreinitDirectory()
                                                                                                     : options_.preinitDirectory;
   LoadPreinit();
@@ -740,6 +742,10 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
     d.tracker->SetReportAcceleration(reportAcceleration_);
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+    if (disableImuDevices_.count(id)) {
+      d.tracker->SetImuDisabled(true);
+      Emit(SessionEventType::Log, id, id + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+    }
     StartMixedLight(d);
     models_[id] = d.tracker->ImuModel();
     for (const auto& [serial, b] : bases_)
@@ -1791,6 +1797,7 @@ void SessionImpl::LoadSettings() {
       explicitControllers_ = true;
     }
     for (const auto& serial : j.value("disabledDevices", std::vector<std::string>{})) disabled_.insert(serial);
+    for (const auto& serial : j.value("disableImuDevices", std::vector<std::string>{})) disableImuDevices_.insert(serial);
     if (j.contains("mixedLight")) {
       // 1.0 and 2.0 base stations together: true/false, or
       // {"enabled": true, "controllers": true, "trackers": true, "scout": true, "preferLh2": false,
@@ -1962,6 +1969,8 @@ void SessionImpl::SaveSettings() {
       if (in) j = json::parse(in);
     }
     j["disabledDevices"] = std::vector<std::string>(disabled_.begin(), disabled_.end());
+    if (!disableImuDevices_.empty() || j.contains("disableImuDevices"))
+      j["disableImuDevices"] = std::vector<std::string>(disableImuDevices_.begin(), disableImuDevices_.end());
     const std::filesystem::path target(settingsPath_);
     if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path());
     const std::string temp = settingsPath_ + ".tmp";
@@ -1996,6 +2005,10 @@ void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {
       d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
       d.tracker->SetReportAcceleration(reportAcceleration_);
       d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+      if (disableImuDevices_.count(serial)) {
+        d.tracker->SetImuDisabled(true);
+        Emit(SessionEventType::Log, serial, serial + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+      }
       StartMixedLight(d);
       for (const auto& [base, b] : bases_)
         if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
@@ -2034,6 +2047,10 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
     d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
     d.tracker->SetReportAcceleration(reportAcceleration_);
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+    if (disableImuDevices_.count(id)) {
+      d.tracker->SetImuDisabled(true);
+      Emit(SessionEventType::Log, id, id + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+    }
     StartMixedLight(d);
     for (const auto& [base, b] : bases_)
       if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);

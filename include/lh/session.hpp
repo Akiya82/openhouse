@@ -234,6 +234,9 @@ struct SessionOptions {
   // Devices to ignore (serials, e.g. "LHR-0704E07A"). Merged with the persisted
   // settings ($XDG_CONFIG_HOME/lh/settings.json) for live sessions.
   std::vector<std::string> disabledDevices;
+  // Devices whose IMU is ignored (optical-only mode, serials, e.g. "LHR-61420433").
+  // Merged with the persisted settings ($XDG_CONFIG_HOME/lh/settings.json) for live sessions.
+  std::vector<std::string> disableImuDevices;
   // Settings file; empty = default for live sessions, none for replays.
   std::string settingsPath;
   // Device JSON configs (*.json, e.g. from `lhtool configs`) of devices to create at start,

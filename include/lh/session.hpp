@@ -307,6 +307,9 @@ class Session {
     int devicesOnDongle = 0;     // openhouse: devices joined on the whole dongle
     std::string name;            // openhouse: the user's name for the slot's device, kept on the dongle
     bool keepsName = false;      // openhouse: the dongle keeps names (firmware 0x0025+)
+    int firmware = 0;            // openhouse: the dongle's firmware, 0 unknown
+    uint32_t radio = 0;          // openhouse: the slot's device radio firmware, 0 unknown
+    bool firmwareOld = false, radioOld = false;   // older than what this driver came with
   };
   virtual std::vector<Receiver> Receivers() const = 0;
   // Stores a name on an openhouse slot ("OHDG-.../3"); false if there's no such slot.

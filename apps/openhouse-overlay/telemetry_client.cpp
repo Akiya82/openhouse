@@ -149,6 +149,8 @@ void TelemetryClient::Handle(const std::string& line) {
       if (r.contains("rssi") && r["rssi"].is_array() && r["rssi"].size() == 2) {
         x.rssiDongle = r["rssi"][0].get<int>(); x.rssiDevice = r["rssi"][1].get<int>();
       }
+      x.firmware = r.value("firmware", 0); x.firmwareOld = r.value("firmwareOld", false);
+      x.radio = r.value("radio", uint32_t(0)); x.radioOld = r.value("radioOld", false);
       s.receivers.push_back(std::move(x));
     }
     if (const auto st = j.find("settings"); st != j.end() && st->is_object()) s.settingsJson = st->dump();

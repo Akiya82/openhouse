@@ -50,6 +50,9 @@ struct Receiver {
   bool paired = true, linked = false;
   double kBytesPerSec = 0, framesPerSec = 0, loss = -1, drops = 0;
   int rssiDongle = 0, rssiDevice = 0;
+  int firmware = 0;                            // Doorman: the dongle's firmware, 0 unknown
+  uint32_t radio = 0;                          // Doorman: the device's radio firmware, 0 unknown
+  bool firmwareOld = false, radioOld = false;  // older than what the driver came with
 };
 
 struct Room {

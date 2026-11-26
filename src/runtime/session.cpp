@@ -220,6 +220,7 @@ class SessionImpl final : public Session, public InputSinkBase {
         o.dropsPerSec = r.dropsPerSec; o.rssiDongle = r.rssiDongle; o.rssiDevice = r.rssiDevice;
         o.devicesOnDongle = r.devicesOnDongle;
         o.name = r.name; o.keepsName = r.keepsName;
+        o.firmware = r.firmware; o.radio = r.radio; o.firmwareOld = r.firmwareOld; o.radioOld = r.radioOld;
         out.push_back(o);
       }
     return out;

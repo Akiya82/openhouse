@@ -158,7 +158,7 @@ if(LH_BUILD_USB)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/transport/usb>
     $<$<BOOL:${HIDAPI_PARENT_DIR}>:$<BUILD_INTERFACE:${HIDAPI_PARENT_DIR}>>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  target_include_directories(lh_usb PRIVATE src)
+  target_include_directories(lh_usb PRIVATE src doorman/common)   # doorman_versions.h
   target_link_libraries(lh_usb PUBLIC lh_common ${LH_HIDAPI_TARGET} Threads::Threads ZLIB::ZLIB)
   if(WIN32)
     target_link_libraries(lh_usb PUBLIC advapi32)

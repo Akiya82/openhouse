@@ -152,6 +152,8 @@ void TelemetryServer::PublishState(double time, const SessionSnapshot& snapshot,
     if (r.slot >= 0) {   // a Doorman Dongle slot
       e["slot"] = r.slot; e["paired"] = r.paired; e["loss"] = r.lossPercent; e["drops"] = r.dropsPerSec;
       e["rssi"] = {r.rssiDongle, r.rssiDevice};
+      if (r.firmware) { e["firmware"] = r.firmware; e["firmwareOld"] = r.firmwareOld; }
+      if (r.radio) { e["radio"] = r.radio; e["radioOld"] = r.radioOld; }
     }
     rx.push_back(std::move(e));
   }

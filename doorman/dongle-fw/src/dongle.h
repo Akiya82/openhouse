@@ -1,9 +1,9 @@
 #pragma once
 #include "nrf.h"
+#include "doorman_versions.h"   /* DONGLE_FW_VERSION */
 
 #define DONGLE_VID         0x6767
 #define DONGLE_PID         0x0727
-#define DONGLE_FW_VERSION  0x002B
 /* USB data interfaces: slot s streams on interface s % DONGLE_NIF (interface 0 also carries commands).
    Five since 0x002B (four before): hosts take the count from bcdDevice. */
 #define DONGLE_NIF         5

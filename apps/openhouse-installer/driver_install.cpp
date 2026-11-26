@@ -450,6 +450,14 @@ void InstallDriver(const fs::path& steamvr, const InstallOptions& options, const
     }
     if (const fs::path o = tools / (std::string("openhouse-overlay") + kExe); fs::exists(o, ec)) CopyOver(o, saved / "apps" / o.filename());
     if (const fs::path b = tools / kBleLibrary; fs::exists(b, ec)) CopyOver(b, saved / "apps" / b.filename());
+    // The dongle and radio firmware, for the overlay's firmware warning (it starts this copy with
+    // --dongles): the over-USB/over-the-air images only, not the bootloader ones.
+    for (const char* sub : {"dongle/bank", "radio"}) {
+      const fs::path from = here / "firmwares" / sub;
+      if (!fs::is_directory(from, ec)) continue;
+      fs::create_directories(saved / "firmwares" / sub, ec);
+      for (const auto& e : fs::directory_iterator(from, ec)) CopyOver(e.path(), saved / "firmwares" / sub / e.path().filename());
+    }
     // The menu entries' apps and logos: a repair from this package puts them back too.
     if (const fs::path m = tools / (std::string("doorman-dongle-manager") + kExe); fs::exists(m, ec)) {
       try { CopyOver(m, saved / "apps" / m.filename()); } catch (const std::exception&) {}   // a copy is only for repairs

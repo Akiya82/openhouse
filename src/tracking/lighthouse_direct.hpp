@@ -42,6 +42,8 @@ inline int SlotToGiveUp(const double lastUsed[4], double now) {
 class LighthouseDirect {
  public:
   static constexpr double kSaturatedJerkScale = 10;  // process noise while the accelerometer saturates
+  static constexpr double kClippedGateMove = 0.30;   // m: the frame gate's move while the accelerometer clips
+  static constexpr double kClippedGateFor = 0.25;    // s after the last clipped sample
   // Blind (no light for kBlindAfter s): velocity capped at kBlindMaxSpeed m/s and faded with
   // the time constant kBlindFade s (see ImuUpdate).
   static constexpr double kBlindAfter = 0.1, kBlindMaxSpeed = 6.0, kBlindFade = 0.2;
@@ -188,6 +190,7 @@ class LighthouseDirect {
   double time_ = 0, lastOpticalTime_ = 0, opticalTimeout_ = 0.5;
   bool swing_ = false;
   bool imuDisabled_ = false;
+  double accelClippedAt_ = -1e300;  // the last sample with an accelerometer axis clipped
   double violentUntil_ = -1e300;  // IMU calibration held until (freezeImuCalibration)
   // Vibration: the accelerometer's first and second differences between samples,
   // averaged over ~0.25 s. Jitter over kVibrationJitter (m/s2) with roughness over

@@ -354,7 +354,7 @@ bool DirectFilter::Update(const std::vector<Residual>& res, const Mat& R, const 
   // 2026-10-22 (no fly-aways).
   if (gate && !frameGateOff && gateSigma > 0 && updateCount >= 200 && opticalRows > 0 &&
       2 * lastOutliers > opticalRows &&
-      dx.size() >= 3 && dx.head<3>().norm() > kFrameRejectMove) {
+      dx.size() >= 3 && dx.head<3>().norm() > frameRejectMove) {
     ++rejectedFrames;
     return false;
   }

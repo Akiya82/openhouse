@@ -128,6 +128,7 @@ bool LighthouseDirect::ImuUpdate(const ImuSample& sample) {
   // times; with this, none (fastmotion3: tracking 91 -> 97 %). x10 is the strength: x100
   // was worse on both. Gyro saturation is left alone (it added rotation spikes).
   if (swing_ && (sample.saturated & 0x7)) filter_.Q.topLeftCorner(9, 9) *= kSaturatedJerkScale;
+  if (sample.saturated & 0x7) accelClippedAt_ = sample.time;
   filter_.Predict(dt, dt);
   // Not stock: a saturated axis still says the true value is at least its reading
   // (the range limit), that way. Stock drops it, and the filter, left to the light
@@ -560,6 +561,15 @@ bool LighthouseDirect::ApplyOpticalResiduals(const OpticalFrame& frame, const Ba
   // stays gated: lifting that too let bad light through (spin-01: 229 -> 344).
   if (imuDisabled_) filter_.holdImuCalibration = true;
   filter_.frameGateOff = slot != 0 && filter_.updateCount < altGateUntil_;
+  // Not stock: while the accelerometer clips (and kClippedGateFor after), the prediction falls
+  // behind a hard flick by more than the frame gate's 10 cm, and the gate refused the light
+  // that would have caught it up: the filter coasted on, ran off and reset. A user's Index
+  // controllers clipped at 8 g in 4-9 % of samples, resetting 15 times in 3 minutes; with
+  // kClippedGateMove, 5 (fastmotion4 jumps > 5 cm 131 -> 34, fastmotion5 resets 5 -> 3,
+  // testswing tracked 29 -> 40 %; wandfast jumps > 5 cm 30 -> 42; fastmotionindex and
+  // vrchat-01 unchanged: their accelerometers barely clip). 35 cm gained nothing more and
+  // cost jumps; widening it by time refused instead (frames already metres off by then).
+  filter_.frameRejectMove = swing_ && time - accelClippedAt_ < kClippedGateFor ? kClippedGateMove : DirectFilter::kFrameRejectMove;
   const bool ok = filter_.Update(residuals, R, Eigen::Map<Vec>(z.data(), m), true);
   filter_.frameGateOff = false;
   if (!ok) return false;

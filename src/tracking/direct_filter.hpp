@@ -110,6 +110,7 @@ class DirectFilter {
   static constexpr double kFrameRejectMove = 0.10;  // m
   uint64_t rejectedFrames = 0;
   bool frameGateOff = false;  // set per update by the caller (see LighthouseDirect)
+  double frameRejectMove = kFrameRejectMove;  // m, the frame gate's move; set per update by the caller
   double omegaCorrectionLimit2 = 1e300;  // +0x408 (|dω|² limit)
   bool altBaseActive[3] = {false, false, false};  // base slots 1..3 in use (+0x1d0..)
   // Not stock: slots whose base is being relearned (knocked): a correction moving it

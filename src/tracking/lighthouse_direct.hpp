@@ -55,6 +55,14 @@ class LighthouseDirect {
     multiStart_ = multiStart; filter_.gateSigma = gateSigma; swing_ = swing;
     filter_.gravityTolerance = multiStart ? 0.98 : 0.49033249999999996;
   }
+  // Not stock: disable IMU integration for a device with a dead/corrupted IMU (optical-only tracking).
+  void SetImuDisabled(bool disabled) {
+    imuDisabled_ = disabled;
+    filter_.imuDisabled = disabled;
+    filter_.holdImuCalibration = disabled;
+    if (disabled) imu_.clear();
+  }
+  bool ImuDisabled() const { return imuDisabled_; }
   // Not stock, off by default (0, 0): in a room with both kinds of base station, light in LH1 mode
   // sits about twice as far from the pose as an LH2 word, and weighted as one it shakes the pose.
   // sortedSeconds: added to the timing scatter of a 2.0 hit picked out of LH1 pulses
@@ -179,6 +187,7 @@ class LighthouseDirect {
   double slotUsed_[4] = {-1e300, -1e300, -1e300, -1e300};  // SlotToGiveUp: or when the base got the slot
   double time_ = 0, lastOpticalTime_ = 0, opticalTimeout_ = 0.5;
   bool swing_ = false;
+  bool imuDisabled_ = false;
   double violentUntil_ = -1e300;  // IMU calibration held until (freezeImuCalibration)
   // Vibration: the accelerometer's first and second differences between samples,
   // averaged over ~0.25 s. Jitter over kVibrationJitter (m/s2) with roughness over

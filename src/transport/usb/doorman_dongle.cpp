@@ -54,27 +54,36 @@ void AddSensorType(std::string* json, int type) {
 
 }  // namespace
 
+int DoormanInterfaceCount(unsigned short firmware) { return firmware >= 0x002B ? 5 : 4; }
+
 std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list, std::map<std::string, int>* shared) {
   // Every interface carries the dongle's USB serial: that groups them, whatever order hidapi lists them in.
-  std::map<std::string, std::array<std::vector<std::string>, kDoormanInterfaces>> bySerial;
+  struct Listed { std::array<std::vector<std::string>, kDoormanInterfaces> paths; unsigned short firmware = 0; };
+  std::map<std::string, Listed> bySerial;
   for (const hid_device_info* d = list; d; d = d->next) {
     if (d->vendor_id != kVid || d->product_id != kPid || !d->path) continue;
     if (Narrow(d->product_string).rfind("Doorman Dongle", 0) != 0) continue;   // "Doorman Dongle <board>"
     if (d->interface_number < 0 || d->interface_number >= kDoormanInterfaces) continue;
-    bySerial[Narrow(d->serial_number)][size_t(d->interface_number)].push_back(d->path);
+    auto& l = bySerial[Narrow(d->serial_number)];
+    l.paths[size_t(d->interface_number)].push_back(d->path);
+    l.firmware = std::max(l.firmware, d->release_number);
   }
   std::vector<DoormanDongleFound> out;
   for (const auto& [usbSerial, found] : bySerial) {
     const std::string serial = "OHDG-" + usbSerial;
+    const int count = DoormanInterfaceCount(found.firmware);
     size_t most = 0, fewest = SIZE_MAX;
-    for (const auto& paths : found) { most = std::max(most, paths.size()); fewest = std::min(fewest, paths.size()); }
+    for (int i = 0; i < count; ++i) {
+      most = std::max(most, found.paths[size_t(i)].size());
+      fewest = std::min(fewest, found.paths[size_t(i)].size());
+    }
     if (most > 1) {   // several dongles: whose interfaces are whose?
       if (shared) (*shared)[serial] = int(most);
       continue;
     }
     if (fewest == 0) continue;   // not every interface listed yet
     DoormanDongleFound f{serial, {}};
-    for (int i = 0; i < kDoormanInterfaces; ++i) f.paths[size_t(i)] = found[size_t(i)].front();
+    for (int i = 0; i < count; ++i) f.paths[size_t(i)] = found.paths[size_t(i)].front();
     out.push_back(std::move(f));
   }
   return out;
@@ -118,7 +127,7 @@ std::mutex g_openMutex;
 void OpenInterfaces(const std::array<std::string, kDoormanInterfaces>& paths,
                     std::array<hid_device_*, kDoormanInterfaces>* devs, hid_device_** writeDev, bool writeHandle) {
   std::lock_guard lock(g_openMutex);
-  for (size_t i = 0; i < paths.size(); ++i) {
+  for (size_t i = 0; i < paths.size() && !paths[i].empty(); ++i) {
     (*devs)[i] = hid_open_path(paths[i].c_str());
     if (!(*devs)[i]) {
       for (auto& d : *devs) if (d) { hid_close(d); d = nullptr; }
@@ -442,7 +451,7 @@ void DoormanDongle::Pump(double now) {
     return n[cur] >= 0;
   };
   for (auto* d : devs_)
-    if (!drain(d)) { Drop(); return; }
+    if (d && !drain(d)) { Drop(); return; }
 }
 
 void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {

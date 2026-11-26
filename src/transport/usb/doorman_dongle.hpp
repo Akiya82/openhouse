@@ -47,12 +47,13 @@ class ReportDecoder;
 extern bool g_doormanInlineIo;
 
 // The dongle's USB data interfaces: interface 0 carries commands and replies, slot s streams on
-// interface s % kDoormanInterfaces (dongle-fw usb_descriptors.c).
-constexpr int kDoormanInterfaces = 4;
+// interface s % (its count) (dongle-fw usb_descriptors.c): five from firmware 0x002B, four before.
+constexpr int kDoormanInterfaces = 5;   // the most a dongle has
+int DoormanInterfaceCount(unsigned short firmware);   // from the USB bcdDevice
 // One Doorman Dongle as hidapi lists it: its interfaces, all with the same USB serial.
 struct DoormanDongleFound {
   std::string serial;  // "OHDG-" + USB serial: the dongle's receiver name
-  std::array<std::string, kDoormanInterfaces> paths;   // by interface number; paths[0] takes commands
+  std::array<std::string, kDoormanInterfaces> paths;   // by interface number; paths[0] takes commands ("" past its count)
 };
 // The Doorman Dongles in an enumeration, by serial: a dongle once every interface of its USB
 // serial is listed, wherever each is in the list. A serial carried by more than one interface

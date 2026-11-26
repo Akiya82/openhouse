@@ -95,7 +95,7 @@ class DoormanDongle {
     dev0_ = hid_open_path(path.c_str());
     if (!dev0_) return;
     devs_[0] = dev0_;
-    // The other interfaces carry the slots' streams (slot s on interface s % 4).
+    // The other interfaces carry the slots' streams (slot s on interface s % 5; s % 4 before fw 0x002B).
     if (hid_device_info* list = hid_enumerate(kDoormanVid, kDoormanPid)) {
       wchar_t serial[64]{};
       hid_get_serial_number_string(dev0_, serial, 64);
@@ -228,7 +228,7 @@ class DoormanDongle {
       i += 1 + m;
     }
   }
-  static constexpr int kInterfaces = 4;   // interface 0: commands; slot s streams on interface s % 4
+  static constexpr int kInterfaces = 5;   // interface 0: commands; slot s streams on interface s % 5 (s % 4 before fw 0x002B)
   hid_device* dev0_ = nullptr;
   hid_device* devs_[kInterfaces] = {};
   uint8_t seq_ = 0;

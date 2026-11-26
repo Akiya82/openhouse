@@ -59,6 +59,7 @@ class DeviceTracker {
   void SetReportAcceleration(bool on) { reportAcceleration_ = on; }
   // Disable IMU integration for this device (optical-only tracking for a defective IMU).
   void SetImuDisabled(bool on);
+  void Restart() { ResetFilter(); }   // a fresh filter (bootstraps again from light)
   // Whether the output holds the pose while the device is physically still (on by
   // default). Off for head-mounted displays: a head sitting still passes the stillness
   // test most of the time, so the view froze to the head and caught up 0.1-0.65 deg

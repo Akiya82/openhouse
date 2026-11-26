@@ -128,6 +128,7 @@ void TelemetryClient::Handle(const std::string& line) {
       x.primary = d.value("primary", "");
       x.connected = d.value("connected", false);
       x.enabled = d.value("enabled", true);
+      x.imuDisabled = d.value("imuDisabled", false);
       x.charging = d.value("charging", false);
       x.valid = d.value("valid", false);
       if (const auto b = d.find("battery"); b != d.end() && b->is_number()) x.battery = b->get<int>();

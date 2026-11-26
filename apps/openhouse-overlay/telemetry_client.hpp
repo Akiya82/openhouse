@@ -25,7 +25,7 @@ struct Coverage { std::string base; int frames = 0; double sensors = 0; };
 
 struct Device {
   std::string serial, role, model, hand, state, primary, name;
-  bool connected = false, enabled = true, charging = false, valid = false;
+  bool connected = false, enabled = true, charging = false, valid = false, imuDisabled = false;
   std::optional<int> battery;
   std::array<double, 3> p{}, v{};
   std::array<double, 4> q{1, 0, 0, 0};

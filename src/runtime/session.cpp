@@ -209,6 +209,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   std::vector<SessionEvent> PollEvents() override;
   void ResetRoom() override;
   void SetDeviceEnabled(const std::string& serial, bool enabled) override;
+  void SetDeviceImuDisabled(const std::string& serial, bool disabled) override;
   std::vector<Receiver> Receivers() const override {
     std::vector<Receiver> out;
     if (usb_)
@@ -1620,6 +1621,7 @@ SessionSnapshot SessionImpl::Snapshot() const {
     s.info = d.info;
     s.info.connected = d.preinitConnected || (d.attached && now_ - d.lastData < 1.0);
     s.info.enabled = Enabled(id);
+    s.info.imuDisabled = disableImuDevices_.count(id) > 0;
     s.pose = MakePose(d);
     if (!s.info.connected || !s.info.enabled || d.preinitConnected) {
       s.pose.state = TrackingState::Disconnected;
@@ -1985,6 +1987,21 @@ void SessionImpl::SaveSettings() {
   } catch (const std::exception& e) {
     Emit(SessionEventType::Log, "", "saving settings " + settingsPath_ + ": " + e.what());
   }
+}
+
+void SessionImpl::SetDeviceImuDisabled(const std::string& serial, bool disabled) {
+  std::lock_guard lock(mutex_);
+  if ((disableImuDevices_.count(serial) > 0) == disabled) return;
+  if (disabled) disableImuDevices_.insert(serial);
+  else disableImuDevices_.erase(serial);
+  if (auto found = devices_.find(serial); found != devices_.end() && found->second.tracker) {
+    // A fresh filter: IMU biases and gravity learned with the IMU on (or frozen without it) don't carry over.
+    found->second.tracker->SetImuDisabled(disabled);
+    found->second.tracker->Restart();
+    found->second.lastState = TrackingState::Disconnected;
+  }
+  Emit(SessionEventType::Log, serial, serial + (disabled ? ": IMU disabled (optical-only)" : ": IMU enabled"), LogLevel::Info);
+  SaveSettings();
 }
 
 void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {

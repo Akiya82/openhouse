@@ -752,6 +752,12 @@ void Ui::Devices() {
   Tip("Not tracked while off");
   if (changed)
     Send(json{{"cmd", "enable"}, {"serial", d->serial}, {"enabled", enabled}}.dump(), (enabled ? "Enable " : "Disable ") + d->serial);
+  if (d->role != "hmd") {   // a headset without its IMU would shake the view
+    bool imuOff = d->imuDisabled;
+    if (ImGui::Checkbox("Disable IMU (optical only, use only if faulty IMU)", &imuOff))
+      Send(json{{"cmd", "imu"}, {"serial", d->serial}, {"enabled", !imuOff}}.dump(), (imuOff ? "IMU off " : "IMU on ") + d->serial);
+    Tip("For a device with a broken IMU");
+  }
   ImGui::SeparatorText("Light");
   if (d->coverage.empty()) ImGui::TextDisabled("None");
   for (const auto& c : d->coverage) {

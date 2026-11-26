@@ -116,6 +116,7 @@ struct DeviceInfo {
   std::string resourceRoot, inputProfile, registeredType;  // config resource_root, input_profile, registered_device_type
   bool connected = false;
   bool enabled = true;          // disabled devices are listed but ignored entirely
+  bool imuDisabled = false;     // optical-only tracking (settings.json disableImuDevices)
   std::optional<int> batteryPercent;
   bool charging = false;
   std::string configJson;       // full device JSON (empty for bases)
@@ -273,6 +274,8 @@ class Session {
   // Enable/disable a device by serial. Disabled devices produce no poses, input or
   // room-map contributions. Persisted in the settings file when there is one.
   virtual void SetDeviceEnabled(const std::string& serial, bool enabled) = 0;
+  // Optical-only tracking for a device with a broken IMU; saved in settings.json (disableImuDevices).
+  virtual void SetDeviceImuDisabled(const std::string& serial, bool disabled) = 0;
   // Output tuning, for every device, applied at once: how long corrections take to show
   // (glide time constants, s; 0 = at once) and whether poses carry the acceleration for
   // the host to predict with. Defaults 0.06 s, 0.06 s, true.

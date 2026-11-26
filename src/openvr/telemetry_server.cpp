@@ -138,7 +138,7 @@ void TelemetryServer::PublishState(double time, const SessionSnapshot& snapshot,
     const auto battery = u ? u->batteryPercent : d.info.batteryPercent;
     devices.push_back({{"serial", d.info.serial}, {"role", RoleName(d.info.role)}, {"model", d.info.model},
                        {"hand", d.info.controllerRole}, {"connected", u ? u->connected : d.info.connected},
-                       {"enabled", d.info.enabled}, {"battery", battery ? json(*battery) : json(nullptr)},
+                       {"enabled", d.info.enabled}, {"imuDisabled", d.info.imuDisabled}, {"battery", battery ? json(*battery) : json(nullptr)},
                        {"charging", u ? u->charging : d.info.charging}, {"state", StateName(pose.state)},
                        {"valid", pose.valid}, {"p", json::array({p[0], p[1], p[2]})},
                        {"q", json::array({q[0], q[1], q[2], q[3]})}, {"v", Vec(pose.velocity)},

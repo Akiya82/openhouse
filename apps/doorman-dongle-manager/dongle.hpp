@@ -20,7 +20,7 @@
 
 namespace openhouse::dongle {
 
-constexpr int kSlots = 8;
+constexpr int kSlots = 10;   // the most a dongle has; DongleState::slotCount is what this one has
 constexpr int kHops = 16;
 constexpr int kHistory = 120;  // samples kept for the graphs (one a second: two minutes)
 
@@ -45,6 +45,7 @@ struct SlotState {
   double framesPerSec = 0, kBytesPerSec = 0, airKBytesPerSec = 0, dropsPerSec = 0, resendsPerSec = 0;
   double imuHz = 0, lightPerSec = 0, inputPerSec = 0;  // stream contents
   int deviceMissed = 0, deviceCrc = 0;                 // the device's own counters, last poll
+  int saturationPercent = -1;                          // answers that left data queued, last 2 s (firmware 0x0028+)
   double deviceDropsPerSec = 0, deviceReplyDropsPerSec = 0;  // dropped in the device's radio (radio fw that reports it)
   uint64_t frames = 0, drops = 0;                      // totals since the dongle started
   std::deque<float> lossHistory, rssiHistory, kbpsHistory;
@@ -59,6 +60,7 @@ struct DongleState {
   bool softdeviceVariant = false, watchdog = false;
   int board = 0;  // 0 UF2 (Pro Micro), 1 Holyiot 21017, 2 PCA10059, 3 Kuroshin (Nordic DFU)
   int bank = 0;   // 1 A, 2 B: the bank running (0: older firmware, updates through its bootloader)
+  int slotCount = 8;  // slots it has (it says so from firmware 0x002A; older ones have 8)
   bool NordicDfu() const { return board == 1 || board == 2; }
   bool Banked() const { return bank != 0; }   // runs the two-bank layout: updates itself
   uint32_t uptimeMs = 0, resetReason = 0;
@@ -74,6 +76,13 @@ struct DongleState {
   std::array<uint8_t, kHops> hopChannel{}, hopLoss{};
   uint8_t currentChannel = 0;
   uint32_t joinsHeard = 0;
+  // link timing (cmd 0x2D)
+  bool haveTiming = false;
+  uint32_t cycleUs = 0, slotUs = 0;
+  int answerBytes = 0;         // the answer limit now
+  int normalAnswerBytes = 0;   // the limit for this many devices (0x0028+; 0 unknown)
+  int saturationPercent = -1;  // worst device (0x0028+)
+  bool largeAnswers = false;   // saturated: large answers on (0x0028+)
   // derived
   int joined = 0, paired = 0;
   double kBytesPerSec = 0;
@@ -131,7 +140,7 @@ class Dongle {
   void Ident(int slot);
 
   const std::string path_, serial_;
-  static constexpr int kInterfaces = 4;   // interface 0: commands; slot s streams on interface s % 4
+  static constexpr int kInterfaces = 5;   // interface 0: commands; slot s streams on interface s % 5 (s % 4 before fw 0x002B)
   void* dev0_ = nullptr;                   // hid_device*: devs_[0]
   void* devs_[kInterfaces] = {};
   uint8_t seq_ = 0;
@@ -156,6 +165,7 @@ class Dongle {
   std::array<Counters, kSlots> counters_{};
   std::array<double, kSlots> rssiAvgD_{}, rssiAvgT_{};   // -dBm averages over channels (0: none yet)
   std::array<std::vector<uint8_t>, kSlots> frag_;
+  std::array<int, kSlots> packSeq_{};   // packed reports: the next seq expected (-1: wait for an item start)
   std::array<int, kSlots> identTried_{};  // ident attempts made
   std::atomic<bool> autoIdentify_{false};
   std::array<int, kSlots> configTried_{};  // config reads made for a name

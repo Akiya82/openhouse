@@ -38,7 +38,6 @@ double AltRotFloor(const RoomBase* a, const RoomBase* b) {
   return sure(a) && sure(b) ? kAltRotFloorLocked : kAltPriorVariance;
 }
 constexpr int kRejectStreak = 20;  // ~0.3 s of a base's well-lit frames all rejected
-constexpr double kBaseVisibleFor = 0.1;  // seconds since a base last supplied usable light
 // Reacquire throttling (not stock). A reacquire is a hard reset, so repeating it every
 // few hundred ms turns one bad stretch into a permanent ping-pong, and the reset cannot
 // fix what it rejected. Exponential from the base, capped, so a device still recovers -
@@ -73,15 +72,25 @@ DeviceTracker::DeviceTracker(std::string id, TrackedObjectModel model, RoomMap* 
   source_.SetPoseView([this](int sensor, double t, ExpectedHit* out) { return filter_->ExpectedHits(sensor, t, out); });
 }
 
+void DeviceTracker::SetImuDisabled(bool on) {
+  imuDisabled_ = on;
+  if (filter_) filter_->SetImuDisabled(on);
+  if (on) {
+    still_ = false;
+    quietSince_.reset();
+    heldPose_.reset();
+  }
+}
+
 void DeviceTracker::ResetFilter() {
   filter_ = std::make_unique<LighthouseDirect>(model_);
-  refusedLit_ = alternatePoses_ = 0;
-  lastAlternatePose_ = -1e300;
+  refusedLit_ = 0;
   // LH_STOCK_FILTER: the verified stock behaviour, for A/B comparisons.
   static const bool stock = std::getenv("LH_STOCK_FILTER") != nullptr;
   predictOutput_ = smoothOutput_ = holdStill_ = !stock;
   inertialLag_ = stock ? 0.02 : 0.12;
   if (!stock) filter_->SetImprovements(true, kGateSigma, true);
+  filter_->SetImuDisabled(imuDisabled_);
   filter_->SetMixedLightScatter(mixedScatter_[0], mixedScatter_[1], mixedScatter_[2], mixedScatter_[3]);
   for (const auto& [serial, base] : bases_) filter_->OnBaseConfig(base.first, base.second);
   roomRevision_ = ~uint64_t{0};
@@ -105,7 +114,7 @@ void DeviceTracker::OnBaseConfig(const BaseConfig& config, const BaseDynamicStat
 void DeviceTracker::OnImu(const ImuSample& sample) {
   if (latestImu_ && sample.time < *latestImu_) return;
   latestImu_ = sample.time;
-  TrackStillness(sample);
+  if (!imuDisabled_) TrackStillness(sample);
   source_.OnImu(sample);
 }
 
@@ -130,7 +139,7 @@ void DeviceTracker::Process() {
   // predicts to now from the queued IMU (UpdateOutput), so the filter can wait for
   // late optical frames (20-25 ms typical, a tail past 50 ms) instead of having
   // already passed them: those were dropped, ~1% of all frames.
-  if (latestImu_ && filter_->Bootstrapped()) filter_->AdvanceInertial(*latestImu_ - inertialLag_);
+  if (!imuDisabled_ && latestImu_ && filter_->Bootstrapped()) filter_->AdvanceInertial(*latestImu_ - inertialLag_);
   std::string text;
   while (source_.PopLog(&text)) {
     while (!text.empty() && text.back() == '\n') text.pop_back();
@@ -278,17 +287,11 @@ void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
   LighthouseDirect::RecoveryEvidence recovery;
   filter_->OnFrame(frame, &recovery);
   const bool usedLight = filter_->LastOpticalTime() != lastOpticalBefore;
-  // PredictTo skips sweeps whose earliest hit is behind the filter before any rows
-  // can be rejected. This lets tracking coast through delayed light on an LH1/LH2 switch.
+  // A late sweep is skipped by PredictTo before it can supply rejection evidence.
   if (usedLight) {
-    refusedLit_ = alternatePoses_ = 0;
+    refusedLit_ = 0;
   } else if (recovery.rejectedRows >= 4) {
     ++refusedLit_;
-  } else if (recovery.alternatePoseTime && *recovery.alternatePoseTime > lastAlternatePose_) {
-    const double time = *recovery.alternatePoseTime;
-    if (time - lastAlternatePose_ >= kBaseVisibleFor) alternatePoses_ = 0;
-    ++alternatePoses_;
-    lastAlternatePose_ = time;
   }
   if (frame.baseSerial && wasTracking) {
     std::set<int> lit;
@@ -347,7 +350,7 @@ void DeviceTracker::HandleFrame(const OpticalFrame& incoming) {
 }
 
 void DeviceTracker::CollectKeyframe(const OpticalFrame& frame) {
-  if (!filter_->Bootstrapped() || frame.baseSerial == 0) { frameBuffer_.clear(); return; }
+  if (imuDisabled_ || !filter_->Bootstrapped() || frame.baseSerial == 0) { frameBuffer_.clear(); return; }
   // An LH1 frame (only those have a sync width class) whose light may hold unsorted 2.0 sweeps.
   if (frame.nominalSyncWidth > 0 && !lh1Keyframes_) { frameBuffer_.clear(); return; }
   const auto& f = filter_->Filter();
@@ -505,9 +508,9 @@ void DeviceTracker::SyncRoom() {
     const auto& g = base != bases_.end() ? base->second.second.accelDir : std::array<float, 3>{};
     const Eigen::Vector3d up(g[0], g[1], g[2]);
     if (up.norm() > 0.5) room_->EstablishOrigin(primary, TiltFromUp(up), 1.5e-4);
-    else if (calibrated) room_->EstablishOrigin(primary, {f.x[16], f.x[17]}, f.P(16, 16));
+    else if (calibrated && !imuDisabled_) room_->EstablishOrigin(primary, {f.x[16], f.x[17]}, f.P(16, 16));
   }
-  if (calibrated && primary == room_->Origin()) room_->RefineOriginTilt(primary, {f.x[16], f.x[17]}, f.P(16, 16), filter_->Time());
+  if (calibrated && !imuDisabled_ && primary == room_->Origin()) room_->RefineOriginTilt(primary, {f.x[16], f.x[17]}, f.P(16, 16), filter_->Time());
   // Room-solver bases are the joint estimate from every device: keep the filter's
   // alternate-base states on them where the room knows better. Also when the filter
   // keeps rejecting a base's light: its own view of that base is wrong, and since a
@@ -600,7 +603,7 @@ void DeviceTracker::SyncRoom() {
                                  std::max(p->rotationVariance + a->rotationVariance, AltRotFloor(p, a)));
     }
   }
-  if (!calibrated) return;
+  if (!calibrated || imuDisabled_) return;
   for (const auto& e : filter_->AltEstimates()) {
     if (e.translationVariance < kRelationshipTranslationVariance && e.rotationVariance < kRelationshipRotationVariance)
       room_->Observe(id_, primary, e.serial, e.altFromPrimary, e.translationVariance, e.rotationVariance, filter_->Time());
@@ -687,7 +690,7 @@ void DeviceTracker::CheckHealth() {
       double last = 0;
       // Half its sweeps in the last 0.5 s (a weakly lit base fails to reacquire on).
       const double sweeps = 0.5 / std::max(sweepInterval_ * 0.5, 1.0 / 120);
-      if (b && lit(b, &last) >= 0.4 * sweeps && Now() - last < kBaseVisibleFor) visible = b;
+      if (b && lit(b, &last) >= 0.4 * sweeps && Now() - last < 0.1) visible = b;
     }
     if (primary && visible && Now() - acquiredAt_ > 1.0 && Now() - primaryLast > 0.5 && room_->Base(visible)) {
       char text[128];
@@ -734,15 +737,14 @@ void DeviceTracker::CheckHealth() {
       return;
     }
   }
-  // Not stock: well-lit updates keep failing or another base can supply a pose while
-  // the current filter gets no optical fix for 0.5 s. Reacquiring then (with the calm calibration)
+  // Not stock: light keeps arriving, well lit, and none of it fits the pose for 0.5 s:
+  // the filter is wrong, not the light. Reacquiring then (with the calm calibration)
   // takes 0.1-0.4 s; waiting for the 2 s no-light timeout, the device coasted that long
   // or ran out of bounds first (fastmotion3 + fastmotion5: fly-aways 2 -> 0, coasting
   // about 5 -> 0.5 %; testswing drops out more, 37 -> 29 % valid, but with fewer jumps
   // and rotation spikes: what it lost was tracking on a wrong pose).
-  const bool alternateVisible = alternatePoses_ >= 8 && Now() - lastAlternatePose_ < kBaseVisibleFor;
-  if ((refusedLit_ >= 8 || alternateVisible) && Now() - filter_->LastOpticalTime() > kRefusedLightReset) {
-    Log("light keeps arriving without an optical fix: reacquiring");
+  if (refusedLit_ >= 8 && Now() - filter_->LastOpticalTime() > kRefusedLightReset) {
+    Log("light keeps arriving but none fits the pose: reacquiring");
     if (calm_) carry_ = calm_;
     ResetFilter();
     return;
@@ -820,7 +822,7 @@ TrackerOutput DeviceTracker::RawOutput() const {
   }
   out.worldFromImu = base->worldFromBase * baseFromImu;
   out.velocity = base->worldFromBase.rotation() * velocity;
-  if (reportAcceleration_) out.acceleration = base->worldFromBase.rotation() * acceleration;
+  if (reportAcceleration_ && !imuDisabled_) out.acceleration = base->worldFromBase.rotation() * acceleration;
   out.angularVelocity = out.worldFromImu.rotation() * omega;
   const double age = Now() - filter_->LastOpticalTime();
   out.valid = true;
@@ -895,8 +897,10 @@ void DeviceTracker::UpdateOutput() {
       constexpr double kJumpP = 0.002, kJumpQ = 0.0087, kMicroJumpP = 1e-5, kMicroJumpQ = 5e-6;
       auto ramp = [](double x, double lo, double hi) { return std::clamp((x - lo) / (hi - lo), 0.0, 1.0); };
       const double fast = std::max(ramp(raw.velocity.norm(), 0.05, 0.3), ramp(raw.angularVelocity.norm(), 0.15, 1.0));
-      if (jumpP.norm() > kMicroJumpP + (kJumpP - kMicroJumpP) * fast) offsetP_ -= jumpP;
-      if (Eigen::AngleAxisd(jumpQ).angle() > kMicroJumpQ + (kJumpQ - kMicroJumpQ) * fast)
+      const double threshP = imuDisabled_ ? kMicroJumpP : (kMicroJumpP + (kJumpP - kMicroJumpP) * fast);
+      const double threshQ = imuDisabled_ ? kMicroJumpQ : (kMicroJumpQ + (kJumpQ - kMicroJumpQ) * fast);
+      if (jumpP.norm() > threshP) offsetP_ -= jumpP;
+      if (Eigen::AngleAxisd(jumpQ).angle() > threshQ)
         offsetQ_ = offsetQ_ * jumpQ.conjugate();
       // Corrections over 10 cm glide 2.5x slower (they were jumps of a wrong pose).
       const double tauP = offsetP_.norm() > 0.1 ? 2.5 * smoothPosition_ : smoothPosition_;
@@ -953,6 +957,10 @@ void DeviceTracker::UpdateOutput() {
   }
   out.worldFromImu.translation() = outP;
   out.worldFromImu.linear() = outQ.toRotationMatrix();
+  if (imuDisabled_) {
+    if (out.velocity.norm() < 0.03) out.velocity.setZero();
+    if (out.angularVelocity.norm() < 0.08) out.angularVelocity.setZero();
+  }
   output_ = out;
 }
 

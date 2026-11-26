@@ -25,6 +25,7 @@
 #include "device_tracker.hpp"
 #include "index_input.hpp"
 #include "lh/input_sink.hpp"
+#include "runtime/air_experiment.hpp"
 #include "mixed_light.hpp"
 #include "model_scale.hpp"
 #include "room_map.hpp"
@@ -186,7 +187,12 @@ class SessionImpl final : public Session, public InputSinkBase {
     std::lock_guard lock(mutex_);
     Emit(SessionEventType::Log, "", text, level);
   }
-  explicit SessionImpl(SessionOptions options) : options_(std::move(options)) {}
+  explicit SessionImpl(SessionOptions options) : options_(std::move(options)) {
+    air_ = AirExperiment::FromEnv({
+        [this](const DeviceId& id, const ImuSample& s) { airForward_ = true; OnImu(id, s); airForward_ = false; },
+        [this](const DeviceId& id, const Lh2BeamWord& w) { airForward_ = true; OnLh2BeamWord(id, w); airForward_ = false; },
+        [this](const DeviceId& id, const Lh2SensorWord& w) { airForward_ = true; OnLh2SensorWord(id, w); airForward_ = false; }});
+  }
   ~SessionImpl() override { Stop(); }
 
   bool Start(std::string* error) override;
@@ -203,6 +209,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   std::vector<SessionEvent> PollEvents() override;
   void ResetRoom() override;
   void SetDeviceEnabled(const std::string& serial, bool enabled) override;
+  void SetDeviceImuDisabled(const std::string& serial, bool disabled) override;
   std::vector<Receiver> Receivers() const override {
     std::vector<Receiver> out;
     if (usb_)
@@ -213,6 +220,7 @@ class SessionImpl final : public Session, public InputSinkBase {
         o.dropsPerSec = r.dropsPerSec; o.rssiDongle = r.rssiDongle; o.rssiDevice = r.rssiDevice;
         o.devicesOnDongle = r.devicesOnDongle;
         o.name = r.name; o.keepsName = r.keepsName;
+        o.firmware = r.firmware; o.radio = r.radio; o.firmwareOld = r.firmwareOld; o.radioOld = r.radioOld;
         out.push_back(o);
       }
     return out;
@@ -374,6 +382,7 @@ class SessionImpl final : public Session, public InputSinkBase {
   bool explicitControllers_ = false;
   std::string leftController_, rightController_;
   std::set<std::string> disabled_;
+  std::set<std::string> disableImuDevices_;
   double smoothPosition_ = DeviceTracker::kDefaultSmoothing, smoothRotation_ = DeviceTracker::kDefaultSmoothing;
   bool reportAcceleration_ = true;
   std::map<std::string, std::string> roles_;  // settings.json "roles": serial -> tracked_controller_role
@@ -408,6 +417,8 @@ class SessionImpl final : public Session, public InputSinkBase {
   std::thread solver_;
 #ifdef LH_RUNTIME_USB
   std::unique_ptr<usb::UsbTransport> usb_;
+  std::unique_ptr<AirExperiment> air_;   // LH_AIR experiments only
+  bool airForward_ = false;
 #endif
 };
 
@@ -424,6 +435,7 @@ bool SessionImpl::Start(std::string* error) {
   LoadSettings();  // settings.json "mixedLight" into mixed_
   if (options_.mixedLight != MixedLightOptions{}) mixed_ = options_.mixedLight;  // lhtool --mixed-light
   for (const auto& serial : options_.disabledDevices) disabled_.insert(serial);
+  for (const auto& serial : options_.disableImuDevices) disableImuDevices_.insert(serial);
   preinitDir_ = options_.preinitDirectory == "-" ? "" : options_.preinitDirectory.empty() && !replay ? DefaultPreinitDirectory()
                                                                                                     : options_.preinitDirectory;
   LoadPreinit();
@@ -732,6 +744,10 @@ bool SessionImpl::SetUpDevice(const DeviceId& id, const std::string& config) {
     d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
     d.tracker->SetReportAcceleration(reportAcceleration_);
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+    if (disableImuDevices_.count(id)) {
+      d.tracker->SetImuDisabled(true);
+      Emit(SessionEventType::Log, id, id + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+    }
     StartMixedLight(d);
     models_[id] = d.tracker->ImuModel();
     for (const auto& [serial, b] : bases_)
@@ -840,6 +856,7 @@ void SessionImpl::Touch(Device& d, double deviceTime) {
 }
 
 void SessionImpl::OnImu(const DeviceId& id, const ImuSample& sample) {
+  if (air_ && !airForward_) { air_->OnImu(id, sample); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();
@@ -1092,6 +1109,7 @@ void SessionImpl::OnLightPulse(const DeviceId& id, const LightPulse& pulse) {
 }
 
 void SessionImpl::OnLh2BeamWord(const DeviceId& id, const Lh2BeamWord& word) {
+  if (air_ && !airForward_) { air_->OnBeam(id, word); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();
@@ -1122,6 +1140,7 @@ void SessionImpl::OnLh2BeamWord(const DeviceId& id, const Lh2BeamWord& word) {
 }
 
 void SessionImpl::OnLh2SensorWord(const DeviceId& id, const Lh2SensorWord& word) {
+  if (air_ && !airForward_) { air_->OnSensor(id, word); return; }
   if (warming_) return;
   std::lock_guard lock(mutex_);
   Tick();
@@ -1603,6 +1622,7 @@ SessionSnapshot SessionImpl::Snapshot() const {
     s.info = d.info;
     s.info.connected = d.preinitConnected || (d.attached && now_ - d.lastData < 1.0);
     s.info.enabled = Enabled(id);
+    s.info.imuDisabled = disableImuDevices_.count(id) > 0;
     s.pose = MakePose(d);
     if (!s.info.connected || !s.info.enabled || d.preinitConnected) {
       s.pose.state = TrackingState::Disconnected;
@@ -1780,6 +1800,7 @@ void SessionImpl::LoadSettings() {
       explicitControllers_ = true;
     }
     for (const auto& serial : j.value("disabledDevices", std::vector<std::string>{})) disabled_.insert(serial);
+    for (const auto& serial : j.value("disableImuDevices", std::vector<std::string>{})) disableImuDevices_.insert(serial);
     if (j.contains("mixedLight")) {
       // 1.0 and 2.0 base stations together: true/false, or
       // {"enabled": true, "controllers": true, "trackers": true, "scout": true, "preferLh2": false,
@@ -1951,6 +1972,8 @@ void SessionImpl::SaveSettings() {
       if (in) j = json::parse(in);
     }
     j["disabledDevices"] = std::vector<std::string>(disabled_.begin(), disabled_.end());
+    if (!disableImuDevices_.empty() || j.contains("disableImuDevices"))
+      j["disableImuDevices"] = std::vector<std::string>(disableImuDevices_.begin(), disableImuDevices_.end());
     const std::filesystem::path target(settingsPath_);
     if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path());
     const std::string temp = settingsPath_ + ".tmp";
@@ -1965,6 +1988,21 @@ void SessionImpl::SaveSettings() {
   } catch (const std::exception& e) {
     Emit(SessionEventType::Log, "", "saving settings " + settingsPath_ + ": " + e.what());
   }
+}
+
+void SessionImpl::SetDeviceImuDisabled(const std::string& serial, bool disabled) {
+  std::lock_guard lock(mutex_);
+  if ((disableImuDevices_.count(serial) > 0) == disabled) return;
+  if (disabled) disableImuDevices_.insert(serial);
+  else disableImuDevices_.erase(serial);
+  if (auto found = devices_.find(serial); found != devices_.end() && found->second.tracker) {
+    // A fresh filter: IMU biases and gravity learned with the IMU on (or frozen without it) don't carry over.
+    found->second.tracker->SetImuDisabled(disabled);
+    found->second.tracker->Restart();
+    found->second.lastState = TrackingState::Disconnected;
+  }
+  Emit(SessionEventType::Log, serial, serial + (disabled ? ": IMU disabled (optical-only)" : ": IMU enabled"), LogLevel::Info);
+  SaveSettings();
 }
 
 void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {
@@ -1985,6 +2023,10 @@ void SessionImpl::SetDeviceEnabled(const std::string& serial, bool enabled) {
       d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
       d.tracker->SetReportAcceleration(reportAcceleration_);
       d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+      if (disableImuDevices_.count(serial)) {
+        d.tracker->SetImuDisabled(true);
+        Emit(SessionEventType::Log, serial, serial + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+      }
       StartMixedLight(d);
       for (const auto& [base, b] : bases_)
         if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);
@@ -2023,6 +2065,10 @@ void SessionImpl::ResetRoomLocked(const std::string& why) {
     d.tracker->SetSmoothing(smoothPosition_, smoothRotation_);
     d.tracker->SetReportAcceleration(reportAcceleration_);
     d.tracker->SetHoldStill(d.info.role != DeviceRole::Hmd);  // a still head must not freeze the view
+    if (disableImuDevices_.count(id)) {
+      d.tracker->SetImuDisabled(true);
+      Emit(SessionEventType::Log, id, id + ": IMU disabled (optical-only mode via disableImuDevices)", LogLevel::Info);
+    }
     StartMixedLight(d);
     for (const auto& [base, b] : bases_)
       if (!room_.Conflicted(base)) d.tracker->OnBaseConfig(b.config, b.dynamic);

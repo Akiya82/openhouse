@@ -150,9 +150,11 @@ def signal(secs, slot=0):
 
 def slots():
     h = open_dev()
-    for first in (0, 6):                                   # 6 slots per reply
+    _, i = cmd(h, 0x01)
+    n = i[60] if 1 <= i[60] <= 16 else 8                   # slots it has (0 from firmware before 0x002A: 8)
+    for first in range(0, n, 6):                           # 6 slots per reply
         st, d = cmd(h, 0x25, bytes([first]))
-        for k in range(first, min(first + 6, 8)):
+        for k in range(first, min(first + 6, n)):
             e = d[(k - first) * 10:(k - first) * 10 + 10]
             if e[0]: print(f"slot {k}: tracker {e[2:10][::-1].hex()}  {'ACTIVE' if e[1] else 'absent'}")
     print("pairing open" if d[60] else "pairing closed")

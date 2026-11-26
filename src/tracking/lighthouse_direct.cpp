@@ -14,12 +14,6 @@ namespace lh {
 namespace {
 using namespace direct;
 
-double EarliestHit(const OpticalFrame& frame) {
-  double time = std::numeric_limits<double>::infinity();
-  for (const auto& s : frame.samples) time = std::min(time, s.time + 0.5 * s.width);
-  return time;
-}
-
 Residual Normalizer() {
   return {1, [](const double* x, double* out) { out[0] = QuaternionNormalizer(x); },
           [](const Jet* x, Jet* out) { out[0] = QuaternionNormalizer(x); }};
@@ -61,6 +55,7 @@ void LighthouseDirect::SetRecordedTilt(uint32_t serial, std::array<double, 2> ti
 
 void LighthouseDirect::OnImu(const ImuSample& s) {
   if (!observedTime_ || s.time > *observedTime_) observedTime_ = s.time;
+  if (imuDisabled_) return;
   imu_.push_back(s);
   // Bounded pre-bootstrap buffer. Original queue/reset policies are still TODO.
   while (imu_.size() > 2000) imu_.pop_front();
@@ -111,6 +106,7 @@ void LighthouseDirect::FilterOutliers(std::vector<OpticalSample>* samples, doubl
 
 bool LighthouseDirect::PredictTo(double time) {
   if (time < time_) return false;
+  if (imuDisabled_) return true;
   while (!imu_.empty() && imu_.front().time < time) {
     ImuUpdate(imu_.front());
     imu_.pop_front();
@@ -132,6 +128,7 @@ bool LighthouseDirect::ImuUpdate(const ImuSample& sample) {
   // times; with this, none (fastmotion3: tracking 91 -> 97 %). x10 is the strength: x100
   // was worse on both. Gyro saturation is left alone (it added rotation spikes).
   if (swing_ && (sample.saturated & 0x7)) filter_.Q.topLeftCorner(9, 9) *= kSaturatedJerkScale;
+  if (sample.saturated & 0x7) accelClippedAt_ = sample.time;
   filter_.Predict(dt, dt);
   // Not stock: a saturated axis still says the true value is at least its reading
   // (the range limit), that way. Stock drops it, and the filter, left to the light
@@ -277,14 +274,13 @@ solver::Result SolveBootstrap(const TrackedObjectModel& model, const BaseConfig&
 }
 }  // namespace
 
-bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& base, RecoveryEvidence* recovery) {
+bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& base) {
   OpticalFrame f = frame;
   f.samples = Gather(frame.samples);
   auto& history = history_[frame.baseSerial];
   history.Append(std::move(f));
   std::vector<OpticalSample> older, newer;
-  std::bitset<32> currentSensors;
-  if (!history.Select(&older, &newer, -1, recovery && slots_[0] ? &currentSensors : nullptr)) return false;
+  if (!history.Select(&older, &newer)) return false;
   ++bootstrapAttempts_;
   const double time = newer.front().time + newer.front().width * 0.5;
   if (slots_[0] && CanSwitchPrimary(base.serial)) {
@@ -345,17 +341,7 @@ bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& ba
     // The original only adds an alternate base via 0x35c330, which requires
     // updateCount > 0x104 (260) and a LighthouseDB sanction. Without the gate the
     // alt slice is seeded far too early and the whole filter diverges.
-    if (filter_.updateCount <= 0x104) {
-      // The current filter cannot add this base yet, but the solved pose could
-      // bootstrap a new track if the primary stays dark. History can outlive a sweep.
-      // SolveBootstrap can drop an outlier from newer after interpolation.
-      if (recovery && time >= time_ && EarliestHit(frame) >= time_ && BootstrapPoseInRange(solved.pose) &&
-          std::count_if(newer.begin(), newer.end(), [&](const auto& s) {
-            return s.axis == frame.axis && currentSensors.test(s.sensor);
-          }) >= 4)
-        recovery->alternatePoseTime = time;
-      return false;
-    }
+    if (filter_.updateCount <= 0x104) return false;
     int slot = 1;
     while (slot < 4 && slots_[slot]) ++slot;
     if (slot == 4 || !PredictTo(time)) return false;
@@ -398,17 +384,19 @@ bool LighthouseDirect::Bootstrap(const OpticalFrame& frame, const BaseConfig& ba
   filter_.P.setZero(); filter_.InitialCovariance();
   // 0x350600: interpolate the queued IMU sample at the pose time and correct it
   // with the current gyro bias and the model gyro scale (float math, as original).
-  for (int i = 0; i < 3; ++i) filter_.P(13 + i, 13 + i) = 1.6e-5;
-  if (imu_.size() > 1 && imu_.front().time <= time && time <= imu_.back().time) {
-    size_t hi = 1;
-    while (hi + 1 < imu_.size() && imu_[hi].time < time) ++hi;
-    const auto& a = imu_[hi - 1];
-    const auto& b = imu_[hi];
-    if (!(a.saturated | b.saturated)) {
-      const float f = float((time - a.time) / (b.time - a.time));
-      for (int i = 0; i < 3; ++i) {
-        const float g = (float(b.gyro[size_t(i)]) - float(a.gyro[size_t(i)])) * f + float(a.gyro[size_t(i)]);
-        filter_.x[13 + i] = double((g - float(filter_.x[19 + i])) * float(model_.gyroScale[size_t(i)]));
+  if (!imuDisabled_) {
+    for (int i = 0; i < 3; ++i) filter_.P(13 + i, 13 + i) = 1.6e-5;
+    if (imu_.size() > 1 && imu_.front().time <= time && time <= imu_.back().time) {
+      size_t hi = 1;
+      while (hi + 1 < imu_.size() && imu_[hi].time < time) ++hi;
+      const auto& a = imu_[hi - 1];
+      const auto& b = imu_[hi];
+      if (!(a.saturated | b.saturated)) {
+        const float f = float((time - a.time) / (b.time - a.time));
+        for (int i = 0; i < 3; ++i) {
+          const float g = (float(b.gyro[size_t(i)]) - float(a.gyro[size_t(i)])) * f + float(a.gyro[size_t(i)]);
+          filter_.x[13 + i] = double((g - float(filter_.x[19 + i])) * float(model_.gyroScale[size_t(i)]));
+        }
       }
     }
   }
@@ -497,7 +485,12 @@ void LighthouseDirect::FollowRotorWobble(uint32_t serial, double time, const std
 }
 
 bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig& base, int slot, int* rejectedRows) {
-  const double time = EarliestHit(frame);
+  return ApplyOpticalResiduals(frame, base, slot, rejectedRows);
+}
+
+bool LighthouseDirect::ApplyOpticalResiduals(const OpticalFrame& frame, const BaseConfig& base, int slot, int* rejectedRows) {
+  double time = std::numeric_limits<double>::infinity();
+  for (const auto& s : frame.samples) time = std::min(time, s.time + 0.5 * s.width);
   auto samples = Gather(frame.samples);
   FilterOutliers(&samples, BaseDistance(filter_.x, slot));
   if (samples.empty() || !PredictTo(time)) return false;
@@ -566,13 +559,28 @@ bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig
   // until it ran off (fastmotion3 + fastmotion5: fly-aways 6 -> 2; spin-01's jumps > 5 cm
   // 229 -> 258; Beat Saber-like fastmotionindex unchanged). The base it reacquired on
   // stays gated: lifting that too let bad light through (spin-01: 229 -> 344).
+  if (imuDisabled_) filter_.holdImuCalibration = true;
   filter_.frameGateOff = slot != 0 && filter_.updateCount < altGateUntil_;
+  // Not stock: while the accelerometer clips (and kClippedGateFor after), the prediction falls
+  // behind a hard flick by more than the frame gate's 10 cm, and the gate refused the light
+  // that would have caught it up: the filter coasted on, ran off and reset. A user's Index
+  // controllers clipped at 8 g in 4-9 % of samples, resetting 15 times in 3 minutes; with
+  // kClippedGateMove, 5 (fastmotion4 jumps > 5 cm 131 -> 34, fastmotion5 resets 5 -> 3,
+  // testswing tracked 29 -> 40 %; wandfast jumps > 5 cm 30 -> 42; fastmotionindex and
+  // vrchat-01 unchanged: their accelerometers barely clip). 35 cm gained nothing more and
+  // cost jumps; widening it by time refused instead (frames already metres off by then).
+  filter_.frameRejectMove = swing_ && time - accelClippedAt_ < kClippedGateFor ? kClippedGateMove : DirectFilter::kFrameRejectMove;
   const uint64_t gatedBefore = filter_.gatedRows;
   const bool ok = filter_.Update(residuals, R, Eigen::Map<Vec>(z.data(), m), true);
   filter_.frameGateOff = false;
   if (!ok) {
     if (rejectedRows) *rejectedRows = hits - int(filter_.gatedRows - gatedBefore);
     return false;
+  }
+  if (imuDisabled_) {
+    // Without an accelerometer, damp linear acceleration state so alternating rotor sweeps
+    // do not ring/overshoot between optical updates.
+    for (int i = 6; i < 9; ++i) filter_.x[i] *= 0.5;
   }
   if (hits >= 3) slotUsed_[slot] = time;
   time_ = time;
@@ -581,7 +589,7 @@ bool LighthouseDirect::OpticalUpdate(const OpticalFrame& frame, const BaseConfig
     ++filter_.updateCount;
     lastWellLit_ = time;
   }
-  if (before < 201 && filter_.updateCount > 200) {
+  if (!imuDisabled_ && before < 201 && filter_.updateCount > 200) {
     // 0x350450: re-seed IMU-parameter variances (diagonal only) at CALIBRATED.
     auto& P = filter_.P;
     P(22, 22) = P(23, 23) = 1.0; P(24, 24) = 4.0;
@@ -610,7 +618,7 @@ bool LighthouseDirect::OnFrame(const OpticalFrame& frame, RecoveryEvidence* reco
   const int slot = Slot(frame.baseSerial);
   if (slot >= 0) return OpticalUpdate(frame, base->second.config, slot, recovery ? &recovery->rejectedRows : nullptr);
   if (frame.highFrameJitter) return false;
-  return Bootstrap(frame, base->second.config, recovery);
+  return Bootstrap(frame, base->second.config);
 }
 
 bool LighthouseDirect::AdvanceInertial(double time) {
@@ -644,6 +652,29 @@ LighthouseDirect::Predicted LighthouseDirect::PredictNow() const {
   Eigen::Vector3d p(x[0], x[1], x[2]), v(x[3], x[4], x[5]), w(x[13], x[14], x[15]);
   Eigen::Quaterniond q(x[9], x[10], x[11], x[12]);
   q.normalize();
+  if (imuDisabled_) {
+    // Advance smoothly to observedTime_ (250 Hz) with damped kinematic extrapolation so
+    // UpdateOutput()'s glide smoother runs continuously and SteamVR receives low-offset poses
+    // instead of discrete optical bursts with stale poseTimeOffset.
+    const double target = observedTime_.value_or(time_);
+    const double dt = std::clamp(target - time_, 0.0, 0.08);
+    constexpr double kDecayTau = 0.05;
+    const double decay = dt > 0 ? std::exp(-dt / kDecayTau) : 1.0;
+    const double effDt = dt > 0 ? kDecayTau * (1.0 - decay) : 0.0;
+    p += v * effDt;
+    const Eigen::Vector3d half = 0.5 * effDt * w;
+    const double angle = half.norm();
+    if (angle > 0) {
+      const Eigen::Vector3d u = half * (std::sin(angle) / angle);
+      q = (q * Eigen::Quaterniond(std::cos(angle), u.x(), u.y(), u.z())).normalized();
+    }
+    v *= decay;
+    w *= decay;
+    out.time = target > time_ ? target : time_;
+    for (int i = 0; i < 3; ++i) { out.p[i] = p[i]; out.v[i] = v[i]; out.w[i] = w[i]; out.a[i] = 0.0; }
+    out.q[0] = q.w(); out.q[1] = q.x(); out.q[2] = q.y(); out.q[3] = q.z();
+    return out;
+  }
   // IMU frame -> body (inverse of the angle-axis x[28..30]), biases, scales, gravity.
   const Eigen::Vector3d imuAA(x[28], x[29], x[30]);
   const Eigen::Matrix3d imuRot = imuAA.norm() > 1e-12 ? Eigen::AngleAxisd(imuAA.norm(), imuAA.normalized()).toRotationMatrix()
@@ -797,7 +828,7 @@ bool LighthouseDirect::SeedPose(const Seed& seed) {
     filter_.x[13 + i] = seed.angularVelocity[i];
     filter_.P(i, i) = seed.positionVariance;
     filter_.P(3 + i, 3 + i) = seed.velocityVariance;
-    filter_.P(13 + i, 13 + i) = 1.6e-5;
+    if (!imuDisabled_) filter_.P(13 + i, 13 + i) = 1.6e-5;
   }
   filter_.x[9] = q.w(); filter_.x[10] = q.x(); filter_.x[11] = q.y(); filter_.x[12] = q.z();
   for (int i = 9; i < 13; ++i) filter_.P(i, i) = seed.rotationVariance;
@@ -875,14 +906,14 @@ std::string LighthouseDirect::HealthCheck(double now) const {
   const double* x = filter_.x;
   char text[160];
   std::string reason;
-  if (std::fabs(x[16]) > 3.9269908169872414 || std::fabs(x[17]) > 3.9269908169872414) {
+  if (!imuDisabled_ && (std::fabs(x[16]) > 3.9269908169872414 || std::fabs(x[17]) > 3.9269908169872414)) {
     std::snprintf(text, sizeof text, "bad base station orientation ( %.4g, %.4g )", x[16] * 57.29577951308232,
                   x[17] * 57.29577951308232);
     reason = text;
-  } else if (std::fabs(x[18] - 9.80665) > filter_.gravityTolerance) {
+  } else if (!imuDisabled_ && std::fabs(x[18] - 9.80665) > filter_.gravityTolerance) {
     std::snprintf(text, sizeof text, "unlikely gravity %.3g m/s/s", x[18]);
     reason = text;
-  } else if (x[28] * x[28] + x[29] * x[29] + x[30] * x[30] > 0.06853891945200943) {
+  } else if (!imuDisabled_ && x[28] * x[28] + x[29] * x[29] + x[30] * x[30] > 0.06853891945200943) {
     reason = "IMU misalignment unreasonably large";
   } else {
     bool inBounds = false;

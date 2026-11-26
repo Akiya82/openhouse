@@ -42,6 +42,8 @@ inline int SlotToGiveUp(const double lastUsed[4], double now) {
 class LighthouseDirect {
  public:
   static constexpr double kSaturatedJerkScale = 10;  // process noise while the accelerometer saturates
+  static constexpr double kClippedGateMove = 0.30;   // m: the frame gate's move while the accelerometer clips
+  static constexpr double kClippedGateFor = 0.25;    // s after the last clipped sample
   // Blind (no light for kBlindAfter s): velocity capped at kBlindMaxSpeed m/s and faded with
   // the time constant kBlindFade s (see ImuUpdate).
   static constexpr double kBlindAfter = 0.1, kBlindMaxSpeed = 6.0, kBlindFade = 0.2;
@@ -55,6 +57,14 @@ class LighthouseDirect {
     multiStart_ = multiStart; filter_.gateSigma = gateSigma; swing_ = swing;
     filter_.gravityTolerance = multiStart ? 0.98 : 0.49033249999999996;
   }
+  // Not stock: disable IMU integration for a device with a dead/corrupted IMU (optical-only tracking).
+  void SetImuDisabled(bool disabled) {
+    imuDisabled_ = disabled;
+    filter_.imuDisabled = disabled;
+    filter_.holdImuCalibration = disabled;
+    if (disabled) imu_.clear();
+  }
+  bool ImuDisabled() const { return imuDisabled_; }
   // Not stock, off by default (0, 0): in a room with both kinds of base station, light in LH1 mode
   // sits about twice as far from the pose as an LH2 word, and weighted as one it shakes the pose.
   // sortedSeconds: added to the timing scatter of a 2.0 hit picked out of LH1 pulses
@@ -71,12 +81,11 @@ class LighthouseDirect {
   void OnBaseConfig(const BaseConfig&, const BaseDynamicState&);
   void SetRecordedTilt(uint32_t serial, std::array<double, 2> tilt, double variance);
   void OnImu(const ImuSample&);
-  bool OnFrame(const OpticalFrame&);
   struct RecoveryEvidence {
-    int rejectedRows = 0;  // sensor rows remaining in a rejected update
-    std::optional<double> alternatePoseTime;  // device time of a viable pose on another base
+    int rejectedRows = 0;
   };
-  bool OnFrame(const OpticalFrame&, RecoveryEvidence* recovery);
+  bool OnFrame(const OpticalFrame&);
+  bool OnFrame(const OpticalFrame&, RecoveryEvidence*);
   // Consume inertial data while optical data is unavailable. This is an explicit
   // fallback policy, not the original CImuOnlyTracker implementation.
   bool AdvanceInertial(double time);
@@ -159,8 +168,9 @@ class LighthouseDirect {
   std::optional<double> ObservedTime() const { return observedTime_; }
 
  private:
-  bool Bootstrap(const OpticalFrame&, const BaseConfig&, RecoveryEvidence* recovery);
+  bool Bootstrap(const OpticalFrame&, const BaseConfig&);
   bool CanSwitchPrimary(uint32_t serial) const;
+  bool ApplyOpticalResiduals(const OpticalFrame&, const BaseConfig&, int slot, int* rejectedRows);
   bool OpticalUpdate(const OpticalFrame&, const BaseConfig&, int slot, int* rejectedRows);
   bool ImuUpdate(const ImuSample&);
   bool PredictTo(double time);
@@ -183,6 +193,8 @@ class LighthouseDirect {
   double slotUsed_[4] = {-1e300, -1e300, -1e300, -1e300};  // SlotToGiveUp: or when the base got the slot
   double time_ = 0, lastOpticalTime_ = 0, opticalTimeout_ = 0.5;
   bool swing_ = false;
+  bool imuDisabled_ = false;
+  double accelClippedAt_ = -1e300;  // the last sample with an accelerometer axis clipped
   double violentUntil_ = -1e300;  // IMU calibration held until (freezeImuCalibration)
   // Vibration: the accelerometer's first and second differences between samples,
   // averaged over ~0.25 s. Jitter over kVibrationJitter (m/s2) with roughness over

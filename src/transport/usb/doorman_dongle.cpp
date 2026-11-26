@@ -1,4 +1,5 @@
 #include "doorman_dongle.hpp"
+#include "doorman_versions.h"
 
 #include <hidapi/hidapi.h>
 
@@ -23,7 +24,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 constexpr double kExtraLatency = 0.0015;
 constexpr double kFeatureTimeout = 0.15;
 
-constexpr uint8_t kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35;
+constexpr uint8_t kCmdRadios = 0x38, kCmdRejoin = 0x33, kCmdSetName = 0x34, kCmdGetName = 0x35, kCmdPacked = 0x37, kCmdInfo = 0x01;
 constexpr size_t kNameMax = 59;   // what the dongle keeps (link.c DML_NAME_MAX)
 constexpr uint8_t kCmdDown = 0x21, kCmdStats = 0x23, kCmdPair = 0x24, kCmdSlots = 0x25, kCmdLive = 0x29, kCmdIdent = 0x2A;
 
@@ -54,27 +55,45 @@ void AddSensorType(std::string* json, int type) {
 
 }  // namespace
 
+int DoormanInterfaceCount(unsigned short firmware) { return firmware >= 0x002B ? 5 : 4; }
+
+bool DongleOutdated(int firmware) { return firmware > 0 && firmware < DONGLE_FW_VERSION; }
+// Only radios running openhouse's firmware (0x6A Index family, 0x0A HTC): a stock radio is the
+// installer's to replace by cable, not an update.
+bool RadioOutdated(uint32_t radio) {
+  if (radio >> 24 == DML_VERSION_IDX >> 24) return radio < DML_VERSION_IDX;
+  if (radio >> 24 == DML_VERSION_HTC >> 24) return radio < DML_VERSION_HTC;
+  return false;
+}
+
 std::vector<DoormanDongleFound> FindDoormanDongles(const hid_device_info* list, std::map<std::string, int>* shared) {
   // Every interface carries the dongle's USB serial: that groups them, whatever order hidapi lists them in.
-  std::map<std::string, std::array<std::vector<std::string>, kDoormanInterfaces>> bySerial;
+  struct Listed { std::array<std::vector<std::string>, kDoormanInterfaces> paths; unsigned short firmware = 0; };
+  std::map<std::string, Listed> bySerial;
   for (const hid_device_info* d = list; d; d = d->next) {
     if (d->vendor_id != kVid || d->product_id != kPid || !d->path) continue;
     if (Narrow(d->product_string).rfind("Doorman Dongle", 0) != 0) continue;   // "Doorman Dongle <board>"
     if (d->interface_number < 0 || d->interface_number >= kDoormanInterfaces) continue;
-    bySerial[Narrow(d->serial_number)][size_t(d->interface_number)].push_back(d->path);
+    auto& l = bySerial[Narrow(d->serial_number)];
+    l.paths[size_t(d->interface_number)].push_back(d->path);
+    l.firmware = std::max(l.firmware, d->release_number);
   }
   std::vector<DoormanDongleFound> out;
   for (const auto& [usbSerial, found] : bySerial) {
     const std::string serial = "OHDG-" + usbSerial;
+    const int count = DoormanInterfaceCount(found.firmware);
     size_t most = 0, fewest = SIZE_MAX;
-    for (const auto& paths : found) { most = std::max(most, paths.size()); fewest = std::min(fewest, paths.size()); }
+    for (int i = 0; i < count; ++i) {
+      most = std::max(most, found.paths[size_t(i)].size());
+      fewest = std::min(fewest, found.paths[size_t(i)].size());
+    }
     if (most > 1) {   // several dongles: whose interfaces are whose?
       if (shared) (*shared)[serial] = int(most);
       continue;
     }
     if (fewest == 0) continue;   // not every interface listed yet
     DoormanDongleFound f{serial, {}};
-    for (int i = 0; i < kDoormanInterfaces; ++i) f.paths[size_t(i)] = found[size_t(i)].front();
+    for (int i = 0; i < count; ++i) f.paths[size_t(i)] = found.paths[size_t(i)].front();
     out.push_back(std::move(f));
   }
   return out;
@@ -118,7 +137,7 @@ std::mutex g_openMutex;
 void OpenInterfaces(const std::array<std::string, kDoormanInterfaces>& paths,
                     std::array<hid_device_*, kDoormanInterfaces>* devs, hid_device_** writeDev, bool writeHandle) {
   std::lock_guard lock(g_openMutex);
-  for (size_t i = 0; i < paths.size(); ++i) {
+  for (size_t i = 0; i < paths.size() && !paths[i].empty(); ++i) {
     (*devs)[i] = hid_open_path(paths[i].c_str());
     if (!(*devs)[i]) {
       for (auto& d : *devs) if (d) { hid_close(d); d = nullptr; }
@@ -163,6 +182,11 @@ bool DoormanDongle::TakeOpened() {
     opened_ = true;
   }
   for (auto& s : slots_) { s.used = s.active = s.noIdent = false; s.identSeq = -1; s.identTries = 0; }
+  for (int i = 0; i < kSlots; ++i) { frag_[i].clear(); packSeq_[i] = -1; }
+  const uint8_t on = 1;
+  Send(kCmdPacked, &on, 1);   // full stream reports; a dongle without it ignores the command and sends whole frames
+  slotCount_ = 8;
+  Send(kCmdInfo, nullptr, 0);   // how many slots it has
   nextLive_ = 0;
   log_(LogLevel::Info, "Doorman Dongle " + serial_ + " opened");
   return true;
@@ -221,6 +245,7 @@ void DoormanDongle::Drop() {
     s.waiting = false;   // its wait for another dongle ends with this one
     s.waitConfig.clear();
     frag_[i].clear();
+    packSeq_[i] = -1;
   }
   for (auto& d : devs_) if (d) { hid_close(d); d = nullptr; }
   dev_ = nullptr;
@@ -411,6 +436,13 @@ void DoormanDongle::Pump(double now) {
       Attach(i, config);   // waits (Take says USB) until it's unplugged
     }
     if (s.waiting && s.active && !s.attached) Attach(i, s.waitConfig);   // has the other carrier let go?
+    // Its radio's firmware, once per device (logged, and the overlay warns when it's old).
+    if (s.active && !s.serial.empty() && !s.radio && s.radioTries < 5 && now - s.radioAskT > 3.0) {
+      s.radioAskT = now;
+      ++s.radioTries;
+      const uint8_t ask[2] = {0xF0, 'X'};
+      Downlink(i, ask, sizeof ask);
+    }
     if (s.active && s.serial.empty() && s.noIdent && !s.worker.joinable() && now - s.identAskT > 5.0) {
       s.identAskT = now;
       StartConfigFetch(i);   // retried every 5 s until the device answers
@@ -436,11 +468,35 @@ void DoormanDongle::Pump(double now) {
     return n[cur] >= 0;
   };
   for (auto* d : devs_)
-    if (!drain(d)) { Drop(); return; }
+    if (d && !drain(d)) { Drop(); return; }
 }
 
 void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
   if (n < 3) return;
+  if (r[0] == 0x82 && n >= 5) {
+    // Packed (cmd 0x37): the slot's [len][frame] items back to back across reports. A missing report
+    // (seq gap) loses what was being put together; reading starts again where an item begins.
+    const int slot = r[1], len = std::min<int>(r[2], n - 5), seq = r[3], first = r[4];
+    if (slot >= kSlots) return;
+    auto& buf = frag_[slot];
+    int from = 0;
+    if (packSeq_[slot] != seq) {
+      buf.clear();
+      if (first == 0xFF || first > len) { packSeq_[slot] = -1; return; }
+      from = first;
+    }
+    packSeq_[slot] = (seq + 1) & 0xFF;
+    buf.insert(buf.end(), r + 5 + from, r + 5 + len);
+    size_t i = 0;
+    while (i < buf.size() && i + 1 + buf[i] <= buf.size()) {
+      const int fl = buf[i];
+      if (!fl) { buf.clear(); packSeq_[slot] = -1; return; }   // never sent: out of step
+      OnFrame(slot, t, buf.data() + i + 1, fl, last && i + 1 + fl >= buf.size());
+      i += 1 + fl;
+    }
+    buf.erase(buf.begin(), buf.begin() + long(i));
+    return;
+  }
   if (r[0] == 0x80 || r[0] == 0x81) {
     const int slot = r[1], len = std::min<int>(r[2], n - 3);
     if (slot >= kSlots) return;
@@ -520,6 +576,29 @@ void DoormanDongle::OnReport(double t, const uint8_t* r, int n, bool last) {
       if (s.haveName) s.name.assign(reinterpret_cast<const char*>(d + 1), std::min<size_t>(d[0], kNameMax));
       break;
     }
+  } else if (r[0] == kCmdInfo && n >= 64 && std::memcmp(r + 3, "OHDG", 4) == 0) {
+    slotCount_ = r[63] >= 1 && r[63] <= kSlots ? r[63] : 8;   // 0 from firmware before 0x002A: 8 slots
+    const int firmware = r[7] | r[8] << 8;
+    if (firmware != firmware_) {
+      firmware_ = firmware;
+      char b[160];
+      std::snprintf(b, sizeof b, ": firmware 0x%04X%s", firmware,
+                    DongleOutdated(firmware) ? " (older than this driver's; update it in the openhouse installer)" : "");
+      log_(DongleOutdated(firmware) ? LogLevel::Warn : LogLevel::Info, "Doorman Dongle " + serial_ + b);
+      if (firmware >= 0x002C) Send(kCmdRadios, nullptr, 0);   // the radios it remembers, devices off too
+    }
+  } else if (r[0] == kCmdRadios && r[2] == 0) {
+    const int count = std::min<int>(d[0], kSlots);
+    for (int i = 0; i < count; ++i) {
+      uint32_t v;
+      std::memcpy(&v, d + 1 + 4 * i, 4);
+      slots_[size_t(i)].storedRadio = v;
+      if (v && !slots_[size_t(i)].active) {
+        char b[160];
+        std::snprintf(b, sizeof b, " slot %d: radio 0x%08X (remembered)%s", i, unsigned(v), RadioOutdated(v) ? ", older than this driver's" : "");
+        log_(RadioOutdated(v) ? LogLevel::Warn : LogLevel::Info, "Doorman Dongle " + serial_ + b);
+      }
+    }
   } else if (r[0] == kCmdIdent && n >= 19) {
     for (int i = 0; i < kSlots; ++i) {
       Slot& s = slots_[i];
@@ -545,7 +624,7 @@ void DoormanDongle::OnFrame(int slot, double t, const uint8_t* f, int n, bool la
     s.lastDataT = t;
     s.streamed = true;
   }
-  if (f[0] == 0xF0 && n >= 36 && f[1] == 'X') { OnRadioStatus(slot, f, n); return; }
+  if (f[0] == 0xF0 && n >= 6 && f[1] == 'X') { OnRadioStatus(slot, f, n); return; }   // older radios: version only
   switch (f[0]) {
     case 0xC4: {
       if (n < 2) return;
@@ -853,6 +932,21 @@ void DoormanDongle::CheckImuStream(int i, double now, const uint8_t* f) {
 void DoormanDongle::OnRadioStatus(int slot, const uint8_t* f, int n) {
   uint32_t ver, frames, empty;
   std::memcpy(&ver, f + 2, 4);
+  Slot& rs = slots_[size_t(slot)];
+  if (!rs.silentStage) {   // asked once the device joined: its version, the rest is for a silent device
+    if (ver) rs.storedRadio = ver;   // as the dongle keeps it
+    if (ver && ver != rs.radio) {
+      rs.radio = ver;
+      char v[160];
+      std::snprintf(v, sizeof v, ": radio 0x%08X%s", unsigned(ver),
+                    RadioOutdated(ver) ? " (older than this driver's; update it in the openhouse installer)" : "");
+      log_(RadioOutdated(ver) ? LogLevel::Warn : LogLevel::Info,
+           (rs.serial.empty() ? "Doorman Dongle " + serial_ + " slot " + std::to_string(slot) : std::string(rs.serial)) + v);
+    }
+    return;
+  }
+  rs.radio = ver;
+  if (n < 36) return;
   std::memcpy(&frames, f + 11, 4);
   std::memcpy(&empty, f + 15, 4);
   char b[200];
@@ -874,6 +968,7 @@ void DoormanDongle::OnRadioStatus(int slot, const uint8_t* f, int n) {
 
 void DoormanDongle::ResetSlot(int slot) {
   Slot& s = slots_[slot];
+  s.radio = 0; s.radioTries = 0; s.radioAskT = -1e9;
   s.haveImuTicks = false;
   s.garbledImu = 0;
   s.streamed = false;
@@ -947,7 +1042,7 @@ bool DoormanDongle::Command(const DeviceId& serial, const std::array<uint8_t, 64
 }
 
 bool DoormanDongle::SetName(int slot, const std::string& nameIn) {
-  if (slot < 0 || slot >= kSlots) return false;
+  if (slot < 0 || slot >= slotCount_) return false;
   std::string name = nameIn;
   if (name.size() > kNameMax) {   // cut on a character boundary (UTF-8)
     size_t n = kNameMax;
@@ -963,9 +1058,9 @@ bool DoormanDongle::SetName(int slot, const std::string& nameIn) {
 
 bool DoormanDongle::Pair(int milliseconds, int slot) {
   std::lock_guard lock(mutex_);
-  if (!opened_) return false;
+  if (!opened_ || slot >= slotCount_) return false;   // a slot this dongle doesn't have (an 8-slot one: 8, 9)
   pairMs_ = milliseconds;
-  pairSlot_ = slot >= 0 && slot < kSlots ? slot : -1;
+  pairSlot_ = slot >= 0 ? slot : -1;
   return true;
 }
 
@@ -978,7 +1073,7 @@ void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its ow
   std::vector<SlotStat> out;
   int joined = 0;
   for (const auto& s : slots_) joined += s.active;
-  for (int i = 0; i < kSlots; ++i) {
+  for (int i = 0; i < slotCount_; ++i) {
     const Slot& s = slots_[i];
     SlotStat st;
     st.slot = i; st.used = s.used; st.active = s.active; st.serial = s.attached ? s.serial : DeviceId();
@@ -988,6 +1083,9 @@ void DoormanDongle::RefreshStatsCache() {     // reader thread: slots_ is its ow
     }
     st.devicesOnDongle = joined;
     st.name = s.name; st.haveName = s.haveName;
+    st.dongleFirmware = firmware_; st.dongleOld = DongleOutdated(firmware_);
+    st.radio = s.active && s.radio ? s.radio : s.used ? s.storedRadio : 0;
+    st.radioOld = RadioOutdated(st.radio);
     out.push_back(st);
   }
   std::lock_guard lock(mutex_);

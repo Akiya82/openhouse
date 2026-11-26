@@ -19,7 +19,7 @@ constexpr uint16_t kVid = 0x6767, kPid = 0x0727;
 // Commands (doorman/dongle-fw/src/dongle.h, link.c)
 constexpr uint8_t kInfo = 0x01, kBootloader = 0x10, kReset = 0x12, kClearCrash = 0x14, kLink = 0x20, kDown = 0x21,
                   kScan = 0x22, kStats = 0x23, kPair = 0x24, kSlotsCmd = 0x25, kForget = 0x26, kChannels = 0x27,
-                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A, kSetName = 0x34, kGetName = 0x35;
+                  kCodec = 0x28, kLive = 0x29, kIdent = 0x2A, kTiming = 0x2D, kSetName = 0x34, kGetName = 0x35;
 constexpr size_t kNameMax = 59;  // what the dongle keeps (link.c DML_NAME_MAX)
 
 hid_device* H(void* p) { return static_cast<hid_device*>(p); }
@@ -61,6 +61,7 @@ double Now() { return std::chrono::duration<double>(std::chrono::steady_clock::n
 Dongle::Dongle(std::string path, std::string serial) : path_(std::move(path)), serial_(std::move(serial)) {
   state_.serial = serial_;
   state_.path = path_;
+  packSeq_.fill(-1);
   thread_ = std::thread([this] { Run(); });
 }
 
@@ -112,7 +113,7 @@ bool Dongle::Open() {
   devs_[0] = hid_open_path(path_.c_str());
   if (!devs_[0]) return false;
   hid_set_nonblocking(H(devs_[0]), 1);
-  // the other interfaces (slot s streams on interface s % 4): the siblings with the same serial
+  // the other interfaces (slot s streams on interface s % 5, s % 4 before fw 0x002B): the siblings with the same serial
   if (hid_device_info* list = hid_enumerate(kVid, kPid)) {
     for (hid_device_info* d = list; d; d = d->next)
       if (d->interface_number > 0 && d->interface_number < kInterfaces && !devs_[d->interface_number] &&
@@ -141,7 +142,7 @@ bool Dongle::Command(uint8_t cmd, const uint8_t* args, size_t n, Reply* reply, i
   if (hid_write(H(dev0_), out, sizeof out) < 0) { alive_ = false; return false; }
   const double until = Now() + timeoutMs / 1000.0;
   uint8_t r[64];
-  while (Now() < until) {
+  while (Now() < until && !stop_) {
     const int got = hid_read_timeout(H(dev0_), r, sizeof r, 5);
     if (got < 0) { alive_ = false; return false; }
     for (int i = 1; i < kInterfaces; ++i)
@@ -176,6 +177,28 @@ void Dongle::ReadPending(int timeoutMs) {
 }
 
 void Dongle::OnReport(const uint8_t* r, int n) {
+  if (n >= 5 && r[0] == 0x82 && r[1] < kSlots) {
+    // Packed (cmd 0x37, which the driver and tools turn on for the whole dongle): [len][frame] items back to
+    // back across reports. A seq gap loses what was being put together; reading starts again at an item.
+    const int slot = r[1], len = std::min<int>(r[2], n - 5), seq = r[3], first = r[4];
+    auto& buf = frag_[slot];
+    int from = 0;
+    if (packSeq_[slot] != seq) {
+      buf.clear();
+      if (first == 0xFF || first > len) { packSeq_[slot] = -1; return; }
+      from = first;
+    }
+    packSeq_[slot] = (seq + 1) & 0xFF;
+    buf.insert(buf.end(), r + 5 + from, r + 5 + len);
+    size_t i = 0;
+    while (i < buf.size() && i + 1 + buf[i] <= buf.size()) {
+      if (!buf[i]) { buf.clear(); packSeq_[slot] = -1; return; }
+      OnFrame(slot, buf.data() + i + 1, buf[i]);
+      i += 1 + buf[i];
+    }
+    buf.erase(buf.begin(), buf.begin() + long(i));
+    return;
+  }
   if (n < 3 || (r[0] != 0x80 && r[0] != 0x81) || r[1] >= kSlots) return;
   const int slot = r[1], len = std::min<int>(r[2], n - 3);
   const uint8_t* body = r + 3;
@@ -213,7 +236,7 @@ bool Dongle::FeatureRead(int slot, uint8_t* data, size_t size) {
   waitDone_ = false;
   if (!Command(kDown, args, sizeof args, nullptr)) { waitSlot_ = -1; return false; }
   const double until = Now() + 0.5;
-  while (!waitDone_ && Now() < until && alive_) ReadPending(5);
+  while (!waitDone_ && Now() < until && alive_ && !stop_) ReadPending(5);
   waitSlot_ = -1;
   if (!waitDone_) return false;
   const size_t n = std::min(size - 1, waitReply_.size());
@@ -274,6 +297,22 @@ void Dongle::Poll(double now) {
   }
   if (now >= nextSlow_) {
     nextSlow_ = now + 1.0;
+    {
+      const uint8_t keep = 0xFF;   // read only: leaves the adaptive timing as it is
+      if (Command(kTiming, &keep, 1, &r) && r.data.size() >= 42) {
+        const uint8_t* d = r.data.data();
+        std::lock_guard lock(mutex_);
+        state_.haveTiming = true;
+        state_.cycleUs = Rd32(d);
+        state_.slotUs = Rd32(d + 4);
+        state_.answerBytes = d[21];
+        const bool sizing = state_.firmware >= 0x0028;
+        state_.normalAnswerBytes = sizing ? d[32] : 0;
+        state_.saturationPercent = sizing ? d[30] : -1;
+        state_.largeAnswers = sizing && d[31];
+        for (int i = 0; i < kSlots; ++i) state_.slots[i].saturationPercent = sizing ? d[34 + i] : -1;
+      }
+    }
     if (Command(kInfo, nullptr, 0, &r) && std::memcmp(r.data.data(), "OHDG", 4) == 0) {
       const uint8_t* d = r.data.data();
       std::lock_guard lock(mutex_);
@@ -281,6 +320,7 @@ void Dongle::Poll(double now) {
       state_.softdeviceVariant = d[6];
       state_.board = d[57] <= 3 ? d[57] : 0;
       state_.bank = d[59];
+      state_.slotCount = d[60] >= 1 && d[60] <= kSlots ? d[60] : 8;
       state_.watchdog = d[7];
       state_.resetReason = Rd32(d + 12);
       state_.uptimeMs = Rd32(d + 16);

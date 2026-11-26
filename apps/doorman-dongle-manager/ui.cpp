@@ -297,7 +297,7 @@ void Ui::Poll(double now) {
     d->SetAutoIdentify(!driver_.Connected());
     const DongleState st = d->Snapshot();
     Remember(st);
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < st.slotCount; ++i) {
       const auto& s = st.slots[i];
       if (s.pairId.empty()) continue;
       Identity id;
@@ -467,7 +467,7 @@ void Ui::PairBar(const DongleState& d) {
     return;
   }
   int firstFree = -1;
-  for (int i = 0; i < kSlots && firstFree < 0; ++i)
+  for (int i = 0; i < d.slotCount && firstFree < 0; ++i)
     if (!d.slots[i].used) firstFree = i;
   if (firstFree >= 0) {
     if (TintButton("Pair a device", kInfo, ImGui::GetFontSize() * 12)) dongle->Pair(60, -1, Report("Pairing"));
@@ -488,15 +488,16 @@ void Ui::Overview(const DongleState& d) {
   ImGui::Spacing();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const float tw = (ImGui::GetContentRegionAvail().x - gap * 3) / 4;
-  double loss = 0;
+  double loss = 0, corrupted = 0, unanswered = 0;
   int n = 0, worstRssi = 0;
   for (const auto& s : d.slots)
     if (s.active) {
       if (s.lossPercent >= 0) { loss += s.lossPercent; n++; }
       if (s.rssiDongle && (!worstRssi || s.rssiDongle < worstRssi)) worstRssi = s.rssiDongle;
+      corrupted += s.crcPerSec; unanswered += s.timeoutsPerSec;
     }
   char v[32];
-  std::snprintf(v, sizeof v, "%d / %d", d.joined, kSlots);
+  std::snprintf(v, sizeof v, "%d / %d", d.joined, d.slotCount);
   Tile("t1", v, "devices connected", d.joined ? kGood : kOff, tw);
   ImGui::SameLine();
   std::snprintf(v, sizeof v, "%d", d.paired);
@@ -507,6 +508,25 @@ void Ui::Overview(const DongleState& d) {
   ImGui::SameLine();
   if (n) std::snprintf(v, sizeof v, "%.1f %%", loss / n); else std::snprintf(v, sizeof v, "-");
   Tile("t4", v, "radio loss (resent)", n ? LossColor(loss / n) : kOff, tw);
+  // The link full rather than the radio bad: a lot of data, loss everywhere, and answers missing rather
+  // than corrupted. The channels can't fix that; fewer devices on this dongle can.
+  if (d.haveTiming) {
+    ImGui::Spacing();
+    char line[160];
+    int at = std::snprintf(line, sizeof line, "Answers %d B", d.answerBytes);
+    if (d.largeAnswers && d.normalAnswerBytes) at += std::snprintf(line + at, sizeof line - at, " (large, normally %d)", d.normalAnswerBytes);
+    at += std::snprintf(line + at, sizeof line - at, "  |  cycle %.1f ms", d.cycleUs / 1000.0);
+    if (d.saturationPercent >= 0) std::snprintf(line + at, sizeof line - at, "  |  saturation %d %%", d.saturationPercent);
+    ImGui::TextDisabled("%s", line);
+  }
+  // Saturated even with large answers (or a dongle that can't tell), loss everywhere, answers missing rather
+  // than corrupted: the link is full. The channels can't fix that; fewer devices on this dongle can.
+  const bool full = d.saturationPercent >= 0 ? d.largeAnswers && d.saturationPercent >= 50
+                                             : d.kBytesPerSec >= 110;
+  if (n && full && loss / n >= 20 && corrupted < 0.1 * unanswered) {
+    ImGui::Spacing();
+    ImGui::TextColored(kWarn, "Link full: move some devices to a second dongle");
+  }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Slots");
@@ -518,7 +538,7 @@ void Ui::Overview(const DongleState& d) {
     ImGui::TableSetupColumn("Loss", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5);
     ImGui::TableSetupColumn("Data", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 6);
     ImGui::TableHeadersRow();
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < d.slotCount; ++i) {
       const auto& s = d.slots[i];
       ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetFrameHeight());
       ImGui::TableNextColumn();
@@ -660,7 +680,7 @@ void Ui::Slots(const DongleState& d) {
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const int columns = ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 60 ? 3 : 2;
   const float w = (ImGui::GetContentRegionAvail().x - gap * (columns - 1)) / columns;
-  for (int i = 0; i < kSlots; ++i) {
+  for (int i = 0; i < d.slotCount; ++i) {
     if (i % columns) ImGui::SameLine();
     SlotCard(d, i, w);
   }
@@ -675,7 +695,7 @@ void Ui::Radio(const DongleState& d) {
     for (const char* c : {"Polls/s", "Loss", "Resent/s", "Frames/s", "Data", "On air", "Signal d / t"})
       ImGui::TableSetupColumn(c, ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * (c[0] == 'S' ? 7.5f : 5.2f));
     ImGui::TableHeadersRow();
-    for (int i = 0; i < kSlots; ++i) {
+    for (int i = 0; i < d.slotCount; ++i) {
       const auto& s = d.slots[i];
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
@@ -740,6 +760,10 @@ void Ui::Radio(const DongleState& d) {
     std::snprintf(a, sizeof a, "%.0f / s", s.dropsPerSec);
     std::snprintf(b, sizeof b, "%d .. %d dBm", s.rssiMin, s.rssiMax);
     row("Dropped on the dongle", a, "Signal range", b);
+    if (s.saturationPercent >= 0) {
+      std::snprintf(a, sizeof a, "%d %%", s.saturationPercent);
+      row("Saturation", a, "", "");
+    }
     std::snprintf(a, sizeof a, "%.0f / s", s.deviceDropsPerSec); std::snprintf(b, sizeof b, "%.1f / s", s.deviceReplyDropsPerSec);
     row("Dropped on the device", a, "Replies dropped", b);
     if (s.airKBytesPerSec > 0 && s.kBytesPerSec > 0) {

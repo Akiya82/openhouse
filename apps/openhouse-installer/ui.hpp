@@ -24,7 +24,9 @@ namespace openhouse::installer {
 class Job {
  public:
   ~Job() { Join(); }
-  void Start(std::function<bool(Job&)> work);
+  // devices: it talks to devices, so it waits for a scan in progress. Work that only touches files
+  // (install, uninstall, downloads) doesn't: a scan of slow slots held it up for seconds.
+  void Start(std::function<bool(Job&)> work, bool devices = true);
   bool Running() const { return running_; }
   bool Finished() const { return finished_; }
   bool Ok() const { return ok_; }
@@ -64,6 +66,7 @@ class Watcher {
     auto state = std::make_shared<State>();
     state_ = state;
     std::thread([state, look, seconds] {
+      t_scan = true;
       while (!state->stop) {
         T value;
         {
@@ -109,6 +112,7 @@ class Ui {
   // --install: installs right away (closing SteamVR), then offers a dongle update if one is due.
   void StartAutoInstall();
   void StartAutoUninstall();  // --uninstall: the same, uninstalling
+  void StartDongleUpdate();   // --dongles: the dongle update page, closing SteamVR / Monado when it needs to
   bool QuitRequested() const { return quit_; }
 
  private:

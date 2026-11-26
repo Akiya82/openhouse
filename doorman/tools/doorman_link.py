@@ -65,12 +65,14 @@ class Dongle:
             if not devs: raise IOError("Doorman Dongle (6767:0727) not found")
             path = next((d["path"] for d in devs if d.get("interface_number", 0) in (0, -1)), devs[0]["path"])
         self.h = hid.Device(path=path)
-        # interfaces 1..3: slot s streams on interface s % 4 (interface 0 also carries commands)
+        # interfaces 1..4: slot s streams on interface s % 5 (s % 4 before fw 0x002B; interface 0 also carries commands)
         self.hs = [hid.Device(path=d["path"]) for d in sorted(hid.enumerate(VID, PID), key=lambda d: d.get("interface_number", 0))
-                   if d.get("interface_number", 0) in (1, 2, 3) and d["path"] != path and d.get("serial_number") == self.h.serial]
+                   if d.get("interface_number", 0) >= 1 and d["path"] != path and d.get("serial_number") == self.h.serial]
         self._pending = []
         self._seq = 0
         self._frag = {}
+        self._pseq = {}
+        self._packed = False
     def __enter__(self): return self
     def __exit__(self, *a):
         self.h.close()
@@ -84,7 +86,7 @@ class Dongle:
         while time.time() - t0 < timeout / 1000:
             r = self.h.read(64, 100)
             if r and r[0] == c and r[1] == seq: return r[2], bytes(r[3:])
-            if r and r[0] in (0x80, 0x81): self._pending.append(bytes(r))   # keep stream data
+            if r and r[0] in (0x80, 0x81, 0x82): self._pending.append(bytes(r))   # keep stream data
         raise TimeoutError(f"dongle cmd {c:#x}")
 
     def reports(self, timeout_ms=100):
@@ -99,9 +101,28 @@ class Dongle:
 
     def frames(self, raw=False, timeout_ms=100):
         """Yield (slot, frame) forever (None-free; returns nothing when idle, so loop over it)."""
+        if not self._packed:   # full reports (0x82), as the driver asks for; older dongles answer "bad command"
+            self._packed = True
+            try: self.cmd(0x37, b'\x01', 300)
+            except TimeoutError: pass
         while True:
             got = False
             for r in self.reports(timeout_ms):
+                if r[0] == 0x82 and len(r) >= 5:
+                    s, n, seq, first = r[1], r[2], r[3], r[4]
+                    b = self._frag.setdefault(s, bytearray()); body = r[5:5 + n]
+                    if self._pseq.get(s) != seq:
+                        b.clear()
+                        if first == 0xFF or first > n: self._pseq.pop(s, None); continue
+                        body = body[first:]
+                    self._pseq[s] = (seq + 1) & 0xFF
+                    b += body; i = 0
+                    while i < len(b) and i + 1 + b[i] <= len(b):
+                        if not b[i]: b.clear(); self._pseq.pop(s, None); break
+                        f = bytes(b[i + 1:i + 1 + b[i]]); i += 1 + b[i]
+                        got = True; yield s, (f if raw else parse(f))
+                    del b[:i]
+                    continue
                 if r[0] == 0x81:
                     b = self._frag.setdefault(r[1], bytearray())
                     b += r[3:3 + r[2]]
@@ -117,11 +138,19 @@ class Dongle:
                     if f: got = True; yield r[1], (f if raw else parse(f))
             if not got: return
 
+    def slot_count(self):
+        """Slots this dongle has: it says so from firmware 0x002A (info byte 60); older ones have 8."""
+        if not hasattr(self, '_nslots'):
+            _, d = self.cmd(0x01)
+            self._nslots = d[60] if d[:4] == b'OHDG' and 1 <= d[60] <= 16 else 8
+        return self._nslots
+
     def slots(self):
         out = {}
-        for first in (0, 6):                               # 6 slots per reply
+        n = self.slot_count()
+        for first in range(0, n, 6):                       # 6 slots per reply
             _, d = self.cmd(0x25, bytes([first]))
-            for k in range(first, min(first + 6, 8)):
+            for k in range(first, min(first + 6, n)):
                 e = d[(k - first) * 10:(k - first) * 10 + 10]
                 if e[0]: out[k] = dict(id=e[2:10][::-1].hex(), active=bool(e[1]))
         return out

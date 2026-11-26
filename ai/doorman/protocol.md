@@ -86,6 +86,44 @@ frames = repeated [len][frame]
   recordings: IMU 4.75 -> 2.1 kB/s, LH1 light 8.4 -> 5.2 kB/s, LH2 8-10.7 -> 77 %. The old
   byte-varint codec reached 77 % on IMU+LH1; this one 54-59 %.
 
+### Frame check, batches and answer size (dongle 0x0028, radios 0x6A000025 / 0x0A000016)
+* Agreed at join: the radio's JREQ flags say what it can (bit1 CRC-8, bit2 batches, Index-family
+  radios only), the dongle's JOIN flags (for the assigned id only) say what to do. Old radios or
+  an old dongle keep the plain codec.
+* CRC-8 (poly 0x07, table-driven): ends each coded frame, over the original. A mismatch, or any
+  frame the dongle can't decode, skips the slot 1.2 s so the radio rejoins and both ends reset;
+  one corrupted frame that passed the radio's CRC-16 otherwise left the codec out of step for good.
+* Batches `0xC7` (`doorman_lh2p.h`): every frame queued for one answer, `[count-1:3]`, per frame
+  `[type:2]` + its walk (0 IMU, 1 LH1, 2 LH2 predicted, 3 raw), one CRC-8. The radio codes each
+  frame into the open batch as it comes; building the answer closes it, sized to the answer the
+  dongle announced. A frame that doesn't fit goes raw into the next (state already moved, the
+  dongle observes it). The dongle decodes a frame a step and passes them on once the CRC passes.
+* LH2 predicted: each hit from the same sensor and beam's last two rotations, each beam word's
+  sync from the last two; only the differences are sent. Measured on two LH2 captures: all
+  traffic -31 to -35 % at 8 devices (176 B answers, ~10 ms cycle), every frame rebuilt exactly.
+* RESP flags bit4 "more": frames still queued after this answer. The dongle counts it per slot
+  (older radios: answers within 70 B of the normal size); a device with it on half its answers
+  over 2 s turns on large answers (250 B) until none is over a fifth for 10 s (`sizing.h`).
+
+### Ten slots, wide batches, selective ack (dongle 0x002A, radios 0x6A000026 / 0x0A000017)
+* `DML_SLOTS` is 10. Slot addresses are `DML_SLOT_PREFIX` + slot as before; radios before 0x6A000026 /
+  0x0A000017 reject slots 8-9 in a JOIN, and the dongle fills the lowest free slot. The info reply (cmd 0x01)
+  byte 60 is the slot count (0 from older dongles: 8); the driver, dongle manager, installer and tools use it.
+  The pairing page moved to a 10-slot layout (magic "OHP1"); an 8-slot page ("OHPR") is converted at boot.
+* The cycle goes out in one byte of 50 us (POLL p[6], JOIN p[18]), so at most 12.75 ms: answers are capped
+  to keep it there (10 devices 188 B, 9 222 B, 8 or fewer unchanged). Longer cycles wrapped the byte and every
+  device hopped on a wrong clock.
+* Wide batches: JREQ/JOIN flag `DML_JF_BATCH32` (0x08, with `DML_JF_BATCH`) makes the radio send type 0xC8,
+  the frame count in 5 bits (up to 32) instead of 0xC7's 3 bits. Eight frames capped a batch below a Tundra's
+  frames per cycle once cycles were ~12 ms. The dongle decodes both.
+* POLL flag `DML_F_SACK` (0x20): the dongle holds the answer that came after a lost one (seq ack+2) and
+  delivers both in order when the lost one arrives; a radio that knows the flag resends only the lost one.
+  Older radios resend both (the dongle drops the repeat).
+* Radio queue: batches queue up to 4 answers' worth; over that, light is dropped and IMU may still use the
+  whole 1 KB. An answer closes the open batch only when nothing closed is waiting.
+* Light is also dropped once the oldest queued batch is older than 3 cycles (25 ms at least), so a lossy
+  link can't build a backlog that delays everything behind it; IMU always goes.
+
 ### Feature reads and drop counts
 * The host reads a feature with `[0xC5][tag][id]`; the radio asks the main MCU (`P id`) and
   answers `[0xC4][tag][answer]`. A late answer can't be taken for the next request. Untagged
@@ -95,13 +133,20 @@ frames = repeated [len][frame]
 
 ## Dongle USB interface (VID:PID 6767:0727, "Doorman Dongle")
 
-**Four HID interfaces** (firmware 0x000D), 64-byte reports, 1 ms interval (endpoints
-0x01/0x81 .. 0x04/0x84). **Slot s streams on interface s % 4**; interface 0 also carries every
-command and reply (replies go first). One interrupt IN endpoint sends at most one 64-byte report
+**Five HID interfaces** (firmware 0x002B; four, endpoints 0x01/0x81 .. 0x04/0x84, from 0x000D),
+64-byte reports, 1 ms interval. Interface 0 has IN 0x81 and OUT 0x01; interfaces 1-4 only send
+(IN 0x82 .. 0x85): the host writes on interface 0 only, and six endpoints instead of ten leave room in
+a USB 2.0 hub's periodic budget (eight on a hub chip shared with other full-speed devices failed with
+Code 10). **Slot s streams on interface s % 5** (s % 4 on four-interface firmware); interface 0 also
+carries every command and reply (replies go first). Hosts take the count from the USB bcdDevice
+(the firmware version): five from 0x002B. An interface tops out at 59.7 kB/s of stream (measured
+with the dongle's test load); a Tracker 3.0 on 2.0 base stations streams ~18 kB/s, so ten devices on
+four interfaces put three on two of them, ~90 % full: those slots dropped 6-48 frames/s and their IMU
+queued 28-43 ms (median). Five keep every interface at two. One interrupt IN endpoint sends at most one 64-byte report
 per 1 ms frame (~61 kB/s). With two interfaces the even slots' endpoint ran near that limit with
 five devices, and their data waited in the dongle: a controller in slot 2 arrived 12-27 ms older
 at the median (p90 31-61 ms) than one in slot 1. With four, at most two devices share an
-endpoint (both controllers then 5-6 ms median, p90 ~11.5 ms). Hosts open all four (grouped by USB
+endpoint (both controllers then 5-6 ms median, p90 ~11.5 ms). Hosts open all of them (grouped by USB
 serial) and read them all: the driver (`DoormanDongle::devs_`), the dongle manager, the installer
 and `doorman_link.py`. Older two-interface firmware isn't supported.
 
@@ -135,16 +180,17 @@ and `doorman_link.py`. Older two-interface firmware isn't supported.
 | 0x25 | slots `[first]`: 10 B per slot for slots first..first+5 (0 and 6): used, active, id x8. `d[60] = pairing \| (target+1) << 1`. The driver reads it every second: a slot whose id changes (re-paired to another device with no gap) is identified afresh |
 | 0x26 | forget slot (0xFF = all) |
 | 0x27 | channels: mask, loss % per hop channel, joins, net base |
-| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each); bytes 20-21: most bytes waiting for USB since the last read (u16); 22-25: test-load bytes queued (u32) |
+| 0x28 | codec: air bytes, frame bytes, bad frames; the radio's queue drops, reply drops (u32 each); bytes 20-21: most bytes waiting for USB since the last read (u16); 22-25: test-load bytes queued (u32); 26-29 codec resyncs (u32), 30 CRC-8 on, 31 batches on |
 | 0x2B | test load `[slot mask][kB/s]`: filler `'Z'` frames queued for USB on those slots (empty ones too), as if devices sent them. `0 0` stops it. `doorman/tools/load.py dongle` |
 | 0x2C | USB inside radio exchanges `[bits, 0xFF keeps]`: 1 while the POLL goes out, 2 while listening, 4 between decoded frames. Default 3 (4 delays the next POLL: loss ~18%) |
-| 0x2D | timing `[adaptive 0/1, 0xFF keeps]`: reply period, slot, slot budget, exchange avg/max (u32 us), adaptive, max resp, decode avg/max (u32 us at 22/26); counters reset on read |
+| 0x2D | timing `[adaptive 0/1, 0xFF keeps]`: reply period, slot, slot budget, exchange avg/max (u32 us), adaptive, max resp, decode avg/max (u32 us at 22/26); 0x0028+: 30 worst saturation %, 31 large answers, 32 normal answer size, 33 devices in the plan, 34-41 saturation % per slot; counters reset on read |
 | 0x2E | deferred decode `[0/1, 0xFF keeps]` (default 1) |
 | 0x2F | re-poll missed slots in the same cycle `[0/1, 0xFF keeps]`, then re-polls and answered (u32). Default 0 |
 | 0x32 | ghost-follow `[0/1, 0xFF keeps]` (other values: status 2): on (0), ghost polls sent and answered (u32 at 2 / 6, since start). Default 1 |
 | 0x33 | rejoin `[slot]`: the slot is not polled (for 1.5 s at most), so its radio rejoins (status 2: not paired). The host sends it when a connected device has sent nothing for 6 s |
 | 0x34 | set a slot's name `[slot][len][UTF-8, up to 59 B]`, len 0 clears (status 2: not paired or too long). Kept in flash with the pairings; forgetting or re-pairing the slot clears it |
 | 0x35 | a slot's name `[slot]` -> `[len][UTF-8]` |
+| 0x38 | radio versions (fw 0x002C+) -> `[n][u32 LE per slot]`: each paired device's radio as it last answered `0xF0 'X'`, kept in flash (0 unknown) |
 | 0x29 | live `[first]` (6 slots per reply, as 0x25): per slot `[used\|active<<1][rssi last rx][rssi last tx][min][max][channel][ms since reply u32]`. Min/max reset on read |
 | 0x2A | identity: the slot's last `H` frame (16 B, zeros if none) |
 

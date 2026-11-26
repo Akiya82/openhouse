@@ -124,10 +124,9 @@ TEST(TrackerCore, LateLightFromAnEarlierPoseHasNoRejectedRows) {
   ASSERT_TRUE(tracker.SeedPose(seed));
 
   // Both sweeps see the device at (0, 0, -2), a metre from the current estimate.
-  lh::LighthouseDirect::RecoveryEvidence recovery{-1, seed.time};
+  lh::LighthouseDirect::RecoveryEvidence recovery{-1};
   EXPECT_FALSE(tracker.OnFrame(Frame(model, 0), &recovery));
   EXPECT_EQ(recovery.rejectedRows, 0);
-  EXPECT_FALSE(recovery.alternatePoseTime);
   EXPECT_EQ(tracker.Filter().rejectedFrames, 0u);
   EXPECT_DOUBLE_EQ(tracker.LastOpticalTime(), seed.time);
 
@@ -158,63 +157,81 @@ TEST(TrackerCore, RejectedOpticalRowsExcludeGatedOutliers) {
   EXPECT_FALSE(tracker.OnFrame(frame, &recovery));
   ASSERT_EQ(filter.gatedRows, 1u);
   EXPECT_EQ(recovery.rejectedRows, 3);
-  EXPECT_FALSE(recovery.alternatePoseTime);
 }
 
-TEST(TrackerCore, AYoungFilterCanRecoverOnFreshLightFromAnotherBase) {
-  auto model = Object();
-  for (int i = 6; i < 10; ++i) {
-    model.points.push_back({0.01 * i, 0, 0});
-    model.normals.push_back({0, 0, 1});
-    model.channelToIndex[i] = i;
-  }
-  const auto sweep = [&](int step) {
-    auto f = Frame(model, step, 456);
-    f.samples.resize(6);
-    return f;
+TEST(TrackerCore, OpticalCorrectionUsesAccelerometerClippingWindow) {
+  const auto model = Object();
+  const auto check = [&](double elapsed, uint32_t saturation, bool swing, bool accepted) {
+    SCOPED_TRACE(elapsed);
+    SCOPED_TRACE(saturation);
+    SCOPED_TRACE(swing);
+    lh::LighthouseDirect tracker(model);
+    lh::BaseConfig base;
+    base.valid = true; base.serial = 123; base.cal.resize(14);
+    tracker.OnBaseConfig(base, {});
+    tracker.SetImprovements(true, 0.01, swing);
+    lh::LighthouseDirect::Seed seed;
+    seed.base = 123; seed.time = 1.0; seed.calibrated = true;
+    seed.baseFromImu.translation() = Eigen::Vector3d(0.20, 0, -2);
+    ASSERT_TRUE(tracker.SeedPose(seed));
+    lh::ImuSample clipped;
+    clipped.time = seed.time;
+    clipped.accel = {0, 9.80665, 0};
+    clipped.saturated = saturation;
+    tracker.OnImu(clipped);
+    auto frame = Frame(model, 0);
+    for (auto& sample : frame.samples) sample.time = seed.time + elapsed - sample.width / 2;
+    lh::LighthouseDirect::RecoveryEvidence recovery;
+    EXPECT_EQ(tracker.OnFrame(frame, &recovery), accepted);
+    EXPECT_GT(tracker.Filter().lastOutliers, 3);
+    EXPECT_EQ(tracker.Filter().rejectedFrames, accepted ? 0u : 1u);
+    EXPECT_EQ(recovery.rejectedRows, accepted ? 0 : 6);
+    EXPECT_DOUBLE_EQ(tracker.LastOpticalTime(), seed.time + (accepted ? elapsed : 0));
+    EXPECT_FALSE(tracker.Filter().frameGateOff);
   };
+  check(0.125, 0x1, true, true);
+  check(0.250, 0x1, true, false);
+  check(0.375, 0x1, true, false);
+  check(0.125, 0x8, true, false);
+  check(0.125, 0x1, false, false);
+}
+
+TEST(TrackerCore, OpticalOnlyRecoveryUsesFilterTime) {
+  const auto model = Object();
   lh::LighthouseDirect tracker(model);
   lh::BaseConfig base;
-  base.valid = true; base.cal.resize(14);
-  for (const auto serial : {123u, 456u}) {
-    base.serial = serial;
-    tracker.OnBaseConfig(base, {});
-  }
+  base.valid = true; base.serial = 123; base.cal.resize(14);
+  tracker.OnBaseConfig(base, {});
+  tracker.SetImprovements(true, 4.0, true);
+  tracker.SetImuDisabled(true);
   lh::LighthouseDirect::Seed seed;
-  seed.base = 123; seed.time = 1.25;
-  seed.baseFromImu.translation() = Eigen::Vector3d(0, 0, -2);
+  seed.base = 123; seed.time = 1.25; seed.calibrated = true;
+  seed.baseFromImu.translation() = Eigen::Vector3d(1, 0, -2);
   ASSERT_TRUE(tracker.SeedPose(seed));
+  lh::ImuSample observation;
+  observation.time = 1.5;
+  tracker.OnImu(observation);
+  auto& filter = tracker.FilterForTest();
+  filter.x[6] = 0.25;
   lh::LighthouseDirect::RecoveryEvidence recovery;
-  for (int step = 0; step < 30; ++step) {
-    tracker.OnFrame(sweep(step), &recovery);
-    EXPECT_FALSE(recovery.alternatePoseTime) << step;  // all hits predate the filter
-  }
-  tracker.OnFrame(sweep(30), &recovery);
-  EXPECT_FALSE(recovery.alternatePoseTime);  // new sweep, but the interpolated pose still predates the filter
-  int ready = 0;
-  for (int step = 31; step < 64; ++step) {
-    tracker.OnFrame(sweep(step), &recovery);
-    if (recovery.alternatePoseTime) ++ready;
-    EXPECT_EQ(recovery.rejectedRows, 0);
-  }
-  EXPECT_GE(ready, 8);
-  EXPECT_EQ(tracker.BaseSerial(1), 0u);
+  EXPECT_FALSE(tracker.OnFrame(Frame(model, 0), &recovery));
+  EXPECT_EQ(recovery.rejectedRows, 0);
+  EXPECT_FALSE(tracker.OnFrame(Frame(model, 30), &recovery));
+  EXPECT_GE(recovery.rejectedRows, 4);
+  EXPECT_DOUBLE_EQ(filter.x[6], 0.25);
   EXPECT_DOUBLE_EQ(tracker.LastOpticalTime(), seed.time);
 
-  auto unrelated = Frame(model, 63, 456);
-  unrelated.samples.erase(unrelated.samples.begin(), unrelated.samples.begin() + 6);
-  for (int i = 0; i < 8; ++i) {
-    tracker.OnFrame(unrelated, &recovery);
-    EXPECT_FALSE(recovery.alternatePoseTime);
-  }
-  auto weak = sweep(64);
-  weak.samples.resize(3);
-  tracker.OnFrame(weak, &recovery);
-  EXPECT_FALSE(recovery.alternatePoseTime);  // the history still contains a good solve
-  auto unsynced = sweep(65);
-  unsynced.rightSyncIsReal = false;
-  tracker.OnFrame(unsynced, &recovery);
-  EXPECT_FALSE(recovery.alternatePoseTime);
+  filter.x[0] = 0;
+  filter.P.row(6).setZero();
+  filter.P.col(6).setZero();
+  auto frame = Frame(model, 30);
+  for (auto& sample : frame.samples) sample.time = seed.time + 0.0001 - sample.width / 2;
+  EXPECT_TRUE(tracker.OnFrame(frame, &recovery));
+  EXPECT_EQ(recovery.rejectedRows, 0);
+  EXPECT_GT(tracker.LastOpticalTime(), seed.time);
+  EXPECT_LT(tracker.LastOpticalTime(), observation.time);
+  EXPECT_TRUE(filter.holdImuCalibration);
+  EXPECT_NEAR(filter.x[6], 0.125, 1e-5);
 }
 
 TEST(TrackerCore, RecordedTiltSeedsStateAndUncertainty) {

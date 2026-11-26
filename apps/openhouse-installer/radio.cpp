@@ -95,7 +95,7 @@ class DoormanDongle {
     dev0_ = hid_open_path(path.c_str());
     if (!dev0_) return;
     devs_[0] = dev0_;
-    // The other interfaces carry the slots' streams (slot s on interface s % 4).
+    // The other interfaces carry the slots' streams (slot s on interface s % 5; s % 4 before fw 0x002B).
     if (hid_device_info* list = hid_enumerate(kDoormanVid, kDoormanPid)) {
       wchar_t serial[64]{};
       hid_get_serial_number_string(dev0_, serial, 64);
@@ -118,7 +118,7 @@ class DoormanDongle {
     std::memcpy(out + 3, args, std::min<size_t>(n, 62));
     if (hid_write(dev0_, out, sizeof out) < 0) return false;
     const double until = Now() + timeoutMs / 1000.0;
-    while (Now() < until) {
+    while (Now() < until && !ScanStopping()) {
       int status = -1;
       if (!Pump(5, [&](const uint8_t* r) {
             if (r[0] != cmd || r[1] != seq) return false;
@@ -139,7 +139,7 @@ class DoormanDongle {
   // The next frame from `slot` that `want` accepts, or empty after the timeout.
   std::string Await(int slot, const std::function<bool(const std::string&)>& want, double seconds) {
     const double until = Now() + seconds;
-    while (Now() < until) {
+    while (Now() < until && !ScanStopping()) {
       for (auto it = frames_.begin(); it != frames_.end(); ++it)
         if (it->first == slot && want(it->second)) {
           std::string f = it->second;
@@ -168,7 +168,7 @@ class DoormanDongle {
         if (n < 0) return false;
         if (n == 0) continue;
         got = any = true;
-        if (r[0] == 0x80 || r[0] == 0x81) Stream(r, n);
+        if (r[0] >= 0x80 && r[0] <= 0x82) Stream(r, n);
         else if (reply && n >= 3) reply(r);
       }
       if (!got) break;
@@ -177,7 +177,7 @@ class DoormanDongle {
     const int n = hid_read_timeout(dev0_, r, sizeof r, waitMs);
     if (n < 0) return false;
     if (n > 0) {
-      if (r[0] == 0x80 || r[0] == 0x81) Stream(r, n);
+      if (r[0] >= 0x80 && r[0] <= 0x82) Stream(r, n);
       else if (reply && n >= 3) reply(r);
     }
     return true;
@@ -185,6 +185,31 @@ class DoormanDongle {
 
   void Stream(const uint8_t* r, int n) {
     if (n < 3) return;
+    if (r[0] == 0x82) {
+      // Packed (cmd 0x37, which the driver turns on for the whole dongle, and it stays on after the
+      // driver closes): [len][frame] items back to back across reports. A seq gap loses what was
+      // being put together; reading starts again at an item.
+      if (n < 5) return;
+      const int slot = r[1], len = std::min<int>(r[2], n - 5), seq = r[3], first = r[4];
+      std::string& b = packed_[slot];
+      int from = 0;
+      const auto at = packSeq_.find(slot);
+      if (at == packSeq_.end() || at->second != seq) {
+        b.clear();
+        if (first == 0xFF || first > len) { packSeq_.erase(slot); return; }
+        from = first;
+      }
+      packSeq_[slot] = (seq + 1) & 0xFF;
+      b.append(reinterpret_cast<const char*>(r + 5 + from), size_t(len - from));
+      size_t i = 0;
+      while (i < b.size() && i + 1 + uint8_t(b[i]) <= b.size()) {
+        if (!b[i]) { b.clear(); packSeq_.erase(slot); return; }
+        frames_.emplace_back(slot, b.substr(i + 1, uint8_t(b[i])));
+        i += 1 + uint8_t(b[i]);
+      }
+      b.erase(0, i);
+      return;
+    }
     if (r[0] == 0x81) {  // a frame too big for one report, in pieces
       std::string& b = frag_[r[1]];
       b.append(reinterpret_cast<const char*>(r + 3), std::min<int>(r[2], n - 3));
@@ -203,12 +228,13 @@ class DoormanDongle {
       i += 1 + m;
     }
   }
-  static constexpr int kInterfaces = 4;   // interface 0: commands; slot s streams on interface s % 4
+  static constexpr int kInterfaces = 5;   // interface 0: commands; slot s streams on interface s % 5 (s % 4 before fw 0x002B)
   hid_device* dev0_ = nullptr;
   hid_device* devs_[kInterfaces] = {};
   uint8_t seq_ = 0;
   std::vector<std::pair<int, std::string>> frames_;
-  std::map<int, std::string> frag_;
+  std::map<int, std::string> frag_, packed_;
+  std::map<int, int> packSeq_;
 };
 
 // The air updater (radio-fw main.c air_update): downlink op 0xF0, then 'X' info, 'Y' open,
@@ -216,7 +242,7 @@ class DoormanDongle {
 std::string AirRequest(DoormanDongle& d, int slot, char sub, const std::string& payload,
                        const std::function<bool(const std::string&)>& want = nullptr) {
   std::string f = std::string("\xF0", 1) + sub + payload;
-  for (int attempt = 0; attempt < 4; ++attempt) {
+  for (int attempt = 0; attempt < 4 && !ScanStopping(); ++attempt) {
     if (!d.Send(slot, reinterpret_cast<const uint8_t*>(f.data()), f.size())) { Sleep(20); continue; }
     const std::string r = d.Await(slot, [&](const std::string& fr) {
       return fr.size() >= 3 && uint8_t(fr[0]) == 0xF0 && fr[1] == sub && (!want || want(fr));
@@ -613,13 +639,19 @@ std::vector<WirelessDevice> FindWirelessDevices() {
 }
 
 std::vector<DongleSlot> ScanDongleSlots(const DoormanDongleInfo& dongle) {
-  std::vector<DongleSlot> out(8);
-  for (int i = 0; i < 8; ++i) out[size_t(i)].slot = i;
+  const int n = dongle.slots;
+  std::vector<DongleSlot> out(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) out[size_t(i)].slot = i;
   DoormanDongle d(dongle.path);
   if (!d.Ok()) return out;
   uint8_t r[62];
-  for (int slot = 0; slot < 8; ++slot) {
+  for (int slot = 0; slot < n; ++slot) {
     const uint8_t first = uint8_t(slot / 6 * 6);   // 6 slots per reply
+    if (slot == 0 && dongle.firmware >= 0x002C) {   // the radios it remembers: [n][u32 per slot]
+      uint8_t v[62];
+      if (d.Command(0x38, nullptr, 0, v))
+        for (int k = 0; k < std::min<int>(v[1], n) && 2 + 4 * k + 4 <= 62; ++k) out[size_t(k)].storedRadio = Rd32(v + 2 + 4 * k);
+    }
     if (slot == first && !d.Command(0x25, &first, 1, r)) { slot = first + 5; continue; }
     const uint8_t* e = r + 1 + (slot - first) * 10;  // [used][active][8-byte id]
     DongleSlot& s = out[size_t(slot)];
@@ -683,6 +715,7 @@ std::vector<DoormanDongleInfo> FindDoormanDongles() {
       o.softDeviceBuild = r[7] != 0;
       o.board = r[58] <= 3 ? r[58] : 0;
       o.bank = r[60] <= 2 ? r[60] : 0;
+      o.slots = r[61] >= 1 && r[61] <= 16 ? r[61] : 8;
     }
     out.push_back(o);
   }

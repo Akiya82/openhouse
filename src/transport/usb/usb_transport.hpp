@@ -114,6 +114,8 @@ class UsbTransport {
     double kBytesPerSec = 0, framesPerSec = 0, lossPercent = -1, dropsPerSec = 0;
     int rssiDongle = 0, rssiDevice = 0, devicesOnDongle = 0;
     std::string name; bool keepsName = false;   // openhouse: the name on the dongle, and whether it keeps one
+    int firmware = 0; uint32_t radio = 0;        // openhouse: dongle and device radio firmware (0 unknown)
+    bool firmwareOld = false, radioOld = false;  // older than this driver's
   };
   std::vector<Receiver> Receivers() const;
   // The name a Doorman Dongle keeps for one of its slots ("OHDG-.../3"); false if there's no such slot.
@@ -166,6 +168,9 @@ class UsbTransport {
     // The check runs on the probe thread (DeviceCheck), so it never holds up this one.
     bool checkDevice = false;
     bool checkPending = false;  // a DeviceCheck is queued or running
+    // A disconnect or stream gap clears this until the serial is confirmed again.
+    // Commands require confirmation only when multiple Watchman receivers match.
+    bool radioIdentityConfirmed = true;
     double lastData = 0;
     uint64_t rxBytes = 0, rxReports = 0;      // link stats for Receivers(), rated each second
     double rateT = 0; uint64_t rateBytes = 0, rateReports = 0;

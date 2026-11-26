@@ -121,6 +121,9 @@ class DirectFilter {
   // Not stock: gravity and the IMU calibration (states 18-30) held, nothing else: the
   // accelerometer under vibration. Lighter than holdSlowStates (no frame rejection).
   bool holdImuCalibration = false;
+  // Not stock: optical-only tracking for a device with a broken/disabled IMU.
+  // Uses higher kinematic process noise, holds states 16..30, and skips IMU/gravity checks.
+  bool imuDisabled = false;
   bool imuUpdate = false;  // the update in progress is an IMU sample's (LighthouseDirect::ImuUpdate)
   uint32_t flags = 0;        // +0xf8
   int rejectCount = 0;       // +0xfc

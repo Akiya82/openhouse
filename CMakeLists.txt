@@ -421,6 +421,7 @@ if(LH_BUILD_TESTS)
     tests/unit/test_pose_solver.cpp
     tests/unit/test_tracker.cpp
     tests/unit/test_direct_filter.cpp
+    tests/unit/test_disable_imu.cpp
     tests/unit/test_disambiguator_sob.cpp
     tests/unit/test_pulse_sorter.cpp
     tests/unit/test_mixed_light.cpp
